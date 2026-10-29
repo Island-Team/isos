@@ -136,13 +136,19 @@ impl Deployment {
             ensure!(slug(&node.id), "invalid node ID: {}", node.id);
             ensure!(ids.insert(&node.id), "duplicate node ID: {}", node.id);
             if node.enabled {
-                if let Some(endpoint)=node.launch.as_ref().and_then(|l|l.ready_tcp.as_deref()) {
-                    ensure!(listeners.insert(endpoint.to_owned()),"conflicting listener {endpoint}");
+                if let Some(endpoint) = node.launch.as_ref().and_then(|l| l.ready_tcp.as_deref()) {
+                    ensure!(
+                        listeners.insert(endpoint.to_owned()),
+                        "conflicting listener {endpoint}"
+                    );
                 }
-                if matches!(node.kind,NodeKind::Endpoint) {
-                    if let Some(path)=node.settings.get("socket_path").and_then(Value::as_str) {
-                        ensure!(sockets.insert(path.to_owned()),"conflicting UDS path {path}");
-                    }
+                if matches!(node.kind, NodeKind::Endpoint)
+                    && let Some(path) = node.settings.get("socket_path").and_then(Value::as_str)
+                {
+                    ensure!(
+                        sockets.insert(path.to_owned()),
+                        "conflicting UDS path {path}"
+                    );
                 }
             }
             match node.kind {
@@ -571,10 +577,34 @@ mod tests {
             {"id":"egia","kind":"component","role":"egia","profile":{"id":"egia.agent","version":"1.0.0"},"launch":{"command":["/bin/true","--managed","--no-tui"],"ready_tcp":"127.0.0.1:16100"}}
         ],"edges":[{"from":"eos-uds","to":"eos","kind":"depends_on"},{"from":"egia","to":"eos-uds","kind":"depends_on","input":"eos","output":"grpc"}]})).unwrap();
         graph.validate().unwrap();
-        assert_eq!(graph.start_order().unwrap().iter().map(|n|n.id.as_str()).collect::<Vec<_>>(),vec!["eos","eos-uds","egia"]);
-        let mut broken=graph.clone(); broken.edges[1].output=Some("http".into());
-        assert!(broken.validate().unwrap_err().to_string().contains("incompatible typed ports"));
-        let mut unsafe_path=graph;unsafe_path.nodes[1].settings.insert("socket_path".into(),serde_json::json!("/tmp/../escape"));
-        assert!(unsafe_path.validate().unwrap_err().to_string().contains("unsafe UDS"));
+        assert_eq!(
+            graph
+                .start_order()
+                .unwrap()
+                .iter()
+                .map(|n| n.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["eos", "eos-uds", "egia"]
+        );
+        let mut broken = graph.clone();
+        broken.edges[1].output = Some("http".into());
+        assert!(
+            broken
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("incompatible typed ports")
+        );
+        let mut unsafe_path = graph;
+        unsafe_path.nodes[1]
+            .settings
+            .insert("socket_path".into(), serde_json::json!("/tmp/../escape"));
+        assert!(
+            unsafe_path
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("unsafe UDS")
+        );
     }
 }

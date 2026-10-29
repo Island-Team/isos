@@ -9,18 +9,17 @@ else
   echo "IsOS requires Rust Cargo; install Rust from https://rustup.rs or add ~/.cargo/bin to PATH" >&2
   exit 127
 fi
-"$CARGO_BIN" install --path "$ROOT"
+INSTALL_ROOT="${ISOS_INSTALL_ROOT:-${CARGO_HOME:-${HOME}/.cargo}}"
+"$ROOT/build.sh"
+"$CARGO_BIN" install --path "$ROOT" --root "$INSTALL_ROOT"
 if [[ -n "${ISOS_HOME:-}" ]]; then
   CONFIG_ROOT="$ISOS_HOME/config"
 else
   CONFIG_ROOT="${XDG_CONFIG_HOME:-${HOME}/.config}/isos"
 fi
 mkdir -p "$CONFIG_ROOT"
-"${CARGO_HOME:-${HOME}/.cargo}/bin/isos" --version | awk '{print $2}' > "$CONFIG_ROOT/isos-version"
+"$INSTALL_ROOT/bin/isos" --version | awk '{print $2}' > "$CONFIG_ROOT/isos-version"
 chmod 600 "$CONFIG_ROOT/isos-version"
-if [[ ! -f "$ROOT/target/isos-ui/index.html" ]]; then
-  "$ROOT/build.sh"
-fi
 if [[ -n "${ISOS_HOME:-}" ]]; then
   DATA_ROOT="$ISOS_HOME/data/ui"
 else

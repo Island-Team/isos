@@ -66,6 +66,29 @@ fn authorized(
 fn revision(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
+fn diagnostic_path(graph: &Deployment, message: &str) -> String {
+    for (index, edge) in graph.edges.iter().enumerate() {
+        if message.contains(&format!("{} -> {}", edge.from, edge.to)) {
+            return format!("/edges/{index}");
+        }
+    }
+    for (index, node) in graph.nodes.iter().enumerate() {
+        if message.contains(&format!("{}:", node.id))
+            || message.starts_with(&format!("{} ", node.id))
+            || message.contains(&format!("node ID: {}", node.id))
+        {
+            let suffix = if message.contains("UDS path") || message.contains("socket_path") {
+                "/settings/socket_path"
+            } else if message.contains("profile") {
+                "/profile"
+            } else {
+                ""
+            };
+            return format!("/nodes/{index}{suffix}");
+        }
+    }
+    "/".into()
+}
 async fn graph(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
     authorized(&app, &headers)?;
     let bytes =
@@ -95,7 +118,7 @@ async fn validate(
         .validate()
         .and_then(|_| component::validate_profiles(&edit.graph))
         .err()
-        .map(|e| json!({"path":"/","code":"invalid_graph","message":e.to_string()}));
+        .map(|e| {let message=e.to_string();json!({"path":diagnostic_path(&edit.graph,&message),"code":"invalid_graph","message":message})});
     ok(
         json!({"valid":diagnostic.is_none(),"diagnostics":diagnostic.into_iter().collect::<Vec<_>>()}),
     )
@@ -171,34 +194,15 @@ async fn component_route(
     {
         return Err(err(StatusCode::NOT_FOUND, "unknown component operation"));
     }
-    let path = component::binary(&role);
-    let mut command = std::process::Command::new(path);
-    command.args([&op, "--json"]);
-    if let Some(Json(payload)) = body {
-        use std::io::Write;
-        command
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped());
-        let mut child = command
-            .spawn()
-            .map_err(|e| err(StatusCode::SERVICE_UNAVAILABLE, e))?;
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(payload.to_string().as_bytes())
-                .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-        }
-        let output = child
-            .wait_with_output()
-            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-        let value: Value =
-            serde_json::from_slice(&output.stdout).map_err(|e| err(StatusCode::BAD_GATEWAY, e))?;
-        return ok(value);
+    if matches!(op.as_str(), "render" | "validate") && body.is_none() {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "operation requires JSON values",
+        ));
     }
-    let output = command
-        .output()
-        .map_err(|e| err(StatusCode::SERVICE_UNAVAILABLE, e))?;
-    let value: Value =
-        serde_json::from_slice(&output.stdout).map_err(|e| err(StatusCode::BAD_GATEWAY, e))?;
+    let values = body.map(|Json(payload)| payload.get("values").cloned().unwrap_or(payload));
+    let value = component::call(&role, &op, values)
+        .map_err(|e| err(StatusCode::UNPROCESSABLE_ENTITY, e))?;
     ok(value)
 }
 async fn static_file(State(app): State<Arc<App>>, UrlPath(path): UrlPath<String>) -> Response {
@@ -277,4 +281,29 @@ pub fn serve(paths: Paths, deployment: String) -> Result<()> {
 }
 async fn static_file_root(State(app): State<Arc<App>>) -> Response {
     static_file(State(app), UrlPath(String::new())).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn diagnostics_point_at_graph_fields() {
+        let graph:Deployment=serde_json::from_value(json!({"schema_version":2,"name":"default","nodes":[{"id":"eos-uds","kind":"endpoint","owned":false,"enabled":true,"profile":{"id":"eos.uds","version":"1.0.0"},"settings":{"socket_path":"/tmp/../bad"}}],"edges":[]})).unwrap();
+        assert_eq!(
+            diagnostic_path(&graph, "eos-uds has unsafe UDS path"),
+            "/nodes/0/settings/socket_path"
+        );
+        let mut graph = graph;
+        graph.edges.push(crate::graph::Edge {
+            from: "egia".into(),
+            to: "eos-uds".into(),
+            kind: crate::graph::EdgeKind::DependsOn,
+            input: Some("eos".into()),
+            output: Some("http".into()),
+        });
+        assert_eq!(
+            diagnostic_path(&graph, "egia -> eos-uds has incompatible typed ports"),
+            "/edges/0"
+        );
+    }
 }

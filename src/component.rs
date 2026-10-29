@@ -32,7 +32,30 @@ pub fn binary(role: &str) -> String {
             return path.to_string_lossy().into_owned();
         }
     }
+    if let Ok(paths) = Paths::discover() {
+        let pin = paths.config.join("pins").join(format!("{role}.json"));
+        if let Ok(bytes) = fs::read(pin)
+            && let Ok(value) = serde_json::from_slice::<Value>(&bytes)
+            && let Some(path) = value.get("config_binary").and_then(Value::as_str)
+            && Path::new(path).is_file()
+        {
+            return path.into();
+        }
+    }
     format!("{role}-config")
+}
+fn source_root(paths: &Paths, role: &str) -> Option<PathBuf> {
+    let key = if role == "eos" {
+        "EOS_REPO_PATH"
+    } else {
+        "EGIA_REPO_PATH"
+    };
+    if let Some(path) = std::env::var_os(key) {
+        return Some(PathBuf::from(path));
+    }
+    let bytes = fs::read(paths.config.join("pins").join(format!("{role}.json"))).ok()?;
+    let value: Value = serde_json::from_slice(&bytes).ok()?;
+    Some(PathBuf::from(value.get("source_root")?.as_str()?))
 }
 pub fn call(role: &str, op: &str, values: Option<Value>) -> Result<Value> {
     ensure!(matches!(role, "eos" | "egia"), "unknown component");
@@ -141,11 +164,11 @@ pub fn render(paths: &Paths, graph: &Deployment, staging: &Path) -> Result<()> {
                     values[key] = value.clone();
                 }
             }
-            if let Ok(root) = std::env::var("EGIA_REPO_PATH") {
-                copy_tree(&PathBuf::from(root).join("etc/egia"), &staging.join("egia"))?;
+            if let Some(root) = source_root(paths, "egia") {
+                copy_tree(&root.join("etc/egia"), &staging.join("egia"))?;
             }
         }
-        let data = call(role, "render", Some(values))?;
+        let data = call(role, "render", Some(values.clone()))?;
         let files = data["files"]
             .as_array()
             .ok_or_else(|| anyhow::anyhow!("{role}-config render has no files"))?;
@@ -161,6 +184,34 @@ pub fn render(paths: &Paths, graph: &Deployment, staging: &Path) -> Result<()> {
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("render content missing"))?;
             config::atomic_write(&staging.join(path), content.as_bytes())?;
+        }
+        if role == "eos" {
+            let backend = values["binding_backend"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("EOS binding backend missing"))?;
+            let profile = values["binding_profile"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("EOS binding profile missing"))?;
+            let executable = node
+                .launch
+                .as_ref()
+                .and_then(|l| l.command.first())
+                .map(String::as_str)
+                .unwrap_or("/usr/bin/false");
+            let stack = format!(
+                "version = 1\neos_config = {}\nmodules = []\n\n[[service]]\nname = \"eosd\"\nrole = \"managed\"\ncommand = [{}]\nready_tcp = \"127.0.0.1:16200\"\n\n[[binding]]\nbackend = {}\nprofile = {}\n",
+                json!(
+                    paths
+                        .generated(&graph.name)
+                        .join("eos/eos.toml")
+                        .to_string_lossy()
+                        .to_string()
+                ),
+                json!(executable),
+                json!(backend),
+                json!(profile)
+            );
+            config::atomic_write(&staging.join("eos-runtime/stack.toml"), stack.as_bytes())?;
         }
     }
     Ok(())

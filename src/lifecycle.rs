@@ -223,7 +223,7 @@ fn check_packages(paths: &Paths, nodes: &[&Node]) -> Result<()> {
 pub fn start(paths: &Paths, name: &str, role: Option<&str>) -> Result<Vec<String>> {
     let _lock = Lock::take(paths)?;
     let selected = config::load_selected(paths, name)?;
-    versions::check(paths,Some(&selected))?;
+    versions::check(paths, Some(&selected))?;
     let mut active = read_active(paths, name)?.unwrap_or(ActiveState {
         schema_version: 1,
         graph: selected.clone(),

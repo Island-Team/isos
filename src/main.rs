@@ -31,7 +31,7 @@ use std::{
     name = "isos",
     version,
     about = "Manage Island EOS and EGIA as one local deployment",
-    after_help = "FIRST USE\n  1. Run `isos doctor` to check Linux and the user systemd session. Before installation, use `./bin/isos`.\n  2. Run `isos config init`, then edit the deployment JSON under ~/.config/isos/deployments/.\n  3. Run `isos config validate <file>` and `isos config apply <file>`.\n  4. Start with `isos start`; inspect with `isos status` and `isos logs <node>`.\n\nACCOUNT\n  Sign in:  isos auth login\n  Check:    isos auth whoami\n  Sign out: isos auth logout\n  Island-port credentials are saved to auth.json under the IsOS config directory\n  with mode 0600. Logout revokes the refresh session and deletes the local file.\n  Sign-in is needed for protected catalog operations such as publishing.\n\nMORE\n  Run `isos <command> --help` for command details. Read the IsOS quick start\n  and authentication guide in the project documentation."
+    after_help = "FIRST USE\n  1. Run `isos init`, then `isos open` to configure the graph.\n  2. Run `isos build eos` and `isos build egia` from configured source paths.\n  3. Run `isos version pin eos <commit>` and `isos version pin egia <commit>`.\n  4. Enable the nodes in the editor, Validate, Apply, then `isos run`.\n\nACCOUNT\n  Sign in:  isos auth login\n  Check:    isos auth whoami\n  Sign out: isos auth logout\n  Login is required for Island-port package submissions.\n\nMORE\n  Run `isos <command> --help` or read the IsOS quick start."
 )]
 struct Cli {
     #[arg(
@@ -812,8 +812,10 @@ fn main_run() -> Result<()> {
         },
         CommandLine::Init => {
             paths.prepare()?;
-            let own_pin=paths.config.join("isos-version");
-            if !own_pin.exists() { config::atomic_write(&own_pin,env!("CARGO_PKG_VERSION").as_bytes())?; }
+            let own_pin = paths.config.join("isos-version");
+            if !own_pin.exists() {
+                config::atomic_write(&own_pin, env!("CARGO_PKG_VERSION").as_bytes())?;
+            }
             if !paths.graph(&name).exists() {
                 let mut bytes = serde_json::to_vec_pretty(&example(&name, &paths))?;
                 bytes.push(b'\n');
@@ -822,21 +824,37 @@ fn main_run() -> Result<()> {
             }
             match config::load_selected(&paths, &name) {
                 Ok(graph) => match component::validate_profiles(&graph) {
-                    Ok(()) => println!("graph and component interfaces valid: {} nodes",graph.nodes.len()),
+                    Ok(()) => println!(
+                        "graph and component interfaces valid: {} nodes",
+                        graph.nodes.len()
+                    ),
                     Err(error) => eprintln!("component interfaces need repair: {error}"),
                 },
                 Err(error) => eprintln!("graph needs repair: {error}"),
             }
             if UnixStream::connect(paths.socket()).is_err() {
                 let executable = std::env::current_exe()?;
-                let output = Command::new("systemd-run")
-                    .args([
-                        "--user",
-                        "--collect",
-                        "--unit=isos-server",
-                        "--property=Restart=on-failure",
-                        "--",
-                    ])
+                let mut command = Command::new("systemd-run");
+                command.args([
+                    "--user",
+                    "--collect",
+                    "--unit=isos-server",
+                    "--property=Restart=on-failure",
+                ]);
+                for key in [
+                    "ISOS_HOME",
+                    "ISOS_WEB_DIST",
+                    "EOS_REPO_PATH",
+                    "EGIA_REPO_PATH",
+                    "ISOS_EOS_CONFIG_BIN",
+                    "ISOS_EGIA_CONFIG_BIN",
+                ] {
+                    if let Ok(value) = std::env::var(key) {
+                        command.arg(format!("--setenv={key}={value}"));
+                    }
+                }
+                let output = command
+                    .arg("--")
                     .arg(executable)
                     .arg("--deployment")
                     .arg(&name)
@@ -847,6 +865,14 @@ fn main_run() -> Result<()> {
                     "start IsOS server: {}",
                     String::from_utf8_lossy(&output.stderr)
                 );
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                while UnixStream::connect(paths.socket()).is_err() {
+                    ensure!(
+                        std::time::Instant::now() < deadline,
+                        "IsOS server did not bind its control socket"
+                    );
+                    std::thread::sleep(Duration::from_millis(100));
+                }
             }
             println!("{}", http::open_url(&paths)?);
         }
