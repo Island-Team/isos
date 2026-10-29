@@ -148,7 +148,10 @@ struct StackService<'a> {
     env: &'a BTreeMap<String, String>,
 }
 
-pub fn generated_stack(graph: &Deployment, activation_modules: &[String]) -> Result<String> {
+pub fn generated_stack(
+    graph: &Deployment,
+    activation_modules: &[(String, String)],
+) -> Result<String> {
     graph.validate()?;
     let eos_config = graph
         .nodes
@@ -162,12 +165,15 @@ pub fn generated_stack(graph: &Deployment, activation_modules: &[String]) -> Res
         .filter_map(|n| n.settings.get("module_toml").and_then(|v| v.as_str()))
         .map(str::to_owned)
         .collect();
-    modules.extend(activation_modules.iter().cloned());
+    modules.extend(activation_modules.iter().map(|(_, path)| path.clone()));
     let service = graph
         .start_order()?
         .into_iter()
         .filter_map(|n| {
-            if !n.owned || matches!(n.kind, NodeKind::Skill) {
+            if !n.owned
+                || matches!(n.kind, NodeKind::Skill)
+                || activation_modules.iter().any(|(id, _)| id == &n.id)
+            {
                 return None;
             }
             let launch = n.launch.as_ref()?;
@@ -225,7 +231,15 @@ fn render_template(template: &str, package_root: &Path) -> Result<String> {
             path.starts_with(&root) && path.is_file(),
             "package_file must resolve to a file inside its package"
         );
-        out.push_str(&path.to_string_lossy());
+        let encoded = serde_json::to_string(
+            path.to_str()
+                .ok_or_else(|| anyhow::anyhow!("package_file path must be UTF-8"))?,
+        )?;
+        if out.ends_with('"') && tail[end + 2..].starts_with('"') {
+            out.push_str(&encoded[1..encoded.len() - 1]);
+        } else {
+            out.push_str(&encoded);
+        }
         rest = &tail[end + 2..];
     }
     out.push_str(rest);
@@ -237,7 +251,7 @@ fn render_activations(
     graph: &Deployment,
     dir: &Path,
     final_dir: &Path,
-) -> Result<Vec<String>> {
+) -> Result<Vec<(String, String)>> {
     let mut modules = Vec::new();
     for node in &graph.nodes {
         if !node.enabled {
@@ -273,12 +287,13 @@ fn render_activations(
                     .join(&file.destination);
                 atomic_write(&destination, rendered.as_bytes())?;
                 if file.destination.ends_with("module.toml") {
-                    modules.push(
+                    modules.push((
+                        node.id.clone(),
                         final_dir
                             .join(destination.strip_prefix(dir)?)
                             .to_string_lossy()
                             .into_owned(),
-                    );
+                    ));
                 }
             }
         }
@@ -327,7 +342,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
     #[test]
     fn generates_readable_stack() {
-        let graph: Deployment = serde_json::from_str(r#"{"schema_version":1,"name":"default","nodes":[{"id":"eos","kind":"component","role":"eos","launch":{"command":["/bin/true"],"ready_tcp":"127.0.0.1:16003"},"settings":{"north_http_url":"http://127.0.0.1:16004"}}]}"#).unwrap();
+        let graph: Deployment = serde_json::from_str(r#"{"schema_version":1,"name":"default","nodes":[{"id":"eos","kind":"component","role":"eos","launch":{"command":["/bin/true"],"ready_tcp":"127.0.0.1:16003"},"settings":{"north_http_url":"http://127.0.0.1:16005"}}]}"#).unwrap();
         let stack = generated_stack(&graph, &[]).unwrap();
         let parsed: toml::Value = toml::from_str(&stack).unwrap();
         assert_eq!(parsed["service"][0]["name"].as_str(), Some("eos"));
@@ -351,7 +366,7 @@ mod tests {
         fs::write(package.join("resource.dat"), "payload").unwrap();
         fs::write(
             package.join("config/module.toml"),
-            "file = \"{{package_file:resource.dat}}\"\n",
+            "file = {{package_file:resource.dat}}\nquoted = \"{{package_file:resource.dat}}\"\n",
         )
         .unwrap();
         let manifest = serde_json::json!({
@@ -377,6 +392,8 @@ mod tests {
         let generated = paths.generated("default");
         let rendered = fs::read_to_string(generated.join("activation/test/module.toml")).unwrap();
         assert!(rendered.contains(package.join("resource.dat").to_str().unwrap()));
+        let parsed: toml::Value = toml::from_str(&rendered).unwrap();
+        assert_eq!(parsed["file"], parsed["quoted"]);
         let stack = fs::read_to_string(generated.join("stack.toml")).unwrap();
         assert!(
             stack.contains(
@@ -385,6 +402,12 @@ mod tests {
                     .to_str()
                     .unwrap()
             )
+        );
+        let stack_value: toml::Value = toml::from_str(&stack).unwrap();
+        assert!(
+            stack_value
+                .get("service")
+                .is_none_or(|value| value.as_array().is_some_and(Vec::is_empty))
         );
         fs::remove_dir_all(root).unwrap();
     }

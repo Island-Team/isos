@@ -203,6 +203,14 @@ impl Deployment {
                     );
                 }
             }
+            if let Some(sidecar) = node.settings.get("sidecar_of") {
+                ensure!(
+                    matches!(node.kind, NodeKind::Service | NodeKind::Backend)
+                        && matches!(sidecar.as_str(), Some("eos" | "egia")),
+                    "{}: settings.sidecar_of requires eos or egia on a service/backend",
+                    node.id
+                );
+            }
         }
         let by_id: BTreeMap<_, _> = self.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
         let mut edges = BTreeSet::new();
@@ -247,6 +255,24 @@ impl Deployment {
                     "skill_load provider {} must be a skill",
                     edge.to
                 ),
+            }
+        }
+        for node in self.nodes.iter().filter(|node| node.enabled) {
+            if let Some(role) = node.settings.get("sidecar_of").and_then(Value::as_str) {
+                let component = self
+                    .nodes
+                    .iter()
+                    .find(|candidate| candidate.enabled && candidate.role.as_deref() == Some(role))
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("{}: sidecar component {role} is not enabled", node.id)
+                    })?;
+                ensure!(
+                    self.edges
+                        .iter()
+                        .any(|edge| edge.from == node.id && edge.to == component.id),
+                    "{}: sidecar must depend on its {role} component",
+                    node.id
+                );
             }
         }
         let eos = self
@@ -317,6 +343,12 @@ impl Deployment {
             .find(|n| n.enabled && n.role.as_deref() == Some(role))
             .ok_or_else(|| anyhow::anyhow!("{role} is not enabled in this deployment"))?;
         let mut wanted = BTreeSet::from([root.id.as_str()]);
+        for node in &self.nodes {
+            if node.enabled && node.settings.get("sidecar_of").and_then(Value::as_str) == Some(role)
+            {
+                wanted.insert(node.id.as_str());
+            }
+        }
         loop {
             let before = wanted.len();
             for edge in &self.edges {
@@ -340,7 +372,7 @@ mod tests {
     use super::*;
     fn sample() -> Deployment {
         serde_json::from_str(r#"{"schema_version":1,"name":"default","nodes":[
-          {"id":"eos","kind":"component","role":"eos","contract":"island.eos.v1","launch":{"command":["/bin/true"]},"settings":{"north_http_url":"http://127.0.0.1:16004"}},
+          {"id":"eos","kind":"component","role":"eos","contract":"island.eos.v1","launch":{"command":["/bin/true"]},"settings":{"north_http_url":"http://127.0.0.1:16005"}},
           {"id":"egia","kind":"component","role":"egia","contract":"island.eos.v1","launch":{"command":["/bin/true","--managed","--no-tui"]}}
         ],"edges":[{"from":"egia","to":"eos","kind":"depends_on"}]}"#).unwrap()
     }
@@ -379,5 +411,25 @@ mod tests {
                 .to_string()
                 .contains("contract")
         );
+    }
+
+    #[test]
+    fn eos_closure_includes_its_sidecar_without_egia() {
+        let mut graph = sample();
+        let sidecar: Node = serde_json::from_str(r#"{"id":"eos-north-http","kind":"service","launch":{"command":["/bin/true"]},"settings":{"sidecar_of":"eos"}}"#).unwrap();
+        graph.nodes.push(sidecar);
+        graph.edges.push(Edge {
+            from: "eos-north-http".into(),
+            to: "eos".into(),
+            kind: EdgeKind::DependsOn,
+        });
+        graph.validate().unwrap();
+        let ids: Vec<_> = graph
+            .closure(Some("eos"))
+            .unwrap()
+            .into_iter()
+            .map(|node| node.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["eos", "eos-north-http"]);
     }
 }

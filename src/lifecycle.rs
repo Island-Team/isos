@@ -171,6 +171,11 @@ fn same_graph(a: &Deployment, b: &Deployment) -> Result<bool> {
 fn check_packages(paths: &Paths, nodes: &[&Node]) -> Result<()> {
     for node in nodes {
         if let Some(package) = &node.package {
+            let release_url = match node.role.as_deref() {
+                Some("eos") => "https://github.com/Island-Team/Aether-EOS-R/releases",
+                Some("egia") => "https://github.com/Island-Team/Aether-EGIA-R/releases",
+                _ => "https://www.os-island.com/isos/packages",
+            };
             let receipt = paths
                 .data
                 .join("packages")
@@ -179,16 +184,12 @@ fn check_packages(paths: &Paths, nodes: &[&Node]) -> Result<()> {
                 .join("receipt.json");
             ensure!(
                 receipt.is_file(),
-                "{} {} is not installed; use `isos packages install {}` or `isos packages link {}`; see https://github.com/Island-Team/Aether-{}-R/releases",
+                "{} {} is not installed; use isos packages install {} or isos packages link {}; see {}",
                 package.id,
                 package.version,
                 package.id,
                 package.id,
-                if node.role.as_deref() == Some("egia") {
-                    "EGIA"
-                } else {
-                    "EOS"
-                }
+                release_url
             );
         }
     }
@@ -221,12 +222,28 @@ pub fn start(paths: &Paths, name: &str, role: Option<&str>) -> Result<Vec<String
         if active.started.contains(&node.id) && is_active(&unit(name, &node.id)) {
             continue;
         }
+        ensure!(
+            active.started.contains(&node.id) || !is_active(&unit(name, &node.id)),
+            "{} is active outside IsOS state; stop that unit manually before IsOS can own it",
+            unit(name, &node.id)
+        );
         if let Err(error) = start_unit(name, node) {
             let mut rollback_errors = Vec::new();
+            if let Err(e) = stop_unit(name, &node.id) {
+                rollback_errors.push(e.to_string());
+                active.started.insert(node.id.clone());
+            }
             for id in added.iter().rev() {
                 if let Err(e) = stop_unit(name, id) {
                     rollback_errors.push(e.to_string());
+                } else {
+                    active.started.remove(id);
                 }
+            }
+            if active.started.is_empty() {
+                let _ = fs::remove_file(paths.active(name));
+            } else {
+                save_active(paths, name, &active)?;
             }
             if rollback_errors.is_empty() {
                 return Err(error);
@@ -240,12 +257,7 @@ pub fn start(paths: &Paths, name: &str, role: Option<&str>) -> Result<Vec<String
     Ok(added)
 }
 
-pub fn stop(paths: &Paths, name: &str, role: Option<&str>) -> Result<Vec<String>> {
-    let _lock = Lock::take(paths)?;
-    let Some(mut active) = read_active(paths, name)? else {
-        return Ok(Vec::new());
-    };
-    let order = active.graph.start_order()?;
+fn stop_set(active: &ActiveState, role: Option<&str>) -> Result<BTreeSet<String>> {
     let mut remove: BTreeSet<String> = BTreeSet::new();
     if let Some(role) = role {
         let root = active
@@ -290,6 +302,16 @@ pub fn stop(paths: &Paths, name: &str, role: Option<&str>) -> Result<Vec<String>
     } else {
         remove.extend(active.started.iter().cloned());
     }
+    Ok(remove)
+}
+
+pub fn stop(paths: &Paths, name: &str, role: Option<&str>) -> Result<Vec<String>> {
+    let _lock = Lock::take(paths)?;
+    let Some(mut active) = read_active(paths, name)? else {
+        return Ok(Vec::new());
+    };
+    let order = active.graph.start_order()?;
+    let remove = stop_set(&active, role)?;
     let mut stopped = Vec::new();
     for node in order.into_iter().rev() {
         if !remove.contains(&node.id) || !active.started.contains(&node.id) {
@@ -488,10 +510,41 @@ pub fn close_other_sessions(
 }
 
 #[cfg(test)]
-mod session_tests {
+mod tests {
     use super::*;
     #[test]
     fn reads_current_process_identity() {
         assert!(process_start_ticks(std::process::id() as i32).unwrap() > 0);
+    }
+
+    #[test]
+    fn stopping_eos_preserves_a_service_used_by_another_active_node() {
+        let graph: Deployment = serde_json::from_str(
+            r#"{
+          "schema_version":1,"name":"default",
+          "nodes":[
+            {"id":"eos","kind":"component","role":"eos","launch":{"command":["/bin/true"]},
+             "settings":{"north_http_url":"http://127.0.0.1:16005"}},
+            {"id":"model","kind":"service","launch":{"command":["/bin/true"]}},
+            {"id":"monitor","kind":"service","launch":{"command":["/bin/true"]}}
+          ],
+          "edges":[
+            {"from":"eos","to":"model","kind":"model_binding"},
+            {"from":"monitor","to":"model","kind":"depends_on"}
+          ]
+        }"#,
+        )
+        .unwrap();
+        graph.validate().unwrap();
+        let active = ActiveState {
+            schema_version: 1,
+            graph,
+            started: ["eos", "model", "monitor"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+        };
+        let stop = stop_set(&active, Some("eos")).unwrap();
+        assert_eq!(stop, BTreeSet::from(["eos".into()]));
     }
 }

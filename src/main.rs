@@ -13,13 +13,14 @@ use serde_json::{Value, json};
 use std::{
     fs,
     io::{BufRead, BufReader, Write},
+    net::{TcpStream, ToSocketAddrs},
     os::unix::{
         fs::PermissionsExt,
         net::{UnixListener, UnixStream},
     },
     path::PathBuf,
     process::Command,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 #[derive(Parser)]
@@ -227,9 +228,21 @@ fn component(paths: &config::Paths, name: &str, role: &str, cmd: ComponentComman
         }
         ComponentCommand::Enter => {
             ensure!(role == "eos", "enter is available for EOS only");
+            let status = lifecycle::status(paths, name, Some("eos"))?;
+            ensure!(status.running, "EOS is offline; run isos eos start first");
+            let endpoint = status
+                .north_http_url
+                .strip_prefix("http://")
+                .ok_or_else(|| {
+                    anyhow::anyhow!("EOS north HTTP URL is missing; set settings.north_http_url")
+                })?;
+            let reachable = endpoint
+                .to_socket_addrs()?
+                .any(|addr| TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok());
             ensure!(
-                lifecycle::status(paths, name, Some("eos"))?.running,
-                "EOS is offline; run isos eos start first"
+                reachable,
+                "EOS north HTTP is unreachable at {}; check its sidecar and isos logs eos-north-http",
+                status.north_http_url
             );
             let executable = std::env::var("ISOS_EOS_CLI").unwrap_or_else(|_| "eos-cli".into());
             let token = format!(
@@ -256,9 +269,12 @@ fn example(name: &str) -> Deployment {
     serde_json::from_value(json!({"schema_version":1,"name":name,
       "nodes":[
         {"id":"eos","kind":"component","role":"eos","enabled":false,"contract":"island.eos.v1",
-         "settings":{"north_http_url":"http://127.0.0.1:16004","eos_config":"/path/to/eos.toml"}},
+         "settings":{"north_http_url":"http://127.0.0.1:16005","eos_config":"/path/to/eos.toml"}},
+        {"id":"eos-north-http","kind":"service","enabled":false,
+         "settings":{"sidecar_of":"eos"}},
         {"id":"egia","kind":"component","role":"egia","enabled":false,"contract":"island.eos.v1"}
-      ],"edges":[{"from":"egia","to":"eos","kind":"depends_on"}]}))
+      ],"edges":[{"from":"egia","to":"eos","kind":"depends_on"},
+                 {"from":"eos-north-http","to":"eos","kind":"depends_on"}]}))
     .unwrap()
 }
 

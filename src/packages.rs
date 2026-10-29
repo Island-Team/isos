@@ -277,6 +277,24 @@ pub fn remove(paths: &Paths, id: &str, version: &str) -> Result<()> {
             );
         }
     }
+    for entry in fs::read_dir(&paths.runtime).into_iter().flatten().flatten() {
+        if !entry
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".active.json")
+        {
+            continue;
+        }
+        let active: crate::lifecycle::ActiveState =
+            serde_json::from_slice(&fs::read(entry.path())?)?;
+        ensure!(
+            !active.graph.nodes.iter().any(|node| node
+                .package
+                .as_ref()
+                .is_some_and(|package| package.id == id && package.version == version)),
+            "package is referenced by an active deployment; stop it before removal"
+        );
+    }
     fs::remove_dir_all(path)?;
     Ok(())
 }
