@@ -29,7 +29,8 @@ pub struct Release {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+// Island-port adds legacy template fields to activation in catalog responses;
+// the schema v4 client only consumes the canonical files list.
 pub struct Activation {
     pub files: Vec<ActivationFile>,
 }
@@ -273,6 +274,24 @@ pub fn verify_file(asset: &Asset, path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accepts_catalog_activation_compatibility_fields() {
+        let release: Release = serde_json::from_str(&format!(
+            r#"{{"schema_version":4,"id":"island/mujoco-sim","kind":"backend","version":"1.0.1","source_commit":"{}","activation":{{"files":[{{"source":"config/module.toml","destination":"module.toml"}}],"backend_template":"","entrypoint":"","eos_template":"","scene":"","simulator_template":""}},"assets":[{{"os":"linux","arch":"x86_64","url":"https://github.com/Island-Team/isos-mujoco-sim/releases/download/v1.0.1/sim.tar.gz","size_bytes":10,"sha256":"{}"}}]}}"#,
+            "a".repeat(40),
+            "b".repeat(64)
+        ))
+        .unwrap();
+
+        release.validate().unwrap();
+        assert_eq!(release.activation.as_ref().unwrap().files.len(), 1);
+        let encoded = serde_json::to_value(release).unwrap();
+        let activation = encoded["activation"].as_object().unwrap();
+        assert_eq!(activation.len(), 1);
+        assert!(activation.contains_key("files"));
+    }
+
     #[test]
     fn selects_matching_asset() {
         let release: Release = serde_json::from_str(&format!(r#"{{"schema_version":4,"id":"island/eos","kind":"component","version":"2.0.0","source_commit":"{}","assets":[{{"os":"linux","arch":"x86_64","libc":"glibc>=2.35","url":"https://github.com/Island-Team/Aether-EOS-R/releases/download/v2.0.0/eos.tar.gz","size_bytes":10,"sha256":"{}"}}]}}"#, "a".repeat(40), "b".repeat(64))).unwrap();
