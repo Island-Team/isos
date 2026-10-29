@@ -6,13 +6,15 @@ This repository is an early, working manager core. Its command line, graph valid
 
 ## Install
 
-Linux with a user systemd session and Rust 1.98 or newer. For local core checkouts, copy `.example.env` to `.env` and set the EOS and EGIA repository paths. The checkout wrappers load `.env`; Git ignores it.
+Linux with a user systemd session and Rust 1.98 or newer. For local core checkouts, copy `.example.env` to `.env` and set the EOS and EGIA repository paths. Set `ISOSUI_REPO_PATH` only when building the optional local editor. The checkout wrappers load `.env`; Git ignores it.
 
     ./build.sh
     ./install.sh
     isos doctor
 
 The installer places `isos` in Cargo's bin directory. If that directory is not on `PATH` but `~/.local/bin` is, it creates a link there. Otherwise, add the install bin directory (normally `~/.cargo/bin`) to `PATH` and open a new shell.
+
+The IsOS installation contains the CLI and local API server. `isos open` uses the hosted IsosUI editor at `https://www.os-island.com/en/isos` unless a local build has been pinned. To use the editor offline, set `ISOSUI_REPO_PATH` to a committed [IsosUI](https://github.com/Island-Team/IsosUI) checkout, install Node.js and npm, then run `isos build isosui` and `isos version pin isosui <commit>`. IsOS stores the verified bundle under XDG data and serves it from `127.0.0.1:16000`. The UI pin is independent of the EOS/EGIA deployment graph.
 
 Before installing the CLI, run commands from this checkout with `./bin/isos <command>` or `./isos.sh <command>`.
 
@@ -52,7 +54,8 @@ The IsOS editor stays available while EOS and EGIA are stopped. Point the checko
 
     isos init|open|run|stop|restart|status [--json]
     isos build eos|egia|all [--install-deps]
-    isos version check|pin <component> <version>
+    isos build isosui
+    isos version check|pin <eos|egia|isosui> <version>
     isos eos start|enter|stop|restart|status [--json]|shutdown
     isos egia start|stop|restart|status [--json]
     isos config init|validate|apply|migrate|show
