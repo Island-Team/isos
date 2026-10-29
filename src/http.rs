@@ -646,7 +646,13 @@ mod tests {
     use axum::{extract::State, routing::get};
     use futures_util::{SinkExt, StreamExt};
     use tokio::sync::oneshot;
-    use tokio_tungstenite::{accept_async, connect_async};
+    use tokio_tungstenite::{
+        accept_async, accept_hdr_async, connect_async,
+        tungstenite::{
+            client::IntoClientRequest,
+            handshake::server::{Request as ServerRequest, Response as ServerResponse},
+        },
+    };
 
     #[test]
     fn only_known_origins_are_allowed() {
@@ -766,5 +772,130 @@ mod tests {
                 .unwrap()
         );
         server.abort();
+    }
+
+    #[tokio::test]
+    #[allow(clippy::result_large_err)]
+    async fn egia_route_authenticates_before_upstream_and_preserves_egia_frames() {
+        let upstream_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_address = upstream_listener.local_addr().unwrap();
+        let temp = std::env::temp_dir().join(format!("isos-egia-proxy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        let paths = Paths {
+            config: temp.join("config"),
+            data: temp.join("data"),
+            runtime: temp.join("run"),
+        };
+        std::fs::create_dir_all(paths.config.join("deployments")).unwrap();
+        let graph = json!({
+            "schema_version": 1, "name": "default", "edges": [],
+            "nodes": [{"id":"egia","kind":"component","role":"egia","launch":{
+                "command":["egia","--managed","--no-tui"], "ready_tcp":upstream_address.to_string()
+            }}]
+        });
+        std::fs::write(paths.graph("default"), serde_json::to_vec(&graph).unwrap()).unwrap();
+
+        let (upstream_accepted_tx, mut upstream_accepted_rx) = oneshot::channel();
+        let (upstream_close_tx, upstream_close_rx) = oneshot::channel();
+        tokio::spawn(async move {
+            let (stream, _) = upstream_listener.accept().await.unwrap();
+            let _ = upstream_accepted_tx.send(());
+            let mut socket = accept_hdr_async(
+                stream,
+                |request: &ServerRequest, response: ServerResponse| {
+                    assert_eq!(request.uri().path(), "/api/aether/egia/health");
+                    assert!(!request.headers().contains_key(header::ORIGIN));
+                    Ok(response)
+                },
+            )
+            .await
+            .unwrap();
+            socket
+                .send(TungsteniteMessage::Text("egia-frame".into()))
+                .await
+                .unwrap();
+            assert_eq!(
+                socket.next().await.unwrap().unwrap().into_text().unwrap(),
+                "browser-frame"
+            );
+            let closed = matches!(socket.next().await, Some(Ok(TungsteniteMessage::Close(_))));
+            let _ = socket.send(TungsteniteMessage::Close(None)).await;
+            let _ = upstream_close_tx.send(closed);
+        });
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let state = HttpState {
+            paths,
+            token: "pairing-secret".into(),
+            port,
+            extra_origin: None,
+        };
+        let app = Router::new()
+            .route(EGIA_PROXY_PATH, get(egia_proxy))
+            .layer(middleware::from_fn_with_state(state.clone(), authorize))
+            .with_state(state);
+        let bridge = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let url = format!("ws://127.0.0.1:{port}{EGIA_PROXY_PATH}");
+        let mut bad = url.clone().into_client_request().unwrap();
+        bad.headers_mut().insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://www.os-island.com"),
+        );
+        let mut denied_origin = url.clone().into_client_request().unwrap();
+        denied_origin.headers_mut().insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://evil.example"),
+        );
+        assert!(connect_async(denied_origin).await.is_err());
+        let (mut rejected, _) = connect_async(bad).await.unwrap();
+        rejected.send(TungsteniteMessage::Text(json!({
+            "type":"authenticate", "token":"wrong", "deployment":"default", "route":"/api/aether/egia/health"
+        }).to_string().into())).await.unwrap();
+        let error = rejected.next().await.unwrap().unwrap().into_text().unwrap();
+        assert!(error.contains("pairing token rejected"));
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(50),
+                &mut upstream_accepted_rx
+            )
+            .await
+            .is_err()
+        );
+
+        let mut request = url.into_client_request().unwrap();
+        request.headers_mut().insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://www.os-island.com"),
+        );
+        let (mut client, _) = connect_async(request).await.unwrap();
+        client.send(TungsteniteMessage::Text(json!({
+            "type":"authenticate", "token":"pairing-secret", "deployment":"default", "route":"/api/aether/egia/health"
+        }).to_string().into())).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), &mut upstream_accepted_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        let ready = client.next().await.unwrap().unwrap().into_text().unwrap();
+        assert!(ready.contains("\"type\":\"ready\""));
+        assert_eq!(
+            client.next().await.unwrap().unwrap().into_text().unwrap(),
+            "egia-frame"
+        );
+        client
+            .send(TungsteniteMessage::Text("browser-frame".into()))
+            .await
+            .unwrap();
+        client.send(TungsteniteMessage::Close(None)).await.unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), upstream_close_rx)
+                .await
+                .unwrap()
+                .unwrap()
+        );
+        bridge.abort();
+        let _ = std::fs::remove_dir_all(temp);
     }
 }
