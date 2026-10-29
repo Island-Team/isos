@@ -235,6 +235,16 @@ async fn authorize(State(state): State<HttpState>, request: Request<Body>, next:
         let mut response = StatusCode::NO_CONTENT.into_response();
         if let Some(origin) = &origin {
             cors_headers(&mut response, origin);
+            if request
+                .headers()
+                .get("access-control-request-private-network")
+                .is_some_and(|value| value == "true")
+            {
+                response.headers_mut().insert(
+                    "access-control-allow-private-network",
+                    HeaderValue::from_static("true"),
+                );
+            }
         }
         return response;
     }

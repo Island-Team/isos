@@ -173,6 +173,19 @@ enum LibraryCommand {
         #[arg(long)]
         json: bool,
     },
+    Info {
+        node: String,
+    },
+    Status {
+        node: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Install(InstallArgs),
+    Remove {
+        id: String,
+        version: String,
+    },
 }
 
 fn print_status(status: &lifecycle::Status, as_json: bool) -> Result<()> {
@@ -329,6 +342,46 @@ fn config_command(paths: &config::Paths, name: &str, cmd: ConfigCommand) -> Resu
     Ok(())
 }
 
+fn install_package(paths: &config::Paths, args: InstallArgs, kind: Option<&str>) -> Result<()> {
+    let release = match (&args.id, &args.manifest) {
+        (Some(id), None) => packages::catalog_release(id, &args.version)?,
+        (_, Some(file)) => {
+            ensure!(
+                args.allow_unapproved,
+                "--manifest requires --allow-unapproved"
+            );
+            let release = packages::read_manifest(file)?;
+            if let Some(id) = &args.id {
+                ensure!(release.id == *id, "manifest ID differs from requested ID");
+            }
+            release
+        }
+        (None, None) => bail!("provide a package ID or --manifest <file>"),
+    };
+    if let Some(kind) = kind {
+        ensure!(
+            release.kind == kind,
+            "{} is a {} package, expected {kind}",
+            release.id,
+            release.kind
+        );
+    }
+    let path = packages::install(
+        paths,
+        &release,
+        args.allow_unapproved,
+        args.asset.as_deref(),
+    )?;
+    println!(
+        "installed {} {} at {}",
+        release.id,
+        release.version,
+        path.display()
+    );
+    println!("Add the package to a deployment graph and run isos config apply");
+    Ok(())
+}
+
 fn package_command(paths: &config::Paths, cmd: PackageCommand) -> Result<()> {
     match cmd {
         PackageCommand::Search { query } => println!(
@@ -339,36 +392,7 @@ fn package_command(paths: &config::Paths, cmd: PackageCommand) -> Result<()> {
             "{}",
             serde_json::to_string_pretty(&packages::catalog_release(&id, &version)?)?
         ),
-        PackageCommand::Install(args) => {
-            let release = match (&args.id, &args.manifest) {
-                (Some(id), None) => packages::catalog_release(id, &args.version)?,
-                (_, Some(file)) => {
-                    ensure!(
-                        args.allow_unapproved,
-                        "--manifest requires --allow-unapproved"
-                    );
-                    let release = packages::read_manifest(file)?;
-                    if let Some(id) = &args.id {
-                        ensure!(release.id == *id, "manifest ID differs from requested ID");
-                    }
-                    release
-                }
-                (None, None) => bail!("provide a package ID or --manifest <file>"),
-            };
-            let path = packages::install(
-                paths,
-                &release,
-                args.allow_unapproved,
-                args.asset.as_deref(),
-            )?;
-            println!(
-                "installed {} {} at {}",
-                release.id,
-                release.version,
-                path.display()
-            );
-            println!("Add the package to a deployment graph and run isos config apply");
-        }
+        PackageCommand::Install(args) => install_package(paths, args, None)?,
         PackageCommand::Link { id, version, path } => {
             let installed = packages::link(paths, &id, &version, &path)?;
             println!("linked {} {} at {}", id, version, installed.display());
@@ -411,7 +435,30 @@ fn package_command(paths: &config::Paths, cmd: PackageCommand) -> Result<()> {
     Ok(())
 }
 
-fn library(paths: &config::Paths, name: &str, kind: &str, json_output: bool) -> Result<()> {
+fn library(paths: &config::Paths, name: &str, kind: &str, command: LibraryCommand) -> Result<()> {
+    let expected_kind = match kind {
+        "skills" => "skill",
+        "services" => "service",
+        "backends" => "backend",
+        _ => unreachable!(),
+    };
+    match command {
+        LibraryCommand::Install(args) => return install_package(paths, args, Some(expected_kind)),
+        LibraryCommand::Remove { id, version } => {
+            let path = packages::package_path(paths, &id, &version)?;
+            let release = packages::read_manifest(&path.join("release.json"))?;
+            ensure!(
+                release.kind == expected_kind,
+                "{} is a {} package, expected {expected_kind}",
+                id,
+                release.kind
+            );
+            packages::remove(paths, &id, &version)?;
+            println!("removed {id} {version}");
+            return Ok(());
+        }
+        _ => {}
+    }
     let graph = config::load_selected(paths, name)?;
     let nodes: Vec<_> = graph
         .nodes
@@ -425,18 +472,47 @@ fn library(paths: &config::Paths, name: &str, kind: &str, json_output: bool) -> 
             )
         })
         .collect();
-    if json_output {
-        println!("{}", serde_json::to_string_pretty(&nodes)?);
-    } else if nodes.is_empty() {
-        println!("no {kind} in deployment {name}");
-    } else {
-        for node in nodes {
-            println!(
-                "{:<20} {}",
-                node.id,
-                if node.enabled { "enabled" } else { "disabled" }
-            );
+    match command {
+        LibraryCommand::List { json } => {
+            if json {
+                println!("{}", serde_json::to_string_pretty(&nodes)?);
+            } else if nodes.is_empty() {
+                println!("no {kind} in deployment {name}");
+            } else {
+                for node in nodes {
+                    println!(
+                        "{:<20} {}",
+                        node.id,
+                        if node.enabled { "enabled" } else { "disabled" }
+                    );
+                }
+            }
         }
+        LibraryCommand::Info { node } => {
+            let selected = nodes.into_iter().find(|n| n.id == node).ok_or_else(|| {
+                anyhow::anyhow!("{node} is not a {expected_kind} node in deployment {name}")
+            })?;
+            println!("{}", serde_json::to_string_pretty(selected)?);
+        }
+        LibraryCommand::Status { node, json } => {
+            ensure!(
+                nodes.iter().any(|n| n.id == node),
+                "{node} is not a {expected_kind} node in deployment {name}"
+            );
+            let status = lifecycle::status(paths, name, None)?;
+            let running = status.nodes.iter().any(|n| n.id == node && n.running);
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &json!({"schema_version":1,"id":node,"running":running})
+                    )?
+                );
+            } else {
+                println!("{node}: {}", if running { "running" } else { "stopped" });
+            }
+        }
+        LibraryCommand::Install(_) | LibraryCommand::Remove { .. } => unreachable!(),
     }
     Ok(())
 }
@@ -599,15 +675,9 @@ fn main_run() -> Result<()> {
         CommandLine::Egia { command } => component(&paths, &name, "egia", command)?,
         CommandLine::Config { command } => config_command(&paths, &name, command)?,
         CommandLine::Packages { command } => package_command(&paths, command)?,
-        CommandLine::Skills {
-            command: LibraryCommand::List { json },
-        } => library(&paths, &name, "skills", json)?,
-        CommandLine::Services {
-            command: LibraryCommand::List { json },
-        } => library(&paths, &name, "services", json)?,
-        CommandLine::Backends {
-            command: LibraryCommand::List { json },
-        } => library(&paths, &name, "backends", json)?,
+        CommandLine::Skills { command } => library(&paths, &name, "skills", command)?,
+        CommandLine::Services { command } => library(&paths, &name, "services", command)?,
+        CommandLine::Backends { command } => library(&paths, &name, "backends", command)?,
         CommandLine::Daemon => daemon(&paths)?,
         CommandLine::Ui { port, allow_origin } => http::serve(paths, port, allow_origin)?,
     }
