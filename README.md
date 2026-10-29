@@ -2,14 +2,17 @@
 
 IsOS is the local manager for Island EOS and EGIA. It keeps the package library, deployment configuration, and process lifecycle in one place. EOS and EGIA remain independent runtimes: you can start EOS alone, attach its CLI, or start a configured EOS and EGIA stack.
 
-This repository is an early, working manager core. Its command line, graph validator, release validator, package store, systemd lifecycle, owner-only Unix socket API, and paired loopback WebUI bridge are implemented. `isos ui` serves a compact local manager page; the larger hosted experience lives in Island-web. Automatic migration from old TOML files is future work.
+This repository is an early, working manager core. Its command line, graph validator, release validator, package store, systemd lifecycle, and owner-only Unix socket API are implemented. IsOS manages EOS and EGIA components alongside external service and backend packages. Automatic migration from old TOML files is future work.
 
 ## Install
 
-Linux with a user systemd session and Rust 1.98 or newer:
+Linux with a user systemd session and Rust 1.98 or newer. For local core checkouts, copy `.example.env` to `.env` and set the EOS and EGIA repository paths. The checkout wrappers load `.env`; Git ignores it.
 
-    cargo install --path .
+    ./build.sh
+    ./install.sh
     isos doctor
+
+Before installing the CLI, run commands from this checkout with `./bin/isos <command>` or `./isos.sh <command>`.
 
 The first platform is Linux. The default paths follow XDG:
 
@@ -27,7 +30,7 @@ For isolated testing, set ISOS_HOME to an absolute directory; it then contains c
     isos config init
     isos config show
 
-The starter graph has disabled EOS, north HTTP sidecar, and EGIA nodes. Edit their launch.command arrays to point at installed releases or development checkouts, set the EOS settings.eos_config and settings.north_http_url, then set enabled to true. For EGIA, add its launch arguments and ensure its contract matches EOS. The dependency edges are already present.
+The starter graph has disabled EOS, north HTTP sidecar, and EGIA nodes. Edit their launch.command arrays to point at installed releases or development checkouts, set the EOS settings.eos_config and settings.north_http_url, then set enabled to true. For a development checkout, use `${EOS_REPO_PATH}` and `${EGIA_REPO_PATH}` in matching component launch arguments; IsOS expands these from `.env` when it starts the component. For EGIA, add its launch arguments and ensure its contract matches EOS. The dependency edges are already present.
 
     isos config validate ~/.config/isos/deployments/default.json
     isos config apply ~/.config/isos/deployments/default.json
@@ -52,9 +55,6 @@ Inside the EOS CLI, leave, quit, and exit leave the client. shutdown stops EOS, 
     isos logs <node>
     isos doctor
     isos daemon
-    isos ui
-
-Run `isos ui`, open the local link it prints, and use the page for EOS/EGIA lifecycle, installed packages, approved catalog search, and graph editing. The link's one-time token is removed from the browser address bar after loading. See the [local UI guide](docs/isos/usage/local-ui.md).
 
 isos services is the model service library; isos backends is the hardware and simulator library. The three library commands inspect graph nodes and manage releases of their matching package kind. Install and remove use the same verified package store as isos packages. EOS and EGIA are components. EOS's Inner Skills Community (ISC) is a separate runtime mechanism for skill communication, and ss is its execution monitor.
 

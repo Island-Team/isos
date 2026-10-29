@@ -114,7 +114,7 @@ pub fn read(paths: &config::Paths) -> Result<Credentials> {
     let path = credentials_path(paths);
     let metadata = fs::metadata(&path).with_context(|| {
         format!(
-            "not logged in; run `isos login` ({} missing)",
+            "not logged in; run `isos auth login` ({} missing)",
             path.display()
         )
     })?;
@@ -161,7 +161,7 @@ pub fn authorized_post<T: Serialize>(
         return Ok(response);
     }
     credentials = post_refresh(paths, &client, &credentials.refresh_token)
-        .context("Island-port session expired; run `isos login` again")?;
+        .context("Island-port session expired; run `isos auth login` again")?;
     Ok(client
         .post(url)
         .bearer_auth(credentials.access_token)
@@ -208,7 +208,7 @@ pub fn login(paths: &config::Paths) -> Result<()> {
     let mut interval = Duration::from_secs(device.interval.unwrap_or(5).clamp(1, 30));
     let github_token = loop {
         if started.elapsed() >= Duration::from_secs(device.expires_in) {
-            anyhow::bail!("GitHub device code expired; run `isos login` again");
+            anyhow::bail!("GitHub device code expired; run `isos auth login` again");
         }
         thread::sleep(interval);
         let response = client
@@ -232,7 +232,7 @@ pub fn login(paths: &config::Paths) -> Result<()> {
             }
             Some("access_denied") => anyhow::bail!("GitHub authorization was denied"),
             Some("expired_token") => {
-                anyhow::bail!("GitHub device code expired; run `isos login` again")
+                anyhow::bail!("GitHub device code expired; run `isos auth login` again")
             }
             Some(code) => anyhow::bail!("GitHub device authorization failed: {code}"),
             None => anyhow::bail!("GitHub returned neither an access token nor an error"),

@@ -2,7 +2,7 @@
 
 [中文](../../../docs_cn/isos/interfaces/deployment-graph_cn.md)
 
-IsOS stores one authoritative, formatted JSON graph per deployment at ~/.config/isos/deployments/<name>.json. schema_version is currently 1. The graph is also the editing contract for the future WebUI; layout is optional UI-only data and never changes process behavior.
+IsOS stores one authoritative, formatted JSON graph per deployment at ~/.config/isos/deployments/<name>.json. schema_version is currently 1. The graph is the deployment configuration contract; optional layout data never changes process behavior.
 
 The fastest path is:
 

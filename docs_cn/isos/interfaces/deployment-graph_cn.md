@@ -1,6 +1,6 @@
 # 部署图契约
 
-IsOS 在 ~/.config/isos/deployments/<name>.json 保存唯一的、格式化的版本化部署图。命令行和后续 WebUI 使用同一契约；layout 只保存界面布局，不影响运行。
+IsOS 在 ~/.config/isos/deployments/<name>.json 保存唯一的、格式化的版本化部署图。命令行和本地管理接口使用同一契约；可选的 layout 字段不影响运行。
 
 [English](../../../docs/isos/interfaces/deployment-graph.md)
 

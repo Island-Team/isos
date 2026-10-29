@@ -1,4 +1,4 @@
-//! The versioned deployment graph shared by the CLI and the future WebUI.
+//! The versioned deployment graph shared by IsOS tools and local clients.
 
 use anyhow::{Result, bail, ensure};
 use serde::{Deserialize, Serialize};

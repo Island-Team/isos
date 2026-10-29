@@ -134,8 +134,31 @@ fn start_unit(name: &str, node: &Node) -> Result<()> {
     for (key, value) in &launch.env {
         args.push(format!("--setenv={key}={value}"));
     }
+    let repo_path_key = match node.role.as_deref() {
+        Some("eos") => Some("EOS_REPO_PATH"),
+        Some("egia") => Some("EGIA_REPO_PATH"),
+        _ => None,
+    };
+    if let Some(key) = repo_path_key
+        && let Ok(value) = std::env::var(key)
+    {
+        args.push(format!("--setenv={key}={value}"));
+    }
     args.push("--".into());
-    args.extend(launch.command.iter().cloned());
+    for value in &launch.command {
+        let mut value = value.clone();
+        if let Some(key) = repo_path_key {
+            for token in [format!("${{{key}}}"), format!("${key}")] {
+                if value.contains(&token) {
+                    let root = std::env::var(key).with_context(|| {
+                        format!("{key} is required by {} launch.command", node.id)
+                    })?;
+                    value = value.replace(&token, &root);
+                }
+            }
+        }
+        args.push(value);
+    }
     run(
         &std::env::var("ISOS_SYSTEMD_RUN").unwrap_or_else(|_| "systemd-run".into()),
         &args,

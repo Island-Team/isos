@@ -1,12 +1,13 @@
 # 启动 IsOS 部署
 
-IsOS 使用 JSON 部署图选择软件包并启动 EOS、EGIA 和它们的依赖。Linux 首版需要 Rust 1.98 或更新版本，以及 systemd 用户会话：
+IsOS 使用 JSON 部署图选择软件包并启动 EOS、EGIA 和它们的依赖。Linux 首版需要 Rust 1.98 或更新版本，以及 systemd 用户会话。可用 `./build.sh` 编译、`./install.sh` 安装；未安装时可运行 `./bin/isos`。`./isos.sh` 优先使用已安装 CLI，否则调用仓库内构建：
 
-    cargo install --path .
+    ./build.sh
+    ./install.sh
     isos doctor
     isos config init
 
-初始文件位于 ~/.config/isos/deployments/default.json。填写 EOS、north HTTP 附属服务与 EGIA 的 launch.command、EOS 的 north_http_url，然后启用节点。字段见 [部署图契约](../interfaces/deployment-graph_cn.md)。Python 组件默认使用 Python 3.12；可以在 launch.command 中选择 Conda、uv 或明确的解释器路径，IsOS 不固定系统 Python。模型服务可使用 /home/user/.conda/envs/model-py312/bin/python，或 uv run --python 3.12 --project /path/to/service python 作为命令开头；启动前先准备好环境。
+本地源码开发时，将 `.example.env` 复制为 `.env`，设置 `EOS_REPO_PATH` 与 `EGIA_REPO_PATH`；在对应组件的 launch.command 参数中使用 `${EOS_REPO_PATH}` 或 `${EGIA_REPO_PATH}`，IsOS 启动时会展开路径。安装 CLI 前可用 `./bin/isos <命令>` 或 `./isos.sh <命令>` 运行仓库版本。初始文件位于 ~/.config/isos/deployments/default.json。填写 EOS、north HTTP 附属服务与 EGIA 的 launch.command、EOS 的 north_http_url，然后启用节点。字段见 [部署图契约](../interfaces/deployment-graph_cn.md)。Python 组件默认使用 Python 3.12；可以在 launch.command 中选择 Conda、uv 或明确的解释器路径，IsOS 不固定系统 Python。模型服务可使用 /home/user/.conda/envs/model-py312/bin/python，或 uv run --python 3.12 --project /path/to/service python 作为命令开头；启动前先准备好环境。
 
     isos config validate ~/.config/isos/deployments/default.json
     isos config apply ~/.config/isos/deployments/default.json

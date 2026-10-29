@@ -1,7 +1,6 @@
 mod auth;
 mod config;
 mod graph;
-mod http;
 mod lifecycle;
 mod packages;
 mod release;
@@ -28,7 +27,8 @@ use std::{
 #[command(
     name = "isos",
     version,
-    about = "Manage Island EOS and EGIA as one local deployment"
+    about = "Manage Island EOS and EGIA as one local deployment",
+    after_help = "FIRST USE\n  1. Run `isos doctor` to check Linux and the user systemd session. Before installation, use `./bin/isos`.\n  2. Run `isos config init`, then edit the deployment JSON under ~/.config/isos/deployments/.\n  3. Run `isos config validate <file>` and `isos config apply <file>`.\n  4. Start with `isos start`; inspect with `isos status` and `isos logs <node>`.\n\nACCOUNT\n  Sign in:  isos auth login\n  Check:    isos auth whoami\n  Sign out: isos auth logout\n  Island-port credentials are saved to auth.json under the IsOS config directory\n  with mode 0600. Logout revokes the refresh session and deletes the local file.\n  Sign-in is needed for protected catalog operations such as publishing.\n\nMORE\n  Run `isos <command> --help` for command details. Read the IsOS quick start\n  and authentication guide in the project documentation."
 )]
 struct Cli {
     #[arg(
@@ -44,63 +44,77 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum CommandLine {
-    /// Sign in to Island-port with the IslandOS GitHub OAuth app.
-    Login,
-    /// Revoke the saved Island-port session.
-    Logout,
-    /// Show the signed-in Island-port account and role.
-    Whoami,
+    /// Manage the local Island-port account session.
+    Auth {
+        #[command(subcommand)]
+        command: AuthCommand,
+    },
+    /// Start every enabled deployment node in dependency order.
     Start,
+    /// Stop the active deployment and its IsOS-owned processes.
     Stop,
+    /// Stop and start the active deployment using its saved graph.
     Restart,
+    /// Show deployment and per-node process status; optionally emit JSON.
     Status {
         #[arg(long)]
         json: bool,
     },
+    /// Read recent user-systemd logs for a deployment node.
     Logs {
         node: String,
         #[arg(long, default_value_t = 100)]
         lines: u32,
     },
+    /// Check local configuration, graph validity, and systemd prerequisites.
     Doctor,
+    /// Start, attach to, or stop the EOS component and its dependencies.
     Eos {
         #[command(subcommand)]
         command: ComponentCommand,
     },
+    /// Start or stop the EGIA component managed by this deployment.
     Egia {
         #[command(subcommand)]
         command: ComponentCommand,
     },
+    /// Initialize, inspect, validate, or apply a deployment graph.
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+    /// Search, install, verify, link, or remove versioned packages.
     Packages {
         #[command(subcommand)]
         command: PackageCommand,
     },
+    /// Inspect skill nodes and manage installed skill packages.
     Skills {
         #[command(subcommand)]
         command: LibraryCommand,
     },
+    /// Inspect service nodes and manage installed service packages.
     Services {
         #[command(subcommand)]
         command: LibraryCommand,
     },
+    /// Inspect backend nodes and manage hardware or simulator packages.
     Backends {
         #[command(subcommand)]
         command: LibraryCommand,
     },
     /// Serve the owner-only manager API on a Unix socket.
     Daemon,
-    /// Connect the hosted IsOS WebUI to this local manager.
-    Ui {
-        #[arg(long, default_value_t = 17600)]
-        port: u16,
-        /// Exact additional origin, for a local WebUI development server.
-        #[arg(long)]
-        allow_origin: Option<String>,
-    },
+}
+
+#[derive(Subcommand)]
+enum AuthCommand {
+    /// Sign in with the IslandOS GitHub OAuth app.
+    Login,
+    /// Revoke and remove the locally saved Island-port session.
+    Logout,
+    /// Show the signed-in Island-port account and role.
+    Whoami,
 }
 
 #[derive(Subcommand)]
@@ -642,9 +656,11 @@ fn main_run() -> Result<()> {
     let paths = config::Paths::discover()?;
     let name = cli.deployment;
     match cli.command {
-        CommandLine::Login => auth::login(&paths)?,
-        CommandLine::Logout => auth::logout(&paths)?,
-        CommandLine::Whoami => auth::status(&paths)?,
+        CommandLine::Auth { command } => match command {
+            AuthCommand::Login => auth::login(&paths)?,
+            AuthCommand::Logout => auth::logout(&paths)?,
+            AuthCommand::Whoami => auth::status(&paths)?,
+        },
         CommandLine::Start => {
             lifecycle::ensure_config_exists(&paths.graph(&name))?;
             for id in lifecycle::start(&paths, &name, None)? {
@@ -696,7 +712,6 @@ fn main_run() -> Result<()> {
         CommandLine::Services { command } => library(&paths, &name, "services", command)?,
         CommandLine::Backends { command } => library(&paths, &name, "backends", command)?,
         CommandLine::Daemon => daemon(&paths)?,
-        CommandLine::Ui { port, allow_origin } => http::serve(paths, port, allow_origin)?,
     }
     Ok(())
 }
