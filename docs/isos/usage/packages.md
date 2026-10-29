@@ -1,6 +1,6 @@
 # Work with packages
 
-IsOS discovers approved packages through os-island.com and downloads matching assets from GitHub Releases. Installation verifies the selected platform, byte size, and SHA-256. It does not activate a package; select its exact ID and version in the [deployment graph](../interfaces/deployment-graph.md).
+IsOS discovers approved packages through os-island.com and downloads matching assets from GitHub Releases. Installation verifies the selected platform, byte size, and SHA-256. It does not activate a package; select its exact ID and version in the [deployment graph](../interfaces/deployment-graph.md). Omit the search term to list the latest approved releases.
 
     isos packages search mujoco
     isos packages info island/mujoco-sim --version 1.0.1
