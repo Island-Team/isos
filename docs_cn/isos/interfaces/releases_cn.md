@@ -15,7 +15,7 @@ IsOS 默认从 os-island.com 获取已批准的发行元数据，从 GitHub Rele
       "contracts": ["eos.simulator.v1"],
       "assets": [{
         "os": "linux", "arch": "x86_64", "libc": "glibc>=2.35",
-        "url": "https://github.com/Island-Team/Aether-EOS-mujoco-sim/releases/download/v1.0.1/asset.tar.gz",
+        "url": "https://github.com/Island-Team/isos-mujoco-sim/releases/download/v1.0.1/asset.tar.gz",
         "size_bytes": 123456,
         "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
       }]
