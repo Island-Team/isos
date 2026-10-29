@@ -59,6 +59,12 @@ pub struct Asset {
     pub required_libraries: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tested_ubuntu: Vec<String>,
+    // Compatibility metadata projected by Island-port's catalog response.
+    // `glibc_min` is used only when the canonical schema v4 `libc` is absent.
+    #[serde(default, skip_serializing)]
+    pub glibc_min: String,
+    #[serde(default, skip_serializing, rename = "eos_contract")]
+    _eos_contract: String,
     pub url: String,
     pub size_bytes: u64,
     pub sha256: String,
@@ -175,6 +181,10 @@ impl Release {
                 );
             }
             ensure!(
+                a.glibc_min.is_empty() || numeric_version(&a.glibc_min).is_some(),
+                "asset glibc_min must use major.minor"
+            );
+            ensure!(
                 a.required_libraries
                     .iter()
                     .all(|name| !name.is_empty() && !name.contains('/')),
@@ -193,11 +203,16 @@ impl Release {
                     && a.arch == host.arch
                     && a.gpu.as_ref().is_none_or(|v| host.gpu.as_ref() == Some(v))
                     && a.ros.as_ref().is_none_or(|v| host.ros.as_ref() == Some(v))
-                    && a.libc.as_ref().is_none_or(|v| {
-                        let need = v.strip_prefix("glibc>=").and_then(numeric_version);
+                    && {
+                        let need = a
+                            .libc
+                            .as_deref()
+                            .and_then(|v| v.strip_prefix("glibc>="))
+                            .and_then(numeric_version)
+                            .or_else(|| numeric_version(&a.glibc_min));
                         let have = host.libc.as_deref().and_then(numeric_version);
-                        matches!((need,have), (Some(n),Some(h)) if h >= n)
-                    })
+                        need.is_none_or(|n| matches!(have, Some(h) if h >= n))
+                    }
             })
             .ok_or_else(|| {
                 anyhow::anyhow!(
@@ -278,7 +293,7 @@ mod tests {
     #[test]
     fn accepts_catalog_activation_compatibility_fields() {
         let release: Release = serde_json::from_str(&format!(
-            r#"{{"schema_version":4,"id":"island/mujoco-sim","kind":"backend","version":"1.0.1","source_commit":"{}","activation":{{"files":[{{"source":"config/module.toml","destination":"module.toml"}}],"backend_template":"","entrypoint":"","eos_template":"","scene":"","simulator_template":""}},"assets":[{{"os":"linux","arch":"x86_64","url":"https://github.com/Island-Team/isos-mujoco-sim/releases/download/v1.0.1/sim.tar.gz","size_bytes":10,"sha256":"{}"}}]}}"#,
+            r#"{{"schema_version":4,"id":"island/mujoco-sim","kind":"backend","version":"1.0.1","source_commit":"{}","activation":{{"files":[{{"source":"config/module.toml","destination":"module.toml"}}],"backend_template":"","entrypoint":"","eos_template":"","scene":"","simulator_template":""}},"assets":[{{"os":"linux","arch":"x86_64","glibc_min":"2.35","eos_contract":"","url":"https://github.com/Island-Team/isos-mujoco-sim/releases/download/v1.0.1/sim.tar.gz","size_bytes":10,"sha256":"{}"}}]}}"#,
             "a".repeat(40),
             "b".repeat(64)
         ))
@@ -286,6 +301,28 @@ mod tests {
 
         release.validate().unwrap();
         assert_eq!(release.activation.as_ref().unwrap().files.len(), 1);
+        assert!(
+            release
+                .select_asset(&Platform {
+                    os: "linux".into(),
+                    arch: "x86_64".into(),
+                    libc: Some("2.39".into()),
+                    gpu: None,
+                    ros: None,
+                })
+                .is_ok()
+        );
+        assert!(
+            release
+                .select_asset(&Platform {
+                    os: "linux".into(),
+                    arch: "x86_64".into(),
+                    libc: Some("2.31".into()),
+                    gpu: None,
+                    ros: None,
+                })
+                .is_err()
+        );
         let encoded = serde_json::to_value(release).unwrap();
         let activation = encoded["activation"].as_object().unwrap();
         assert_eq!(activation.len(), 1);
