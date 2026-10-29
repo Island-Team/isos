@@ -1,9 +1,12 @@
 mod auth;
+mod component;
 mod config;
 mod graph;
+mod http;
 mod lifecycle;
 mod packages;
 mod release;
+mod versions;
 
 use anyhow::{Result, bail, ensure};
 use clap::{Args, Parser, Subcommand};
@@ -44,6 +47,25 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum CommandLine {
+    /// Build EOS, EGIA, or both from configured source checkouts.
+    Build {
+        target: String,
+        #[arg(long)]
+        install_deps: bool,
+    },
+    /// Check or select exact component builds.
+    Version {
+        #[command(subcommand)]
+        command: VersionCommand,
+    },
+    /// Initialize the deployment and start the local configuration service.
+    Init,
+    /// Open the local configuration page.
+    Open,
+    /// Run the deployment graph.
+    Run,
+    /// Serve the local configuration UI, API, and owner-only control socket.
+    Serve,
     /// Manage the local Island-port account session.
     Auth {
         #[command(subcommand)]
@@ -84,6 +106,7 @@ enum CommandLine {
         command: ConfigCommand,
     },
     /// Search, install, verify, link, or remove versioned packages.
+    #[command(name = "pkg", alias = "packages")]
     Packages {
         #[command(subcommand)]
         command: PackageCommand,
@@ -118,6 +141,12 @@ enum AuthCommand {
 }
 
 #[derive(Subcommand)]
+enum VersionCommand {
+    Check,
+    Pin { component: String, version: String },
+}
+
+#[derive(Subcommand)]
 enum ComponentCommand {
     Start,
     Stop,
@@ -142,11 +171,18 @@ enum ConfigCommand {
     Apply {
         file: PathBuf,
     },
+    /// Back up a v1 graph and convert its EOS and EGIA nodes to v2 profiles.
+    Migrate,
     Show,
 }
 
 #[derive(Subcommand)]
 enum PackageCommand {
+    /// Upload an asset and manifest to a draft GitHub Release, then submit for review.
+    Upload {
+        manifest: PathBuf,
+        asset: PathBuf,
+    },
     Search {
         #[arg(default_value = "")]
         query: String,
@@ -305,15 +341,21 @@ fn component(paths: &config::Paths, name: &str, role: &str, cmd: ComponentComman
     Ok(())
 }
 
-fn example(name: &str) -> Deployment {
-    serde_json::from_value(json!({"schema_version":1,"name":name,
+fn example(name: &str, paths: &config::Paths) -> Deployment {
+    serde_json::from_value(json!({"schema_version":2,"name":name,
       "nodes":[
-        {"id":"eos","kind":"component","role":"eos","enabled":false,"contract":"island.eos.v1",
-         "settings":{"north_http_url":"http://127.0.0.1:16005","eos_config":"/path/to/eos.toml"}},
+        {"id":"eos","kind":"component","role":"eos","enabled":false,
+         "profile":{"id":"eos.native","version":"1.0.0"},
+         "settings":{"north_http_url":"http://127.0.0.1:16201"}},
+        {"id":"eos-uds","kind":"endpoint","enabled":false,"owned":false,
+         "profile":{"id":"eos.uds","version":"1.0.0"},
+         "settings":{"socket_path":paths.runtime.join(format!("{name}-eos.sock"))}},
         {"id":"eos-north-http","kind":"service","enabled":false,
          "settings":{"sidecar_of":"eos"}},
-        {"id":"egia","kind":"component","role":"egia","enabled":false,"contract":"island.eos.v1"}
-      ],"edges":[{"from":"egia","to":"eos","kind":"depends_on"},
+        {"id":"egia","kind":"component","role":"egia","enabled":false,
+         "profile":{"id":"egia.agent","version":"1.0.0"}}
+      ],"edges":[{"from":"egia","to":"eos-uds","kind":"depends_on","input":"eos","output":"grpc"},
+                 {"from":"eos-uds","to":"eos","kind":"depends_on"},
                  {"from":"eos-north-http","to":"eos","kind":"depends_on"}]}))
     .unwrap()
 }
@@ -323,7 +365,7 @@ fn config_command(paths: &config::Paths, name: &str, cmd: ConfigCommand) -> Resu
         ConfigCommand::Init { output } => {
             let path = output.unwrap_or_else(|| paths.graph(name));
             ensure!(!path.exists(), "{} already exists", path.display());
-            let mut bytes = serde_json::to_vec_pretty(&example(name))?;
+            let mut bytes = serde_json::to_vec_pretty(&example(name, paths))?;
             bytes.push(b'\n');
             config::atomic_write(&path, &bytes)?;
             println!("created {}", path.display());
@@ -334,6 +376,7 @@ fn config_command(paths: &config::Paths, name: &str, cmd: ConfigCommand) -> Resu
         }
         ConfigCommand::Validate { file } => {
             let graph = config::load(&file)?;
+            component::validate_profiles(&graph)?;
             println!(
                 "valid deployment {}: {} nodes, {} edges",
                 graph.name,
@@ -357,6 +400,80 @@ fn config_command(paths: &config::Paths, name: &str, cmd: ConfigCommand) -> Resu
                     "running nodes still use their active snapshot; run isos restart to use the new graph"
                 );
             }
+        }
+        ConfigCommand::Migrate => {
+            let path = paths.graph(name);
+            let bytes = fs::read(&path)?;
+            let mut graph: Deployment = serde_json::from_slice(&bytes)?;
+            ensure!(graph.schema_version == 1, "graph is already v2");
+            graph.validate()?;
+            for node in &mut graph.nodes {
+                if let Some(role) = node.role.as_deref() {
+                    node.profile = Some(graph::ProfileRef {
+                        id: if role == "eos" {
+                            "eos.native"
+                        } else {
+                            "egia.agent"
+                        }
+                        .into(),
+                        version: "1.0.0".into(),
+                    });
+                }
+            }
+            if let (Some(eos), Some(egia)) = (
+                graph
+                    .nodes
+                    .iter()
+                    .find(|n| n.role.as_deref() == Some("eos")),
+                graph
+                    .nodes
+                    .iter()
+                    .find(|n| n.role.as_deref() == Some("egia")),
+            ) {
+                let eos_id = eos.id.clone();
+                let egia_id = egia.id.clone();
+                let uds_id = "eos-uds".to_owned();
+                ensure!(
+                    !graph.nodes.iter().any(|n| n.id == uds_id),
+                    "cannot map existing eos-uds node"
+                );
+                let mut endpoint: graph::Node = serde_json::from_value(
+                    json!({"id":uds_id,"kind":"endpoint","enabled":eos.enabled,"owned":false,"profile":{"id":"eos.uds","version":"1.0.0"}}),
+                )?;
+                endpoint.settings.insert(
+                    "socket_path".into(),
+                    json!(paths.runtime.join(format!("{name}-eos.sock"))),
+                );
+                graph.nodes.push(endpoint);
+                graph
+                    .edges
+                    .retain(|e| !(e.from == egia_id && e.to == eos_id));
+                graph.edges.push(graph::Edge {
+                    from: egia_id,
+                    to: uds_id.clone(),
+                    kind: graph::EdgeKind::DependsOn,
+                    input: Some("eos".into()),
+                    output: Some("grpc".into()),
+                });
+                graph.edges.push(graph::Edge {
+                    from: uds_id,
+                    to: eos_id,
+                    kind: graph::EdgeKind::DependsOn,
+                    input: None,
+                    output: None,
+                });
+            }
+            graph.schema_version = 2;
+            graph.validate()?;
+            let backup = path.with_extension(format!(
+                "json.v1.{}.bak",
+                SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()
+            ));
+            config::atomic_write(&backup, &bytes)?;
+            let mut output = serde_json::to_vec_pretty(&graph)?;
+            output.push(b'\n');
+            config::atomic_write(&path, &output)?;
+            println!("migrated {} (backup {})", path.display(), backup.display());
         }
         ConfigCommand::Show => {
             println!(
@@ -411,6 +528,7 @@ fn install_package(paths: &config::Paths, args: InstallArgs, kind: Option<&str>)
 
 fn package_command(paths: &config::Paths, cmd: PackageCommand) -> Result<()> {
     match cmd {
+        PackageCommand::Upload { manifest, asset } => packages::upload(paths, &manifest, &asset)?,
         PackageCommand::Search { query } => println!(
             "{}",
             serde_json::to_string_pretty(&packages::search(&query)?)?
@@ -656,6 +774,104 @@ fn main_run() -> Result<()> {
     let paths = config::Paths::discover()?;
     let name = cli.deployment;
     match cli.command {
+        CommandLine::Build {
+            target,
+            install_deps,
+        } => {
+            ensure!(
+                matches!(target.as_str(), "eos" | "egia" | "all"),
+                "build target must be eos, egia, or all"
+            );
+            for role in if target == "all" {
+                vec!["eos", "egia"]
+            } else {
+                vec![target.as_str()]
+            } {
+                let receipt = versions::build(&paths, role, install_deps && role == "eos")?;
+                println!(
+                    "built {role} {} {} sha256:{}",
+                    receipt.product_version, receipt.source_commit, receipt.sha256
+                );
+            }
+        }
+        CommandLine::Version { command } => match command {
+            VersionCommand::Check => {
+                let graph = config::load_selected(&paths, &name).ok();
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&versions::check(&paths, graph.as_ref())?)?
+                );
+            }
+            VersionCommand::Pin { component, version } => {
+                let receipt = versions::pin(&paths, &component, &version, &name)?;
+                println!(
+                    "pinned {} {} ({})",
+                    component, receipt.product_version, receipt.source_commit
+                );
+            }
+        },
+        CommandLine::Init => {
+            paths.prepare()?;
+            let own_pin=paths.config.join("isos-version");
+            if !own_pin.exists() { config::atomic_write(&own_pin,env!("CARGO_PKG_VERSION").as_bytes())?; }
+            if !paths.graph(&name).exists() {
+                let mut bytes = serde_json::to_vec_pretty(&example(&name, &paths))?;
+                bytes.push(b'\n');
+                config::atomic_write(&paths.graph(&name), &bytes)?;
+                println!("created {}", paths.graph(&name).display());
+            }
+            match config::load_selected(&paths, &name) {
+                Ok(graph) => match component::validate_profiles(&graph) {
+                    Ok(()) => println!("graph and component interfaces valid: {} nodes",graph.nodes.len()),
+                    Err(error) => eprintln!("component interfaces need repair: {error}"),
+                },
+                Err(error) => eprintln!("graph needs repair: {error}"),
+            }
+            if UnixStream::connect(paths.socket()).is_err() {
+                let executable = std::env::current_exe()?;
+                let output = Command::new("systemd-run")
+                    .args([
+                        "--user",
+                        "--collect",
+                        "--unit=isos-server",
+                        "--property=Restart=on-failure",
+                        "--",
+                    ])
+                    .arg(executable)
+                    .arg("--deployment")
+                    .arg(&name)
+                    .arg("serve")
+                    .output()?;
+                ensure!(
+                    output.status.success(),
+                    "start IsOS server: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            println!("{}", http::open_url(&paths)?);
+        }
+        CommandLine::Open => {
+            let url = http::open_url(&paths)?;
+            println!("{url}");
+            let _ = Command::new("xdg-open").arg(url).spawn();
+        }
+        CommandLine::Run => {
+            lifecycle::ensure_config_exists(&paths.graph(&name))?;
+            let graph = config::load_selected(&paths, &name)?;
+            versions::check(&paths, Some(&graph))?;
+            for id in lifecycle::start(&paths, &name, None)? {
+                println!("started {id}");
+            }
+        }
+        CommandLine::Serve => {
+            let api_paths = paths.clone();
+            std::thread::spawn(move || {
+                if let Err(error) = daemon(&api_paths) {
+                    eprintln!("IsOS control socket: {error:#}");
+                }
+            });
+            http::serve(paths, name)?;
+        }
         CommandLine::Auth { command } => match command {
             AuthCommand::Login => auth::login(&paths)?,
             AuthCommand::Logout => auth::logout(&paths)?,
@@ -663,6 +879,8 @@ fn main_run() -> Result<()> {
         },
         CommandLine::Start => {
             lifecycle::ensure_config_exists(&paths.graph(&name))?;
+            let graph = config::load_selected(&paths, &name)?;
+            versions::check(&paths, Some(&graph))?;
             for id in lifecycle::start(&paths, &name, None)? {
                 println!("started {id}");
             }

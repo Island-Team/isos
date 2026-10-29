@@ -359,14 +359,134 @@ pub fn publish(paths: &Paths, manifest_path: &Path) -> Result<()> {
         envelope["error"]["code"].as_str().unwrap_or("HTTP_ERROR")
     );
     let data = &envelope["data"];
-    ensure!(
-        data["status"].as_str() == Some("approved"),
-        "package was submitted but not published (status: {})",
-        data["status"].as_str().unwrap_or("unknown")
-    );
-    println!(
-        "published {} {} to the Island package catalog",
-        release.id, release.version
-    );
+    if data["status"].as_str() == Some("approved") {
+        println!(
+            "published {} {} to the Island package catalog",
+            release.id, release.version
+        );
+    } else {
+        println!(
+            "submitted {} {} for Island-port review (status: {})",
+            release.id,
+            release.version,
+            data["status"].as_str().unwrap_or("unknown")
+        );
+    }
     Ok(())
+}
+
+/// Upload without replacing an existing GitHub asset, then submit metadata for review.
+pub fn upload(paths: &Paths, manifest_path: &Path, asset_path: &Path) -> Result<()> {
+    let release = read_manifest(manifest_path)?;
+    let asset_name = asset_path
+        .file_name()
+        .and_then(|v| v.to_str())
+        .ok_or_else(|| anyhow::anyhow!("asset filename must be UTF-8"))?;
+    let selected = release
+        .assets
+        .iter()
+        .find(|a| {
+            a.name.as_deref() == Some(asset_name) || a.url.ends_with(&format!("/{asset_name}"))
+        })
+        .ok_or_else(|| anyhow::anyhow!("asset is not listed in manifest"))?;
+    release::verify_file(selected, asset_path)?;
+    let source = release
+        .source_url
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("manifest source_url is required"))?;
+    let repo = source
+        .strip_prefix("https://github.com/")
+        .unwrap_or("")
+        .trim_end_matches(".git")
+        .trim_end_matches('/');
+    ensure!(
+        repo.split('/').count() == 2 && repo.split('/').all(|s| !s.is_empty()),
+        "source_url must identify one GitHub repository"
+    );
+    let release_url = release
+        .release_url
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("manifest release_url is required"))?;
+    let tag = release_url
+        .rsplit('/')
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("release_url has no tag"))?;
+    ensure!(
+        release_url == format!("https://github.com/{repo}/releases/tag/{tag}"),
+        "release_url must match source repository"
+    );
+    let gh = std::env::var("ISOS_GH").unwrap_or_else(|_| "gh".into());
+    let output = Command::new(&gh)
+        .args([
+            "api",
+            &format!("repos/{repo}/git/ref/tags/{tag}"),
+            "--jq",
+            ".object.sha",
+        ])
+        .output()?;
+    ensure!(
+        output.status.success(),
+        "Git tag {tag} does not exist in {repo}"
+    );
+    let ref_sha = String::from_utf8(output.stdout)?.trim().to_owned();
+    ensure!(
+        ref_sha == release.source_commit,
+        "tag {tag} does not point to source_commit {}",
+        release.source_commit
+    );
+    let release_view = Command::new(&gh)
+        .args([
+            "release",
+            "view",
+            tag,
+            "--repo",
+            repo,
+            "--json",
+            "assets",
+            "--jq",
+            ".assets[].name",
+        ])
+        .output()?;
+    if !release_view.status.success() {
+        let create = Command::new(&gh)
+            .args([
+                "release",
+                "create",
+                tag,
+                "--repo",
+                repo,
+                "--draft",
+                "--verify-tag",
+                "--title",
+                &format!("{} {}", release.id, release.version),
+            ])
+            .status()?;
+        ensure!(create.success(), "cannot create draft GitHub Release");
+    } else {
+        let names = String::from_utf8(release_view.stdout)?;
+        ensure!(
+            !names.lines().any(|n| n == asset_name),
+            "GitHub Release already contains {asset_name}; refusing overwrite"
+        );
+        let manifest_name = manifest_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        ensure!(
+            !names.lines().any(|n| n == manifest_name),
+            "GitHub Release already contains {manifest_name}; refusing overwrite"
+        );
+    }
+    let uploaded = Command::new(&gh)
+        .args(["release", "upload", tag, "--repo", repo])
+        .arg(asset_path)
+        .arg(manifest_path)
+        .status()?;
+    ensure!(uploaded.success(), "GitHub Release upload failed");
+    println!(
+        "uploaded {} and {} to draft release {release_url}",
+        asset_name,
+        manifest_path.display()
+    );
+    publish(paths, manifest_path)
 }

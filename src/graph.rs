@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const GRAPH_VERSION: u32 = 1;
+pub const GRAPH_VERSION: u32 = 2;
 
 fn enabled_by_default() -> bool {
     true
@@ -27,6 +27,7 @@ pub struct Deployment {
 #[serde(rename_all = "snake_case")]
 pub enum NodeKind {
     Component,
+    Endpoint,
     Service,
     Backend,
     Skill,
@@ -35,6 +36,13 @@ pub enum NodeKind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PackageRef {
+    pub id: String,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileRef {
     pub id: String,
     pub version: String,
 }
@@ -69,6 +77,8 @@ pub struct Node {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package: Option<PackageRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<ProfileRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch: Option<Launch>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contract: Option<String>,
@@ -93,6 +103,10 @@ pub struct Edge {
     /// Provider node ID.
     pub to: String,
     pub kind: EdgeKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
 }
 
 fn slug(value: &str) -> bool {
@@ -105,8 +119,8 @@ fn slug(value: &str) -> bool {
 impl Deployment {
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            self.schema_version == GRAPH_VERSION,
-            "unsupported graph schema {}; expected {}",
+            self.schema_version == 1 || self.schema_version == GRAPH_VERSION,
+            "unsupported graph schema {}; expected 1 or {}",
             self.schema_version,
             GRAPH_VERSION
         );
@@ -116,9 +130,21 @@ impl Deployment {
         );
         let mut ids = BTreeSet::new();
         let mut roles = BTreeSet::new();
+        let mut listeners = BTreeSet::new();
+        let mut sockets = BTreeSet::new();
         for node in &self.nodes {
             ensure!(slug(&node.id), "invalid node ID: {}", node.id);
             ensure!(ids.insert(&node.id), "duplicate node ID: {}", node.id);
+            if node.enabled {
+                if let Some(endpoint)=node.launch.as_ref().and_then(|l|l.ready_tcp.as_deref()) {
+                    ensure!(listeners.insert(endpoint.to_owned()),"conflicting listener {endpoint}");
+                }
+                if matches!(node.kind,NodeKind::Endpoint) {
+                    if let Some(path)=node.settings.get("socket_path").and_then(Value::as_str) {
+                        ensure!(sockets.insert(path.to_owned()),"conflicting UDS path {path}");
+                    }
+                }
+            }
             match node.kind {
                 NodeKind::Component => {
                     let role = node.role.as_deref().unwrap_or("");
@@ -128,6 +154,55 @@ impl Deployment {
                         node.id
                     );
                     ensure!(roles.insert(role), "duplicate component role: {role}");
+                    if self.schema_version == GRAPH_VERSION {
+                        let expected = if role == "eos" {
+                            "eos.native"
+                        } else {
+                            "egia.agent"
+                        };
+                        let profile = node.profile.as_ref().ok_or_else(|| {
+                            anyhow::anyhow!("{} requires profile {expected}", node.id)
+                        })?;
+                        ensure!(
+                            profile.id == expected && profile.version == "1.0.0",
+                            "{} has unsupported profile",
+                            node.id
+                        );
+                    }
+                }
+                NodeKind::Endpoint => {
+                    ensure!(
+                        self.schema_version == GRAPH_VERSION,
+                        "endpoint requires graph v2"
+                    );
+                    ensure!(
+                        node.role.is_none() && !node.owned && node.launch.is_none(),
+                        "{}: endpoint cannot own a process",
+                        node.id
+                    );
+                    let profile = node
+                        .profile
+                        .as_ref()
+                        .ok_or_else(|| anyhow::anyhow!("{} requires eos.uds profile", node.id))?;
+                    ensure!(
+                        profile.id == "eos.uds" && profile.version == "1.0.0",
+                        "{} has unsupported endpoint profile",
+                        node.id
+                    );
+                    if node.enabled {
+                        let path = node
+                            .settings
+                            .get("socket_path")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("{} requires settings.socket_path", node.id)
+                            })?;
+                        ensure!(
+                            path.starts_with('/') && !path.contains("..") && path.len() < 100,
+                            "{} has unsafe UDS path",
+                            node.id
+                        );
+                    }
                 }
                 _ => ensure!(node.role.is_none(), "only component nodes may have a role"),
             }
@@ -233,6 +308,27 @@ impl Deployment {
                 edge.to
             );
             ensure!(
+                edge.input.is_some() == edge.output.is_some(),
+                "{} -> {} must name both input and output ports",
+                edge.from,
+                edge.to
+            );
+            if edge.input.is_some() {
+                ensure!(
+                    self.schema_version == GRAPH_VERSION,
+                    "typed edges require graph v2"
+                );
+                ensure!(
+                    from.profile.as_ref().is_some_and(|p| p.id == "egia.agent")
+                        && to.profile.as_ref().is_some_and(|p| p.id == "eos.uds")
+                        && edge.input.as_deref() == Some("eos")
+                        && edge.output.as_deref() == Some("grpc"),
+                    "{} -> {} has incompatible typed ports",
+                    edge.from,
+                    edge.to
+                );
+            }
+            ensure!(
                 !from.enabled || to.enabled,
                 "{} depends on disabled {}",
                 edge.from,
@@ -255,6 +351,26 @@ impl Deployment {
                     "skill_load provider {} must be a skill",
                     edge.to
                 ),
+            }
+        }
+        if self.schema_version == GRAPH_VERSION {
+            for endpoint in self
+                .nodes
+                .iter()
+                .filter(|n| n.enabled && matches!(n.kind, NodeKind::Endpoint))
+            {
+                let parent = self
+                    .nodes
+                    .iter()
+                    .find(|n| n.enabled && n.role.as_deref() == Some("eos"));
+                ensure!(
+                    parent.is_some_and(|eos| self
+                        .edges
+                        .iter()
+                        .any(|edge| edge.from == endpoint.id && edge.to == eos.id)),
+                    "{} must depend on its EOS process",
+                    endpoint.id
+                );
             }
         }
         for node in self.nodes.iter().filter(|node| node.enabled) {
@@ -284,16 +400,27 @@ impl Deployment {
             .iter()
             .find(|n| n.enabled && n.role.as_deref() == Some("egia"));
         if let (Some(eos), Some(egia)) = (eos, egia) {
-            ensure!(
-                eos.contract.is_some() && eos.contract == egia.contract,
-                "EOS and EGIA require the same explicit protocol contract"
-            );
-            ensure!(
-                self.edges
-                    .iter()
-                    .any(|e| e.from == egia.id && e.to == eos.id),
-                "EGIA must depend on EOS"
-            );
+            if self.schema_version == 1 {
+                ensure!(
+                    eos.contract.is_some() && eos.contract == egia.contract,
+                    "EOS and EGIA require the same explicit protocol contract"
+                );
+                ensure!(
+                    self.edges
+                        .iter()
+                        .any(|e| e.from == egia.id && e.to == eos.id),
+                    "EGIA must depend on EOS"
+                );
+            } else {
+                ensure!(
+                    self.edges.iter().any(|e| e.from == egia.id
+                        && e.input.as_deref() == Some("eos")
+                        && e.output.as_deref() == Some("grpc")
+                        && self.nodes.iter().any(|n| n.id == e.to
+                            && n.profile.as_ref().is_some_and(|p| p.id == "eos.uds"))),
+                    "EGIA must connect to EOS UDS grpc port"
+                );
+            }
         }
         self.start_order()?;
         Ok(())
@@ -397,6 +524,8 @@ mod tests {
             from: "eos".into(),
             to: "egia".into(),
             kind: EdgeKind::DependsOn,
+            input: None,
+            output: None,
         });
         assert!(graph.validate().unwrap_err().to_string().contains("cycle"));
     }
@@ -422,6 +551,8 @@ mod tests {
             from: "eos-north-http".into(),
             to: "eos".into(),
             kind: EdgeKind::DependsOn,
+            input: None,
+            output: None,
         });
         graph.validate().unwrap();
         let ids: Vec<_> = graph
@@ -431,5 +562,19 @@ mod tests {
             .map(|node| node.id.as_str())
             .collect();
         assert_eq!(ids, vec!["eos", "eos-north-http"]);
+    }
+    #[test]
+    fn v2_uds_endpoint_orders_eos_before_egia() {
+        let graph:Deployment=serde_json::from_value(serde_json::json!({"schema_version":2,"name":"default","nodes":[
+            {"id":"eos","kind":"component","role":"eos","profile":{"id":"eos.native","version":"1.0.0"},"launch":{"command":["/bin/true"],"ready_tcp":"127.0.0.1:16200"},"settings":{"north_http_url":"http://127.0.0.1:16201"}},
+            {"id":"eos-uds","kind":"endpoint","owned":false,"profile":{"id":"eos.uds","version":"1.0.0"},"settings":{"socket_path":"/tmp/isos/eos.sock"}},
+            {"id":"egia","kind":"component","role":"egia","profile":{"id":"egia.agent","version":"1.0.0"},"launch":{"command":["/bin/true","--managed","--no-tui"],"ready_tcp":"127.0.0.1:16100"}}
+        ],"edges":[{"from":"eos-uds","to":"eos","kind":"depends_on"},{"from":"egia","to":"eos-uds","kind":"depends_on","input":"eos","output":"grpc"}]})).unwrap();
+        graph.validate().unwrap();
+        assert_eq!(graph.start_order().unwrap().iter().map(|n|n.id.as_str()).collect::<Vec<_>>(),vec!["eos","eos-uds","egia"]);
+        let mut broken=graph.clone(); broken.edges[1].output=Some("http".into());
+        assert!(broken.validate().unwrap_err().to_string().contains("incompatible typed ports"));
+        let mut unsafe_path=graph;unsafe_path.nodes[1].settings.insert("socket_path".into(),serde_json::json!("/tmp/../escape"));
+        assert!(unsafe_path.validate().unwrap_err().to_string().contains("unsafe UDS"));
     }
 }

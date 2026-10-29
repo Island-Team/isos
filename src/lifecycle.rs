@@ -4,6 +4,7 @@
 use crate::{
     config::{self, Paths},
     graph::{Deployment, Node},
+    versions,
 };
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -222,6 +223,7 @@ fn check_packages(paths: &Paths, nodes: &[&Node]) -> Result<()> {
 pub fn start(paths: &Paths, name: &str, role: Option<&str>) -> Result<Vec<String>> {
     let _lock = Lock::take(paths)?;
     let selected = config::load_selected(paths, name)?;
+    versions::check(paths,Some(&selected))?;
     let mut active = read_active(paths, name)?.unwrap_or(ActiveState {
         schema_version: 1,
         graph: selected.clone(),
@@ -239,6 +241,26 @@ pub fn start(paths: &Paths, name: &str, role: Option<&str>) -> Result<Vec<String
     check_packages(paths, &closure)?;
     let mut added: Vec<String> = Vec::new();
     for node in closure {
+        if matches!(node.kind, crate::graph::NodeKind::Endpoint) {
+            let path = node
+                .settings
+                .get("socket_path")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("{} requires settings.socket_path", node.id))?;
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                if std::os::unix::net::UnixStream::connect(path).is_ok() {
+                    break;
+                }
+                ensure!(
+                    Instant::now() < deadline,
+                    "{} UDS endpoint did not become ready: {path}",
+                    node.id
+                );
+                thread::sleep(Duration::from_millis(100));
+            }
+            continue;
+        }
         if !node.owned || matches!(node.kind, crate::graph::NodeKind::Skill) {
             continue;
         }
