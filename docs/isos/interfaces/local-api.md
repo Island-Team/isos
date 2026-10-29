@@ -8,7 +8,7 @@ The IsOS manager owns deployment graphs and scoped process state. The CLI calls 
 
 Run isos daemon for the Unix socket at $XDG_RUNTIME_DIR/isos/manager.sock. Its parent directory has mode 0700 and its socket has mode 0600. Each connection sends one JSON request line and receives one JSON response line.
 
-Run isos ui to bind the HTTP bridge to 127.0.0.1:17600. It prints a random 256-bit token that lasts only while that command runs, plus a local page URL with the token in a fragment. The local page removes the fragment immediately and holds the token only in memory. The hosted WebUI asks the operator to paste the token and also holds it in memory. Clients send Authorization: Bearer <token>. Browser requests are allowed from the exact local origin, https://www.os-island.com, or https://os-island.com. A local development origin can be added with isos ui --allow-origin <exact-origin>. The HTTP Host must be 127.0.0.1:17600, using the actual selected port. The bridge does not set cookies or listen on a network interface.
+Run isos ui to bind the HTTP bridge to 127.0.0.1:17600. It prints a random 256-bit token that lasts only while that command runs, plus a local page URL with the token in a fragment. The local page removes the fragment immediately and holds the token only in memory. The hosted WebUI asks the operator to paste the token and also holds it in memory. HTTP clients send Authorization: Bearer <token>; the EGIA WebSocket authenticates with the token as its first message because browser WebSocket APIs do not permit custom authorization headers. Browser requests are allowed from the exact local origin, https://www.os-island.com, or https://os-island.com. A local development origin can be added with isos ui --allow-origin <exact-origin>. The HTTP Host must be 127.0.0.1:17600, using the actual selected port. The bridge does not set cookies or listen on a network interface.
 
 ## Shared wire rules
 
@@ -85,6 +85,18 @@ The paired WebUI stops deployment-owned nodes in reverse dependency order. A com
     {"schema_version":1,"ok":true,"data":{"stopped":["egia","eos"]},"error":null}
 
 An inactive deployment succeeds with an empty stopped array. A user-systemd stop failure returns HTTP 400.
+
+## GET /api/isos/v1/egia/ws
+
+The paired browser uses this loopback WebSocket bridge for the EGIA operator console. The browser first completes the WebSocket upgrade after the existing exact Origin and Host checks, then sends one JSON text frame within 10 seconds:
+
+    {"type":"authenticate","token":"<pairing-token>","deployment":"default","route":"/api/aether/egia/health"}
+
+The bridge checks the pairing token before opening an upstream connection. `deployment` defaults to `default`; its selected, validated graph must contain an enabled EGIA component with `launch.ready_tcp`. IsOS accepts only targets that resolve exclusively to loopback addresses. The browser cannot supply an upstream host, port, URL, or route outside the fixed EGIA route allowlist: health, backend, chat, mission stream/command, review, context, model I/O, prompts, primitives, skills/command/execution, perceptions, world state, detection, ASR, and primitive invocation.
+
+After connecting to the configured EGIA listener, IsOS sends `{"type":"ready","route":"/api/aether/egia/health"}` and then relays text, binary, ping, pong, and close frames in both directions. Before readiness, an error is a JSON frame such as `{"type":"error","error":"pairing token rejected"}` followed by close. A token is sent only in the first frame and remains in browser memory; IsOS opens its EGIA upstream socket without an Origin header, so EGIA's Origin allowlist remains unchanged.
+
+The bridge bounds the first-frame wait to 10 seconds and WebSocket messages/frames to 1 MiB. A client disconnect closes the upstream socket. The IsOS listener remains bound to `127.0.0.1`; browsers may still apply local-network or loopback access policy when a hosted HTTPS page opens this local WebSocket.
 
 ## Unix socket operations
 
