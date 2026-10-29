@@ -12,6 +12,8 @@ Linux with a user systemd session and Rust 1.98 or newer. For local core checkou
     ./install.sh
     isos doctor
 
+The installer places `isos` in Cargo's bin directory. If that directory is not on `PATH` but `~/.local/bin` is, it creates a link there. Otherwise, add the install bin directory (normally `~/.cargo/bin`) to `PATH` and open a new shell.
+
 Before installing the CLI, run commands from this checkout with `./bin/isos <command>` or `./isos.sh <command>`.
 
 The first platform is Linux. The default paths follow XDG:
@@ -61,6 +63,10 @@ The IsOS editor stays available while EOS and EGIA are stopped. Point the checko
     isos logs <node>
     isos doctor
     isos serve
+
+## Tab completion
+
+`./install.sh` installs Bash, Zsh, and Fish completion scripts. It adds a loader to an existing Bash or Zsh startup file (or to your login shell's startup file); Fish finds its script in the standard completions directory. Open a new shell after installation to complete IsOS commands, subcommands, and options with Tab.
 
 isos services is the model service library; isos backends is the hardware and simulator library. The three library commands inspect graph nodes and manage releases of their matching package kind. Install and remove use the same verified package store as isos packages. EOS and EGIA are components. EOS's Inner Skills Community (ISC) is a separate runtime mechanism for skill communication, and ss is its execution monitor.
 

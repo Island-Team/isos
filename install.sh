@@ -28,3 +28,35 @@ fi
 mkdir -p "$DATA_ROOT"
 cp -a "$ROOT/target/isos-ui/." "$DATA_ROOT/"
 echo "Installed IsOS configuration UI at $DATA_ROOT"
+COMPLETION_ROOT="${XDG_DATA_HOME:-${HOME}/.local/share}/isos/completions"
+mkdir -p "$COMPLETION_ROOT" "${XDG_CONFIG_HOME:-${HOME}/.config}/fish/completions"
+"$INSTALL_ROOT/bin/isos" --generate-completion bash > "$COMPLETION_ROOT/isos.bash"
+"$INSTALL_ROOT/bin/isos" --generate-completion zsh > "$COMPLETION_ROOT/isos.zsh"
+"$INSTALL_ROOT/bin/isos" --generate-completion fish > "${XDG_CONFIG_HOME:-${HOME}/.config}/fish/completions/isos.fish"
+if [[ -f "$HOME/.bashrc" || "${SHELL:-}" == */bash ]]; then
+  touch "$HOME/.bashrc"
+  if ! grep -Fq '# IsOS completion' "$HOME/.bashrc"; then
+    printf '\n# IsOS completion\n[[ -f "%s/isos.bash" ]] && source "%s/isos.bash"\n' "$COMPLETION_ROOT" "$COMPLETION_ROOT" >> "$HOME/.bashrc"
+  fi
+fi
+if [[ -f "$HOME/.zshrc" || "${SHELL:-}" == */zsh ]]; then
+  touch "$HOME/.zshrc"
+  if ! grep -Fq '# IsOS completion' "$HOME/.zshrc"; then
+    printf '\n# IsOS completion\nif [[ -f "%s/isos.zsh" ]]; then\n  (( $+functions[compdef] )) || { autoload -Uz compinit && compinit; }\n  source "%s/isos.zsh"\nfi\n' "$COMPLETION_ROOT" "$COMPLETION_ROOT" >> "$HOME/.zshrc"
+  fi
+fi
+echo "Installed IsOS shell completions; open a new shell to enable Tab completion."
+if ! command -v isos >/dev/null 2>&1; then
+  case ":$PATH:" in
+    *":${HOME}/.local/bin:"*)
+      mkdir -p "$HOME/.local/bin"
+      if [[ ! -e "$HOME/.local/bin/isos" && ! -L "$HOME/.local/bin/isos" ]]; then
+        ln -s "$INSTALL_ROOT/bin/isos" "$HOME/.local/bin/isos"
+        echo "Linked IsOS at $HOME/.local/bin/isos"
+      fi
+      ;;
+  esac
+fi
+if ! command -v isos >/dev/null 2>&1; then
+  echo "Add $INSTALL_ROOT/bin to PATH, then open a new shell to run isos." >&2
+fi

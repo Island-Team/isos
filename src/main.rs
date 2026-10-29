@@ -9,7 +9,8 @@ mod release;
 mod versions;
 
 use anyhow::{Result, bail, ensure};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
+use clap_complete::{Shell, generate};
 use graph::{Deployment, NodeKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -34,6 +35,8 @@ use std::{
     after_help = "FIRST USE\n  1. Run `isos init`, then `isos open` to configure the graph.\n  2. Run `isos build eos` and `isos build egia` from configured source paths.\n  3. Run `isos version pin eos <commit>` and `isos version pin egia <commit>`.\n  4. Enable the nodes in the editor, Validate, Apply, then `isos run`.\n\nACCOUNT\n  Sign in:  isos auth login\n  Check:    isos auth whoami\n  Sign out: isos auth logout\n  Login is required for Island-port package submissions.\n\nMORE\n  Run `isos <command> --help` or read the IsOS quick start."
 )]
 struct Cli {
+    #[arg(long = "generate-completion", hide = true)]
+    generate_completion: Option<Shell>,
     #[arg(
         long,
         global = true,
@@ -42,13 +45,14 @@ struct Cli {
     )]
     deployment: String,
     #[command(subcommand)]
-    command: CommandLine,
+    command: Option<CommandLine>,
 }
 
 #[derive(Subcommand)]
 enum CommandLine {
     /// Build EOS, EGIA, or both from configured source checkouts.
     Build {
+        #[arg(value_parser = ["eos", "egia", "all"])]
         target: String,
         #[arg(long)]
         install_deps: bool,
@@ -143,7 +147,11 @@ enum AuthCommand {
 #[derive(Subcommand)]
 enum VersionCommand {
     Check,
-    Pin { component: String, version: String },
+    Pin {
+        #[arg(value_parser = ["eos", "egia"])]
+        component: String,
+        version: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -771,9 +779,16 @@ fn daemon(paths: &config::Paths) -> Result<()> {
 
 fn main_run() -> Result<()> {
     let cli = Cli::parse();
+    if let Some(shell) = cli.generate_completion {
+        generate(shell, &mut Cli::command(), "isos", &mut std::io::stdout());
+        return Ok(());
+    }
     let paths = config::Paths::discover()?;
     let name = cli.deployment;
-    match cli.command {
+    let command = cli
+        .command
+        .ok_or_else(|| anyhow::anyhow!("run isos --help for usage"))?;
+    match command {
         CommandLine::Build {
             target,
             install_deps,
