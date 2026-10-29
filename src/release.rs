@@ -23,6 +23,8 @@ pub struct Release {
     pub release_url: Option<String>,
     #[serde(default)]
     pub contracts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub config_inputs: Vec<ConfigInput>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activation: Option<Activation>,
     pub assets: Vec<Asset>,
@@ -40,6 +42,16 @@ pub struct Activation {
 pub struct ActivationFile {
     pub source: String,
     pub destination: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigInput {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub input_type: String,
+    pub choices: Vec<String>,
+    pub default: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -293,7 +305,7 @@ mod tests {
     #[test]
     fn accepts_catalog_activation_compatibility_fields() {
         let release: Release = serde_json::from_str(&format!(
-            r#"{{"schema_version":4,"id":"island/mujoco-sim","kind":"backend","version":"1.0.1","source_commit":"{}","activation":{{"files":[{{"source":"config/module.toml","destination":"module.toml"}}],"backend_template":"","entrypoint":"","eos_template":"","scene":"","simulator_template":""}},"assets":[{{"os":"linux","arch":"x86_64","glibc_min":"2.35","eos_contract":"","url":"https://github.com/Island-Team/isos-mujoco-sim/releases/download/v1.0.1/sim.tar.gz","size_bytes":10,"sha256":"{}"}}]}}"#,
+            r#"{{"schema_version":4,"id":"island/mujoco-sim","kind":"backend","version":"1.0.1","source_commit":"{}","config_inputs":[],"activation":{{"files":[{{"source":"config/module.toml","destination":"module.toml"}}],"backend_template":"","entrypoint":"","eos_template":"","scene":"","simulator_template":""}},"assets":[{{"os":"linux","arch":"x86_64","glibc_min":"2.35","eos_contract":"","url":"https://github.com/Island-Team/isos-mujoco-sim/releases/download/v1.0.1/sim.tar.gz","size_bytes":10,"sha256":"{}"}}]}}"#,
             "a".repeat(40),
             "b".repeat(64)
         ))
