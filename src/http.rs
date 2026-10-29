@@ -1,31 +1,50 @@
-//! Loopback configuration API and standalone Island-web bundle.
+//! Loopback configuration API and optional pinned IsosUI bundle.
 use crate::{
     component,
     config::{self, Paths},
     graph::Deployment,
-    lifecycle,
+    isosui, lifecycle,
 };
 use anyhow::{Context, Result};
 use axum::{
     Json, Router,
     body::Body,
     extract::{Path as UrlPath, State},
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, HeaderValue, Method, Request, StatusCode, header},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::{fs, net::SocketAddr, os::unix::fs::PermissionsExt, path::PathBuf, sync::Arc};
+use std::{
+    fs,
+    net::SocketAddr,
+    os::unix::fs::PermissionsExt,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::SystemTime,
+};
 
-#[derive(Clone)]
 struct App {
     paths: Paths,
     deployment: String,
     token: String,
-    web: PathBuf,
+    web: Option<PathBuf>,
+    pin_cache: Mutex<PinCache>,
 }
+
+#[derive(Default)]
+struct PinCache {
+    observed: bool,
+    signature: Option<(SystemTime, u64)>,
+    directory: Option<PathBuf>,
+}
+
+const LOCAL_ORIGIN: &str = "http://127.0.0.1:16000";
+const HOSTED_ORIGINS: [&str; 2] = ["https://www.os-island.com", "https://os-island.com"];
+const HOSTED_EDITOR: &str = "https://www.os-island.com/en/isos";
 
 type ApiResult = std::result::Result<Json<Value>, (StatusCode, Json<Value>)>;
 fn err(status: StatusCode, message: impl ToString) -> (StatusCode, Json<Value>) {
@@ -43,18 +62,6 @@ fn authorized(
     state: &App,
     headers: &HeaderMap,
 ) -> std::result::Result<(), (StatusCode, Json<Value>)> {
-    let host = headers
-        .get(header::HOST)
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-    if host != "127.0.0.1:16000" {
-        return Err(err(StatusCode::FORBIDDEN, "invalid Host"));
-    }
-    if let Some(origin) = headers.get(header::ORIGIN)
-        && origin.to_str().ok() != Some("http://127.0.0.1:16000")
-    {
-        return Err(err(StatusCode::FORBIDDEN, "invalid Origin"));
-    }
     let bearer = headers
         .get(header::AUTHORIZATION)
         .and_then(|h| h.to_str().ok());
@@ -62,6 +69,89 @@ fn authorized(
         return Err(err(StatusCode::UNAUTHORIZED, "invalid bearer token"));
     }
     Ok(())
+}
+fn allowed_origin(origin: &str) -> bool {
+    origin == LOCAL_ORIGIN || HOSTED_ORIGINS.contains(&origin)
+}
+
+async fn cors(request: Request<Body>, next: Next) -> Response {
+    let headers = request.headers();
+    let host = headers
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    if host != "127.0.0.1:16000" {
+        return err(StatusCode::FORBIDDEN, "invalid Host").into_response();
+    }
+    let origin = headers
+        .get(header::ORIGIN)
+        .and_then(|h| h.to_str().ok())
+        .map(str::to_owned);
+    if headers.contains_key(header::ORIGIN) && !origin.as_deref().is_some_and(allowed_origin) {
+        return err(StatusCode::FORBIDDEN, "invalid Origin").into_response();
+    }
+    let preflight = request.method() == Method::OPTIONS;
+    if preflight {
+        if origin.is_none() {
+            return err(StatusCode::FORBIDDEN, "preflight requires Origin").into_response();
+        }
+        let method = headers
+            .get(header::ACCESS_CONTROL_REQUEST_METHOD)
+            .and_then(|h| h.to_str().ok());
+        if !matches!(method, Some("GET" | "POST" | "PUT")) {
+            return err(StatusCode::FORBIDDEN, "invalid preflight method").into_response();
+        }
+        if let Some(names) = headers
+            .get(header::ACCESS_CONTROL_REQUEST_HEADERS)
+            .and_then(|h| h.to_str().ok())
+            && names.split(',').any(|name| {
+                !matches!(
+                    name.trim().to_ascii_lowercase().as_str(),
+                    "authorization" | "content-type"
+                )
+            })
+        {
+            return err(StatusCode::FORBIDDEN, "invalid preflight headers").into_response();
+        }
+    }
+    let mut response = if preflight {
+        StatusCode::NO_CONTENT.into_response()
+    } else {
+        next.run(request).await
+    };
+    if let Some(origin) = origin {
+        response.headers_mut().insert(
+            header::ACCESS_CONTROL_ALLOW_ORIGIN,
+            HeaderValue::from_str(&origin).expect("approved Origin is a header value"),
+        );
+        response
+            .headers_mut()
+            .insert(header::VARY, HeaderValue::from_static("Origin"));
+    }
+    if preflight {
+        response.headers_mut().insert(
+            header::ACCESS_CONTROL_ALLOW_METHODS,
+            HeaderValue::from_static("GET, POST, PUT"),
+        );
+        response.headers_mut().insert(
+            header::ACCESS_CONTROL_ALLOW_HEADERS,
+            HeaderValue::from_static("Authorization, Content-Type"),
+        );
+        response.headers_mut().insert(
+            header::ACCESS_CONTROL_MAX_AGE,
+            HeaderValue::from_static("600"),
+        );
+    }
+    response
+}
+
+async fn preflight() -> StatusCode {
+    StatusCode::NO_CONTENT
+}
+
+async fn version(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
+    authorized(&app, &headers)?;
+    ok(json!({"api_schema_version":2,"isos_version":env!("CARGO_PKG_VERSION")}))
 }
 fn revision(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
@@ -206,11 +296,32 @@ async fn component_route(
     ok(value)
 }
 async fn static_file(State(app): State<Arc<App>>, UrlPath(path): UrlPath<String>) -> Response {
+    let web = if let Some(dev) = &app.web {
+        Some(dev.clone())
+    } else {
+        match cached_pin(&app) {
+            Ok(directory) => directory,
+            Err(error) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Pinned IsosUI is invalid: {error}"),
+                )
+                    .into_response();
+            }
+        }
+    };
+    let Some(web) = web else {
+        return (
+            StatusCode::NOT_FOUND,
+            "No IsosUI build is pinned; run isos build isosui and isos version pin isosui <commit>",
+        )
+            .into_response();
+    };
     let relative = path.trim_start_matches('/');
-    let candidate = app.web.join(relative);
+    let candidate = web.join(relative);
     let file =
         if relative.is_empty() || !candidate.is_file() || relative.split('/').any(|p| p == "..") {
-            app.web.join("index.html")
+            web.join("index.html")
         } else {
             candidate
         };
@@ -226,6 +337,24 @@ async fn static_file(State(app): State<Arc<App>>, UrlPath(path): UrlPath<String>
         Err(_) => (StatusCode::NOT_FOUND, "IsOS UI bundle is not installed").into_response(),
     }
 }
+fn cached_pin(app: &App) -> Result<Option<PathBuf>> {
+    let path = app.paths.config.join("pins/isosui.json");
+    let signature = match fs::metadata(path) {
+        Ok(metadata) => Some((metadata.modified()?, metadata.len())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+    let mut cache = app
+        .pin_cache
+        .lock()
+        .map_err(|_| anyhow::anyhow!("IsosUI pin cache poisoned"))?;
+    if !cache.observed || cache.signature != signature {
+        cache.directory = isosui::pinned_dir(&app.paths)?;
+        cache.signature = signature;
+        cache.observed = true;
+    }
+    Ok(cache.directory.clone())
+}
 fn token(paths: &Paths) -> Result<String> {
     let path = paths.runtime.join("ui-token");
     if path.exists() {
@@ -240,33 +369,30 @@ fn token(paths: &Paths) -> Result<String> {
     Ok(value)
 }
 pub fn open_url(paths: &Paths) -> Result<String> {
-    Ok(format!(
-        "http://127.0.0.1:16000/en/isos#token={}",
-        token(paths)?
-    ))
+    let local = std::env::var_os("ISOS_WEB_DIST")
+        .map(PathBuf::from)
+        .is_some_and(|p| p.join("index.html").is_file())
+        || isosui::pinned_dir(paths)?.is_some();
+    let base = if local {
+        "http://127.0.0.1:16000/en/isos"
+    } else {
+        HOSTED_EDITOR
+    };
+    Ok(format!("{base}#token={}", token(paths)?))
 }
 pub fn serve(paths: Paths, deployment: String) -> Result<()> {
     paths.prepare()?;
     let web = std::env::var_os("ISOS_WEB_DIST")
         .map(PathBuf::from)
-        .unwrap_or_else(|| paths.data.join("ui"));
+        .filter(|path| path.join("index.html").is_file());
     let app = Arc::new(App {
         token: token(&paths)?,
         paths,
         deployment,
         web,
+        pin_cache: Mutex::new(PinCache::default()),
     });
-    let router = Router::new()
-        .route("/api/isos/v2/graph", get(graph).put(apply))
-        .route("/api/isos/v2/graph/validate", post(validate))
-        .route("/api/isos/v2/profiles", get(profiles))
-        .route(
-            "/api/isos/v2/config/{role}/{op}",
-            get(component_route).post(component_route),
-        )
-        .route("/", get(static_file_root))
-        .route("/{*path}", get(static_file))
-        .with_state(app);
+    let router = router(app);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -279,6 +405,31 @@ pub fn serve(paths: Paths, deployment: String) -> Result<()> {
         Ok(())
     })
 }
+fn router(app: Arc<App>) -> Router {
+    let api = Router::new()
+        .route("/api/isos/v2/version", get(version).options(preflight))
+        .route(
+            "/api/isos/v2/graph",
+            get(graph).put(apply).options(preflight),
+        )
+        .route(
+            "/api/isos/v2/graph/validate",
+            post(validate).options(preflight),
+        )
+        .route("/api/isos/v2/profiles", get(profiles).options(preflight))
+        .route(
+            "/api/isos/v2/config/{role}/{op}",
+            get(component_route)
+                .post(component_route)
+                .options(preflight),
+        )
+        .route_layer(middleware::from_fn(cors));
+    Router::new()
+        .merge(api)
+        .route("/", get(static_file_root))
+        .route("/{*path}", get(static_file))
+        .with_state(app)
+}
 async fn static_file_root(State(app): State<Arc<App>>) -> Response {
     static_file(State(app), UrlPath(String::new())).await
 }
@@ -286,6 +437,85 @@ async fn static_file_root(State(app): State<Arc<App>>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tower::ServiceExt;
+
+    fn test_router() -> Router {
+        router(Arc::new(App {
+            paths: Paths {
+                config: PathBuf::from("/tmp/isos-test/config"),
+                data: PathBuf::from("/tmp/isos-test/data"),
+                runtime: PathBuf::from("/tmp/isos-test/run"),
+            },
+            deployment: "default".into(),
+            token: "test-secret".into(),
+            web: None,
+            pin_cache: Mutex::new(PinCache::default()),
+        }))
+    }
+
+    #[tokio::test]
+    async fn hosted_origin_preflight_and_bearer_boundary() {
+        let request = Request::builder()
+            .method(Method::OPTIONS)
+            .uri("/api/isos/v2/version")
+            .header(header::HOST, "127.0.0.1:16000")
+            .header(header::ORIGIN, "https://www.os-island.com")
+            .header(header::ACCESS_CONTROL_REQUEST_METHOD, "GET")
+            .header(header::ACCESS_CONTROL_REQUEST_HEADERS, "authorization")
+            .body(Body::empty())
+            .unwrap();
+        let response = test_router().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            response.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN],
+            "https://www.os-island.com"
+        );
+
+        let request = Request::builder()
+            .uri("/api/isos/v2/version")
+            .header(header::HOST, "127.0.0.1:16000")
+            .header(header::ORIGIN, "https://www.os-island.com")
+            .header(header::AUTHORIZATION, "Bearer test-secret")
+            .body(Body::empty())
+            .unwrap();
+        let response = test_router().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN],
+            "https://www.os-island.com"
+        );
+
+        let request = Request::builder()
+            .uri("/api/isos/v2/version")
+            .header(header::HOST, "127.0.0.1:16000")
+            .header(header::ORIGIN, "https://www.os-island.com")
+            .body(Body::empty())
+            .unwrap();
+        let response = test_router().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN],
+            "https://www.os-island.com"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_other_origins_and_hosts() {
+        for (host, origin) in [
+            ("127.0.0.1:16000", "https://evil.example"),
+            ("localhost:16000", "https://www.os-island.com"),
+        ] {
+            let request = Request::builder()
+                .uri("/api/isos/v2/version")
+                .header(header::HOST, host)
+                .header(header::ORIGIN, origin)
+                .header(header::AUTHORIZATION, "Bearer test-secret")
+                .body(Body::empty())
+                .unwrap();
+            let response = test_router().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        }
+    }
     #[test]
     fn diagnostics_point_at_graph_fields() {
         let graph:Deployment=serde_json::from_value(json!({"schema_version":2,"name":"default","nodes":[{"id":"eos-uds","kind":"endpoint","owned":false,"enabled":true,"profile":{"id":"eos.uds","version":"1.0.0"},"settings":{"socket_path":"/tmp/../bad"}}],"edges":[]})).unwrap();

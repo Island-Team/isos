@@ -3,6 +3,7 @@ use crate::{
     component,
     config::{self, Paths},
     graph::Deployment,
+    isosui,
 };
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -376,5 +377,7 @@ pub fn check(paths: &Paths, graph: Option<&Deployment>) -> Result<Value> {
             );
         }
     }
-    Ok(serde_json::json!({"isos":env!("CARGO_PKG_VERSION"),"components":components}))
+    Ok(
+        serde_json::json!({"isos":env!("CARGO_PKG_VERSION"),"components":components,"isosui":isosui::check(paths)?}),
+    )
 }

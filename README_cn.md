@@ -4,7 +4,7 @@ IsOS 是 Island EOS 和 EGIA 的本地部署管理器，负责配置图、软件
 
 ## 安装与入门
 
-需要 Linux、systemd 用户会话、Rust 1.98 或更新版本，以及独立构建的 Island-web IsOS 页面包。本地开发时，将 `.example.env` 复制为 `.env`，配置 EOS 和 EGIA 源码路径。
+需要 Linux、systemd 用户会话和 Rust 1.98 或更新版本。本地开发时，将 `.example.env` 复制为 `.env`，配置 EOS 和 EGIA 源码路径。只有构建可选的本地编辑器时才需要设置 `ISOSUI_REPO_PATH`。
 
     ./build.sh
     ./install.sh
@@ -17,6 +17,8 @@ IsOS 是 Island EOS 和 EGIA 的本地部署管理器，负责配置图、软件
     isos version check
 
 安装程序将 `isos` 放在 Cargo 的 bin 目录。如果该目录不在 `PATH` 中，但 `~/.local/bin` 在 `PATH` 中，安装程序会在那里创建链接。否则，将安装目录的 bin 路径（通常是 `~/.cargo/bin`）加入 `PATH`，然后重新打开 shell。
+
+IsOS 安装包只包含 CLI 和本地 API 服务。未固定本地构建时，`isos open` 打开 `https://www.os-island.com/en/isos` 上的 IsosUI 编辑器。若要离线使用，请安装 Node.js 和 npm，把 `ISOSUI_REPO_PATH` 指向已提交的 [IsosUI](https://github.com/Island-Team/IsosUI) 源码，然后执行 `isos build isosui` 和 `isos version pin isosui <提交>`。IsOS 将校验过的页面存放在 XDG 数据目录，并从 `127.0.0.1:16000` 提供服务。UI 固定版本独立于 EOS/EGIA 部署图。
 
 `init` 创建默认禁用的 v2 配置图，启动 `127.0.0.1:16000` 上的 IsOS 本地服务。`open` 通过临时令牌打开编辑器。页面只编辑配置，使用明确的“校验”和“应用”按钮。选择版本后启用 `eos`、`eos-uds` 和 `egia` 节点。`eos.uds` 是 EOS 进程上的逻辑端点，不是第二个 EOS 服务。IsOS 可在 EOS、EGIA 停止时渲染并编辑配置。EOS 自带演示绑定；其中的动作需要仿真服务才能就绪。
 
