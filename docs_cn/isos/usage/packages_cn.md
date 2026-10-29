@@ -1,6 +1,6 @@
 # 软件包操作
 
-IsOS 从 os-island.com 查询已批准的软件包，默认从 GitHub Releases 下载匹配平台的资产。安装时会校验平台、大小和 SHA-256。安装不会自动激活软件包；在 [部署图](../interfaces/deployment-graph_cn.md) 中选择准确的 ID 与版本。
+IsOS 从 os-island.com 查询已批准的软件包，默认从 GitHub Releases 下载匹配平台的资产。安装时会校验平台、大小和 SHA-256。安装不会自动激活软件包；在 [部署图](../interfaces/deployment-graph_cn.md) 中选择准确的 ID 与版本。省略搜索词可列出最新的已批准发行版。
 
     isos packages search mujoco
     isos packages info island/mujoco-sim --version 1.0.1

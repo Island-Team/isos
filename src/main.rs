@@ -127,6 +127,7 @@ enum ConfigCommand {
 #[derive(Subcommand)]
 enum PackageCommand {
     Search {
+        #[arg(default_value = "")]
         query: String,
     },
     Info {
