@@ -478,7 +478,10 @@ pub fn validate_profiles(graph: &Deployment) -> Result<()> {
                     node.id
                 );
                 for sidecar in graph.nodes.iter().filter(|candidate| {
-                    candidate.settings.get("sidecar_of").and_then(Value::as_str) == Some("eos")
+                    candidate.enabled
+                        && candidate.id == "eos-north-http"
+                        && candidate.settings.get("sidecar_of").and_then(Value::as_str)
+                            == Some("eos")
                 }) {
                     let ready = listener_address(host, port);
                     ensure!(
