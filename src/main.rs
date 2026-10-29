@@ -1,3 +1,4 @@
+mod auth;
 mod config;
 mod graph;
 mod http;
@@ -43,6 +44,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum CommandLine {
+    /// Sign in to Island-port with the IslandOS GitHub OAuth app.
+    Login,
+    /// Revoke the saved Island-port session.
+    Logout,
+    /// Show the signed-in Island-port account and role.
+    Whoami,
     Start,
     Stop,
     Restart,
@@ -148,6 +155,11 @@ enum PackageCommand {
     Verify {
         manifest: PathBuf,
         asset: PathBuf,
+    },
+    /// Publish an already-uploaded GitHub release manifest to Island-port.
+    Publish {
+        #[arg(long)]
+        manifest: PathBuf,
     },
     Remove {
         id: String,
@@ -428,6 +440,7 @@ fn package_command(paths: &config::Paths, cmd: PackageCommand) -> Result<()> {
                 release.id, release.version
             );
         }
+        PackageCommand::Publish { manifest } => packages::publish(paths, &manifest)?,
         PackageCommand::Remove { id, version } => {
             packages::remove(paths, &id, &version)?;
             println!("removed {id} {version}");
@@ -629,6 +642,9 @@ fn main_run() -> Result<()> {
     let paths = config::Paths::discover()?;
     let name = cli.deployment;
     match cli.command {
+        CommandLine::Login => auth::login(&paths)?,
+        CommandLine::Logout => auth::logout(&paths)?,
+        CommandLine::Whoami => auth::status(&paths)?,
         CommandLine::Start => {
             lifecycle::ensure_config_exists(&paths.graph(&name))?;
             for id in lifecycle::start(&paths, &name, None)? {

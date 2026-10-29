@@ -4,6 +4,8 @@
 
 The approved catalog at https://www.os-island.com is the default source of release metadata. GitHub Releases are the default asset host. Installation does not activate a package. A deployment graph selects exact package versions, and config apply makes the selection explicit.
 
+After attaching the verified release archive to its GitHub Release, a package developer can publish the complete v4 manifest with `isos packages publish --manifest island-release.json`. The CLI submits metadata to Island-port; it does not upload GitHub release assets. See [IsOS authentication](authentication.md) and [package operations](../usage/packages.md).
+
     isos packages search mujoco
     isos packages info island/mujoco-sim --version 1.0.1
     isos packages install island/mujoco-sim --version 1.0.1

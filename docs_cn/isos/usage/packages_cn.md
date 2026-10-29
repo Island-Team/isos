@@ -7,6 +7,14 @@ IsOS 从 os-island.com 查询已批准的软件包，默认从 GitHub Releases �
     isos packages install island/mujoco-sim --version 1.0.1
     isos packages list
 
+软件包开发者可通过 IslandOS GitHub OAuth Device Flow 登录，并发布已上传到 GitHub Releases 的发行清单：
+
+    isos login
+    isos whoami
+    isos packages publish --manifest island-release.json
+
+目录直发布需要 Island-port `developer` 角色。`isos logout` 会撤销本机保存的 Island-port 刷新会话。`isos login` 只保存权限为用户独占的 Island-port 凭据；临时 GitHub 令牌会立即交换且不会保存。GitHub OAuth 应用和 Island-port 均须启用 CLI Device Flow，详见[身份验证](../interfaces/authentication_cn.md)。
+
 开发工作区可用 isos packages link island/eos 2.0.0 /path/to/Island-eos 链接。未进入批准目录的候选版需要先执行 isos packages verify island-release.json asset.tar.gz，再使用 isos packages install --manifest island-release.json --asset asset.tar.gz --allow-unapproved 明确选择。
 
 清单字段和激活模板见 [发行清单契约](../interfaces/releases_cn.md)。
