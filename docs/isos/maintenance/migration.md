@@ -12,3 +12,7 @@ The old EOS island-launch and island-pkg tools, and EGIA bin/island combined lau
 6. Stop the old launchers, then run isos start and isos status. Use isos eos enter for an attached diagnostic CLI.
 
 IsOS does not yet import the old TOML automatically. It also does not move model weight files; service launch commands continue to reference those existing files. Do not run the old combined EGIA launcher and IsOS against the same deployment at once. The generated stack.toml is an adapter for existing EOS tooling; edit the JSON graph, not generated TOML.
+
+## Graph v1 to v2
+
+Run `isos config migrate` after backing up or committing local edits. IsOS makes a timestamped `.bak` copy, adds exact EOS/EGIA profile references, inserts a logical `eos.uds` endpoint and typed EGIA connection, and validates the result before replacing the selected graph. Unknown fields remain rejected by the strict JSON decoder; no field is silently dropped. Pin component builds and apply the migrated graph before running it.

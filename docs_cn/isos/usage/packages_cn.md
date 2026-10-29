@@ -30,3 +30,7 @@ IsOS 从 os-island.com 查询已批准的软件包，默认从 GitHub Releases �
 install 在下载前校验发行包类型，激活仍由 isos config apply 完成。每个库命令也支持 remove <id> <version>；如果软件包仍被已选或运行中的部署引用，删除会被拒绝。
 
 [English](../../../docs/isos/usage/packages.md)
+
+## 上传 v4 发行包
+
+`isos pkg upload <manifest.json> <asset.tar.gz>` 校验清单、平台文件大小与 SHA-256、已有 GitHub 标签及草稿发行版中的文件名。命令使用已登录的 `gh` CLI 创建或复用 GitHub Release 草稿，不覆盖已有文件，再使用 `isos auth login` 的会话向 Island Port 提交清单。待审核提交和正式发布会分别报告。`isos packages publish --manifest <文件>` 保留仅提交元数据的兼容用法。

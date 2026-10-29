@@ -27,34 +27,40 @@ For isolated testing, set ISOS_HOME to an absolute directory; it then contains c
 
 ## First deployment
 
-    isos config init
-    isos config show
+The IsOS editor stays available while EOS and EGIA are stopped. Point the checkout wrapper at the sibling repositories with `.env`, then:
 
-The starter graph has disabled EOS, north HTTP sidecar, and EGIA nodes. Edit their launch.command arrays to point at installed releases or development checkouts, set the EOS settings.eos_config and settings.north_http_url, then set enabled to true. For a development checkout, use `${EOS_REPO_PATH}` and `${EGIA_REPO_PATH}` in matching component launch arguments; IsOS expands these from `.env` when it starts the component. For EGIA, add its launch arguments and ensure its contract matches EOS. The dependency edges are already present.
+    isos init
+    isos open
+    isos build eos
+    isos build egia
+    isos version pin eos <exact-commit-or-version>
+    isos version pin egia <exact-commit-or-version>
+    isos version check
+
+`init` creates a disabled v2 starter graph and starts the local IsOS service on `127.0.0.1:16000`. The editor gets its temporary token from `isos open`; it holds the token in memory and has explicit Validate and Apply actions. Enable `eos`, `eos-uds`, and `egia` after pinning both builds. The `eos.uds` node is a logical endpoint on the EOS process. IsOS renders EOS and EGIA configuration without starting either runtime. A local EOS build supplies a first-party demo binding; its primitives need a simulator service to become ready.
 
     isos config validate ~/.config/isos/deployments/default.json
-    isos config apply ~/.config/isos/deployments/default.json
-    isos start
+    isos run
     isos status
-    isos eos enter
+    isos stop
 
-isos config apply formats and saves the graph and generates a compatible stack.toml. It does not restart running services. isos restart is an explicit operation. isos eos enter attaches only when EOS is running.
-
-Inside the EOS CLI, leave, quit, and exit leave the client. shutdown stops EOS, dependent EGIA, and deployment-owned dependencies while preserving separately started services. IsOS also closes other CLI sessions entered through isos eos enter.
+`run` checks pinned artifact digests and EOS/EGIA contract versions, then starts EOS before the UDS endpoint and EGIA. `stop` reverses that order. A running deployment keeps its active graph snapshot until an explicit restart. `isos config migrate` backs up a v1 graph before converting it to v2; it rejects unmappable fields. `start` remains an alias for `run`.
 
 ## Commands
 
-    isos start|stop|restart|status [--json]
+    isos init|open|run|stop|restart|status [--json]
+    isos build eos|egia|all [--install-deps]
+    isos version check|pin <component> <version>
     isos eos start|enter|stop|restart|status [--json]|shutdown
     isos egia start|stop|restart|status [--json]
-    isos config init|validate|apply|show
-    isos packages search|info|install|link|list|verify|remove
+    isos config init|validate|apply|migrate|show
+    isos pkg search|info|install|link|list|verify|upload|publish|remove
     isos skills list|info|status|install|remove
     isos services list|info|status|install|remove
     isos backends list|info|status|install|remove
     isos logs <node>
     isos doctor
-    isos daemon
+    isos serve
 
 isos services is the model service library; isos backends is the hardware and simulator library. The three library commands inspect graph nodes and manage releases of their matching package kind. Install and remove use the same verified package store as isos packages. EOS and EGIA are components. EOS's Inner Skills Community (ISC) is a separate runtime mechanism for skill communication, and ss is its execution monitor.
 

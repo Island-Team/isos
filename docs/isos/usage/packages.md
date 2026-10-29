@@ -37,3 +37,7 @@ Use the scoped library commands to inspect deployed nodes and install releases o
 The install command checks the release kind before downloading. It leaves graph activation to isos config apply. Each library also has remove <id> <version>, which rejects packages referenced by a selected or active deployment.
 
 [中文](../../../docs_cn/isos/usage/packages_cn.md)
+
+## Upload a v4 release
+
+`isos pkg upload <manifest.json> <asset.tar.gz>` checks the manifest, platform asset size and SHA-256, exact existing GitHub tag, and draft Release asset names. It uses the authenticated `gh` CLI to create or reuse a draft GitHub Release, uploads without overwriting an existing asset, and submits the manifest to Island Port using `isos auth login`. A submission under review is reported separately from a published release. `isos packages publish --manifest <file>` remains the metadata-only compatibility path.

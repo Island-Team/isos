@@ -1,23 +1,17 @@
-# 本地管理 API
-
-IsOS 命令行直接调用管理器核心。其他本地客户端可使用仅限当前用户访问的 Unix socket。旧版环回 HTTP/WebSocket 桥接服务已移除。
+# IsOS 本地 API
 
 [English](../../../docs/isos/interfaces/local-api.md)
 
-## 认证与传输
+`isos init` 启动一个 IsOS 用户服务：在 `127.0.0.1:16000` 提供独立 Island-web 编辑器和 `/api/isos/v2`，并在 `$XDG_RUNTIME_DIR/isos/manager.sock` 提供仅属主可用的控制套接字（父目录 `0700`、套接字 `0600`）。EOS 和 EGIA 不提供配置 HTTP 服务。
 
-运行 `isos daemon` 后，服务会监听 `$XDG_RUNTIME_DIR/isos/manager.sock`。父目录权限为 `0700`，socket 权限为 `0600`。每个连接发送一行 JSON 请求并接收一行 JSON 响应。
+`isos open` 将临时令牌放在 URL 片段中。页面立即移除片段，只在内存中保存令牌。HTTP API 要求 `Authorization: Bearer <token>`、准确的 `Host: 127.0.0.1:16000`，若含 `Origin` 则必须为 `http://127.0.0.1:16000`。令牌不会写入浏览器持久存储。
 
-请求使用 `schema_version: 1`，`op` 可为 `status`、`graph`、`start`、`stop` 或 `apply`。部署名称默认读取 `ISOS_DEPLOYMENT`，若未设置则为 `default`；组件操作可将 `role` 设为 `eos` 或 `egia`。
+| 路由 | 用途 |
+| --- | --- |
+| `GET /api/isos/v2/graph` | 读取 `{revision,graph}` |
+| `POST /api/isos/v2/graph/validate` | 校验 `{schema_version:2,graph}` |
+| `PUT /api/isos/v2/graph` | 使用 `{schema_version:2,revision,graph}` 应用；过期版本返回 409 |
+| `GET /api/isos/v2/profiles` | 读取 EOS/EGIA 节点描述 |
+| `GET/POST /api/isos/v2/config/{eos|egia}/{operation}` | 调用隔离的组件配置操作 |
 
-    {"schema_version":1,"op":"status","deployment":"default","role":"eos"}
-
-成功操作使用版本化响应包装：
-
-    {"schema_version":1,"ok":true,"data":{"started":["eos"]},"error":null}
-
-校验失败时仍使用相同包装，设置 `ok: false`、`data: null`，并在 `error` 中说明原因。CLI 的 `isos eos status --json` 为兼容 `eos-cli` 返回不带包装的状态数据。
-
-Socket 支持查询部署状态、读取/应用配置图以及启动/停止操作。应用配置会校验并格式化完整配置图、生成激活模板与 TOML，但不会重启运行中的节点。启动和停止遵循依赖顺序及记录的活动配置快照。
-
-相关：[部署图](deployment-graph_cn.md)、[发行清单](releases_cn.md)。
+成功响应为 `{ "schema_version":2, "ok":true, "data":..., "error":null }`。校验诊断包括 `path`、`code`、`message`。私有 UDS 控制 API 保留 v1 单行 JSON 操作（`status`、`graph`、`start`、`stop`、`apply`），供 CLI 客户端使用。

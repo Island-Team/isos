@@ -1,26 +1,27 @@
 # Start an IsOS deployment
 
-IsOS is a local manager for EOS and EGIA. It uses a JSON deployment graph to select exact packages and start only the enabled nodes. On Linux, install it with Rust 1.98 or newer and a user systemd session:
+[中文](../../../docs_cn/isos/usage/get-started_cn.md)
+
+On Linux with a user systemd session and Rust 1.98 or newer, build and install IsOS with the standalone Island-web bundle. `ISOS_WEB_BUNDLE` selects a release artifact; local builds use the sibling Island-web checkout.
 
     ./build.sh
     ./install.sh
-    isos doctor
-    isos config init
+    isos init
+    isos open
 
-For local EOS and EGIA checkouts, copy `.example.env` to `.env` and set `EOS_REPO_PATH` and `EGIA_REPO_PATH`; put `${EOS_REPO_PATH}` or `${EGIA_REPO_PATH}` in the corresponding component's launch.command array and IsOS expands it when starting that component. `./bin/isos <command>` and `./isos.sh <command>` run the checkout CLI before installation. The starter graph is at ~/.config/isos/deployments/default.json. It keeps EOS, its north HTTP sidecar, and EGIA disabled until you provide launch commands and the EOS north HTTP URL. Follow the [graph contract](../interfaces/deployment-graph.md) for the exact fields. Python 3.12 is the default for Python components; the launch command may select a different supported interpreter through a Conda environment, an uv environment, or an explicit executable. IsOS does not hardcode system Python.
+For local source builds, set `EOS_REPO_PATH` and `EGIA_REPO_PATH` to the committed checkout paths. The checkout wrapper reads `.env` if present. IsOS builds explicit candidates and never installs EOS system dependencies unless `--install-deps` is passed.
 
-For a Python service, launch.command can begin with /home/user/.conda/envs/model-py312/bin/python, or with uv run --python 3.12 --project /path/to/service python. Put the rest of the module command in the same array. Resolve the environment before starting the deployment so systemd does not prompt or download dependencies during startup.
+    isos build eos
+    isos build egia
+    isos version pin eos <exact-commit>
+    isos version pin egia <exact-commit>
+    isos version check
 
-Validate and apply the edited graph, then start the stack:
+Use the editor to enable EOS, its logical UDS endpoint, and EGIA. Validate and Apply are separate; a stale editor revision gets a conflict. The configuration server remains usable while both runtimes are stopped.
 
-    isos config validate ~/.config/isos/deployments/default.json
-    isos config apply ~/.config/isos/deployments/default.json
-    isos start
+    isos run
     isos status
-    isos eos enter
+    isos logs egia
+    isos stop
 
-Apply writes formatted JSON and generated TOML. It does not restart running processes. Run isos restart when you deliberately want the new graph to replace an active deployment. Run isos eos start to start EOS and its dependencies without starting EGIA; isos eos enter attaches to an already-running EOS. The EOS CLI's shutdown command stops the deployment-owned EOS closure, while leave, quit, and exit close only the client.
-
-To manage packages, continue with [package operations](packages.md). To move an existing EOS/EGIA stack, use the [migration guide](../maintenance/migration.md).
-
-[中文](../../../docs_cn/isos/usage/get-started_cn.md)
+`run` starts enabled graph nodes in dependency order and checks the pinned build digests and EOS/EGIA contracts. EGIA connects directly to EOS's private UDS. Stopping reverses graph order. To change an active deployment, apply the graph and restart explicitly. The first-party demo EOS binding can start without a simulator, but demo primitives remain unavailable until a simulator service is running.
