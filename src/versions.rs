@@ -252,16 +252,42 @@ pub fn pin(paths: &Paths, role: &str, version: &str, name: &str) -> Result<Recei
             );
         }
     }
+    let sidecar_ready = crate::component::listener_address(
+        node.settings
+            .get("host")
+            .and_then(Value::as_str)
+            .unwrap_or("127.0.0.1"),
+        node.settings
+            .get("north_http_port")
+            .and_then(Value::as_u64)
+            .unwrap_or(16201),
+    );
     node.launch = Some(crate::graph::Launch {
         command,
-        ready_tcp: Some(
-            if role == "eos" {
-                "127.0.0.1:16200"
-            } else {
-                "127.0.0.1:16100"
-            }
-            .into(),
-        ),
+        ready_tcp: Some(if role == "eos" {
+            crate::component::listener_address(
+                node.settings
+                    .get("host")
+                    .and_then(Value::as_str)
+                    .unwrap_or("127.0.0.1"),
+                node.settings
+                    .get("grpc_port")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(16200),
+            )
+        } else {
+            let server = node.settings.get("server");
+            crate::component::listener_address(
+                server
+                    .and_then(|value| value.get("host"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("127.0.0.1"),
+                server
+                    .and_then(|value| value.get("port"))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(16100),
+            )
+        }),
         timeout_ms: 30_000,
         env,
     });
@@ -286,7 +312,7 @@ pub fn pin(paths: &Paths, role: &str, version: &str, name: &str) -> Result<Recei
                         .to_string_lossy()
                         .into_owned(),
                 ],
-                ready_tcp: Some("127.0.0.1:16201".into()),
+                ready_tcp: Some(sidecar_ready),
                 timeout_ms: 30_000,
                 env: Default::default(),
             });

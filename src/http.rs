@@ -167,8 +167,22 @@ fn diagnostic_path(graph: &Deployment, message: &str) -> String {
             || message.starts_with(&format!("{} ", node.id))
             || message.contains(&format!("node ID: {}", node.id))
         {
+            if let Some((_, field)) = message
+                .split_once("settings.")
+                .or_else(|| message.split_once("values."))
+            {
+                let field = field
+                    .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '.'))
+                    .next()
+                    .unwrap_or("");
+                if !field.is_empty() {
+                    return format!("/nodes/{index}/settings/{}", field.replace('.', "/"));
+                }
+            }
             let suffix = if message.contains("UDS path") || message.contains("socket_path") {
                 "/settings/socket_path"
+            } else if message.contains("ready_tcp") {
+                "/launch/ready_tcp"
             } else if message.contains("profile") {
                 "/profile"
             } else {
@@ -245,29 +259,11 @@ async fn profiles(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult 
     // The descriptors are queried without launching either component.
     let mut profiles = Vec::new();
     for role in ["eos", "egia"] {
-        if let Ok(value) = component::call(role, "profiles", None)
-            && let Some(items) = value
-                .get("profiles")
-                .or(Some(&value))
-                .and_then(Value::as_array)
-        {
-            profiles.extend(items.iter().map(|profile| {
-                            let mut defaults = serde_json::Map::new();
-                            if let Some(fields)=profile.get("fields").and_then(Value::as_array) {
-                                for field in fields {
-                                    if let (Some(name),Some(default))=(field.get("name").and_then(Value::as_str),field.get("default")) { defaults.insert(name.into(),default.clone()); }
-                                }
-                            } else if let Some(fields)=profile.get("fields").and_then(Value::as_object) {
-                                for (name,field) in fields { if let Some(default)=field.get("default") { defaults.insert(name.clone(),default.clone()); } }
-                            }
-                            let ports = |key: &str| -> Vec<Value> {
-                                profile.get(key).and_then(Value::as_array).into_iter().flatten().map(|port| {
-                                    let contract = port.get("contracts").and_then(Value::as_array).and_then(|a|a.first()).and_then(|c|c.get("name")).and_then(Value::as_str);
-                                    json!({"name":port.get("name"),"type":port.get("type"),"contract":contract})
-                                }).collect()
-                            };
-                            json!({"id":profile.get("id"),"version":profile.get("version"),"label":profile.get("label").or_else(||profile.get("id")),"description":profile.get("description"),"inputs":ports("inputs"),"outputs":ports("outputs"),"defaults":defaults})
-                        }));
+        if let (Ok(value), Ok(defaults)) = (
+            component::call(role, "profiles", None),
+            component::call(role, "defaults", None),
+        ) {
+            profiles.extend(component::editor_profiles(role, &value, &defaults));
         }
     }
     ok(json!({"profiles":profiles}))
@@ -522,6 +518,14 @@ mod tests {
         assert_eq!(
             diagnostic_path(&graph, "eos-uds has unsafe UDS path"),
             "/nodes/0/settings/socket_path"
+        );
+        assert_eq!(
+            diagnostic_path(&graph, "eos-uds: settings.socket_path invalid"),
+            "/nodes/0/settings/socket_path"
+        );
+        assert_eq!(
+            diagnostic_path(&graph, "eos-uds: launch.ready_tcp mismatch"),
+            "/nodes/0/launch/ready_tcp"
         );
         let mut graph = graph;
         graph.edges.push(crate::graph::Edge {
