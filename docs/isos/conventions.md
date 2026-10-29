@@ -7,3 +7,5 @@ Introduce IsOS, EOS, EGIA, packages, and specialized terms before a reader must 
 Use 2 spaces for Markdown, JSON, and configuration indentation. Rust follows cargo fmt and the official Rust style guide. Keep inline comments short and explain only invariants that are not obvious from the code. Python tooling defaults to Python 3.12 unless its own project pins another supported version; IsOS launch commands may select Conda, uv, or an explicit interpreter and must not assume system Python.
 
 Before committing, run cargo fmt --check, cargo clippy --all-targets -- -D warnings, and cargo test. Add tests for graph ordering, package validation, process ownership, and API boundary changes. Keep runtime state under XDG paths, not in the repository. Use small Conventional Commits; a public PR can be squash-merged after review.
+
+The public IsosUI repository owns the editor source and static build. IsOS owns the CLI, loopback API, and optional local build/pin integration. Do not copy editor source here or package UI assets into the standard IsOS release. Keep the IsosUI pin independent of EOS/EGIA graph selection.
