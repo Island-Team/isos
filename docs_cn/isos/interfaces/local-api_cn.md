@@ -6,7 +6,7 @@ IsOS 管理器负责部署图和受控进程状态。命令行与本地 API 使�
 
 ## 认证与传输
 
-isos daemon 在 $XDG_RUNTIME_DIR/isos/manager.sock 提供仅限当前用户的 Unix socket，一次连接发送一行 JSON 请求并接收一行 JSON 响应。isos ui 在 127.0.0.1:17600 提供 HTTP 桥接，并在终端显示仅本次运行有效的 256 位配对令牌。WebUI 在内存中保存用户粘贴的令牌，请求带 Authorization: Bearer <token>。浏览器 Origin 只允许 https://www.os-island.com、https://os-island.com，或命令行 --allow-origin 指定的精确开发地址。
+isos daemon 在 $XDG_RUNTIME_DIR/isos/manager.sock 提供仅限当前用户的 Unix socket，一次连接发送一行 JSON 请求并接收一行 JSON 响应。isos ui 在 127.0.0.1:17600 提供 HTTP 桥接，并在终端显示仅本次运行有效的 256 位配对令牌，以及把令牌放在 URL 片段中的本地页面链接。页面立即移除片段，仅在当前标签页内存保存令牌。托管 WebUI 仍让用户手工粘贴令牌。请求带 Authorization: Bearer <token>。浏览器 Origin 只允许精确本地地址、https://www.os-island.com、https://os-island.com，或命令行 --allow-origin 指定的精确开发地址。
 
 成功响应为 HTTP 200，格式如下：
 
@@ -23,6 +23,12 @@ isos daemon 在 $XDG_RUNTIME_DIR/isos/manager.sock 提供仅限当前用户的 U
 无需令牌，只返回服务名称和版本：
 
     {"schema_version":1,"ok":true,"data":{"service":"isos","version":"0.1.0"},"error":null}
+
+## 本地页面与软件包读取
+
+GET /、/ui.js 和 /ui.css 提供不含令牌的静态资源，无需 Bearer 令牌，但仍检查精确 Host 和允许的 Origin。资源设置 no-store、no-referrer 和严格的内容安全策略；页面不加载远程资源。URL 片段不会进入 HTTP 请求。
+
+GET /api/isos/v1/packages 返回已安装软件包记录数组。GET /api/isos/v1/catalog?q=mujoco 搜索审核目录并返回其数据。两者都需要 Bearer 令牌，使用相同的响应包装；查询格式与 isos packages search 一致。目录错误返回 HTTP 400。
 
 ## GET /api/isos/v1/status
 
