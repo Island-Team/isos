@@ -2,7 +2,7 @@
 
 IsOS 是 Island EOS 和 EGIA 的本地管理器。它统一管理软件包库、部署配置和进程生命周期； EOS 与 EGIA 仍可独立运行。
 
-目前已实现命令行、JSON 配置图校验、发行清单校验、软件包存储、systemd 用户服务管理、仅允许本机用户访问的 Unix socket API，以及需要配对令牌的本地 WebUI 桥接服务。浏览器页面和旧 TOML 自动导入仍在后续开发中。
+目前已实现命令行、JSON 配置图校验、发行清单校验、软件包存储、systemd 用户服务管理、仅允许本机用户访问的 Unix socket API，以及需要配对令牌的本地 WebUI 桥接服务。浏览器页面位于 Island-web；旧 TOML 自动导入属于后续工作。
 
 ## 安装与入门
 

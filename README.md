@@ -2,7 +2,7 @@
 
 IsOS is the local manager for Island EOS and EGIA. It keeps the package library, deployment configuration, and process lifecycle in one place. EOS and EGIA remain independent runtimes: you can start EOS alone, attach its CLI, or start a configured EOS and EGIA stack.
 
-This repository is an early, working manager core. Its command line, graph validator, release validator, package store, systemd lifecycle, owner-only Unix socket API, and paired loopback WebUI bridge are implemented. The browser pages and automatic migration from old TOML files are still being built in the companion repositories.
+This repository is an early, working manager core. Its command line, graph validator, release validator, package store, systemd lifecycle, owner-only Unix socket API, and paired loopback WebUI bridge are implemented. The browser pages live in Island-web; automatic migration from old TOML files is future work.
 
 ## Install
 
