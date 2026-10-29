@@ -62,6 +62,20 @@ fn authorized(
     state: &App,
     headers: &HeaderMap,
 ) -> std::result::Result<(), (StatusCode, Json<Value>)> {
+    // Browsers identify the editor's origin. Keep bearer authentication for
+    // non-browser clients and older editor builds.
+    if headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(allowed_origin)
+        || (!headers.contains_key(header::ORIGIN)
+            && headers
+                .get("sec-fetch-site")
+                .and_then(|value| value.to_str().ok())
+                == Some("same-origin"))
+    {
+        return Ok(());
+    }
     let bearer = headers
         .get(header::AUTHORIZATION)
         .and_then(|h| h.to_str().ok());
@@ -167,8 +181,22 @@ fn diagnostic_path(graph: &Deployment, message: &str) -> String {
             || message.starts_with(&format!("{} ", node.id))
             || message.contains(&format!("node ID: {}", node.id))
         {
+            if let Some((_, field)) = message
+                .split_once("settings.")
+                .or_else(|| message.split_once("values."))
+            {
+                let field = field
+                    .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '.'))
+                    .next()
+                    .unwrap_or("");
+                if !field.is_empty() {
+                    return format!("/nodes/{index}/settings/{}", field.replace('.', "/"));
+                }
+            }
             let suffix = if message.contains("UDS path") || message.contains("socket_path") {
                 "/settings/socket_path"
+            } else if message.contains("ready_tcp") {
+                "/launch/ready_tcp"
             } else if message.contains("profile") {
                 "/profile"
             } else {
@@ -245,29 +273,11 @@ async fn profiles(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult 
     // The descriptors are queried without launching either component.
     let mut profiles = Vec::new();
     for role in ["eos", "egia"] {
-        if let Ok(value) = component::call(role, "profiles", None)
-            && let Some(items) = value
-                .get("profiles")
-                .or(Some(&value))
-                .and_then(Value::as_array)
-        {
-            profiles.extend(items.iter().map(|profile| {
-                            let mut defaults = serde_json::Map::new();
-                            if let Some(fields)=profile.get("fields").and_then(Value::as_array) {
-                                for field in fields {
-                                    if let (Some(name),Some(default))=(field.get("name").and_then(Value::as_str),field.get("default")) { defaults.insert(name.into(),default.clone()); }
-                                }
-                            } else if let Some(fields)=profile.get("fields").and_then(Value::as_object) {
-                                for (name,field) in fields { if let Some(default)=field.get("default") { defaults.insert(name.clone(),default.clone()); } }
-                            }
-                            let ports = |key: &str| -> Vec<Value> {
-                                profile.get(key).and_then(Value::as_array).into_iter().flatten().map(|port| {
-                                    let contract = port.get("contracts").and_then(Value::as_array).and_then(|a|a.first()).and_then(|c|c.get("name")).and_then(Value::as_str);
-                                    json!({"name":port.get("name"),"type":port.get("type"),"contract":contract})
-                                }).collect()
-                            };
-                            json!({"id":profile.get("id"),"version":profile.get("version"),"label":profile.get("label").or_else(||profile.get("id")),"description":profile.get("description"),"inputs":ports("inputs"),"outputs":ports("outputs"),"defaults":defaults})
-                        }));
+        if let (Ok(value), Ok(defaults)) = (
+            component::call(role, "profiles", None),
+            component::call(role, "defaults", None),
+        ) {
+            profiles.extend(component::editor_profiles(role, &value, &defaults));
         }
     }
     ok(json!({"profiles":profiles}))
@@ -378,7 +388,7 @@ pub fn open_url(paths: &Paths) -> Result<String> {
     } else {
         HOSTED_EDITOR
     };
-    Ok(format!("{base}#token={}", token(paths)?))
+    Ok(base.to_owned())
 }
 pub fn serve(paths: Paths, deployment: String) -> Result<()> {
     paths.prepare()?;
@@ -454,7 +464,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hosted_origin_preflight_and_bearer_boundary() {
+    async fn trusted_browser_origins_connect_without_bearer() {
         let request = Request::builder()
             .method(Method::OPTIONS)
             .uri("/api/isos/v2/version")
@@ -492,10 +502,47 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let response = test_router().oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
             response.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN],
             "https://www.os-island.com"
+        );
+
+        for headers in [
+            [("origin", "http://127.0.0.1:16000")],
+            [("sec-fetch-site", "same-origin")],
+        ] {
+            let mut request = Request::builder()
+                .uri("/api/isos/v2/version")
+                .header(header::HOST, "127.0.0.1:16000");
+            for (name, value) in headers {
+                request = request.header(name, value);
+            }
+            let response = test_router()
+                .oneshot(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        let request = Request::builder()
+            .uri("/api/isos/v2/version")
+            .header(header::HOST, "127.0.0.1:16000")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            test_router().oneshot(request).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let request = Request::builder()
+            .uri("/api/isos/v2/version")
+            .header(header::HOST, "127.0.0.1:16000")
+            .header("sec-fetch-site", "cross-site")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            test_router().oneshot(request).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
         );
     }
 
@@ -522,6 +569,14 @@ mod tests {
         assert_eq!(
             diagnostic_path(&graph, "eos-uds has unsafe UDS path"),
             "/nodes/0/settings/socket_path"
+        );
+        assert_eq!(
+            diagnostic_path(&graph, "eos-uds: settings.socket_path invalid"),
+            "/nodes/0/settings/socket_path"
+        );
+        assert_eq!(
+            diagnostic_path(&graph, "eos-uds: launch.ready_tcp mismatch"),
+            "/nodes/0/launch/ready_tcp"
         );
         let mut graph = graph;
         graph.edges.push(crate::graph::Edge {
