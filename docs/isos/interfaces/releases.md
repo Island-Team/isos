@@ -4,6 +4,8 @@
 
 The approved catalog at https://www.os-island.com is the default source of release metadata. GitHub Releases are the default asset host. Installation does not activate a package. A deployment graph selects exact package versions, and config apply makes the selection explicit.
 
+After attaching the verified release archive to its GitHub Release, a package developer can publish the complete v4 manifest with `isos packages publish --manifest island-release.json`. The CLI submits metadata to Island-port; it does not upload GitHub release assets. See [IsOS authentication](authentication.md) and [package operations](../usage/packages.md).
+
     isos packages search mujoco
     isos packages info island/mujoco-sim --version 1.0.1
     isos packages install island/mujoco-sim --version 1.0.1
@@ -31,15 +33,15 @@ The release file is named island-release.json and is formatted JSON.
       "kind": "backend",
       "version": "1.0.1",
       "source_commit": "0000000000000000000000000000000000000000",
-      "source_url": "https://github.com/Island-Team/Aether-EOS-mujoco-sim",
-      "release_url": "https://github.com/Island-Team/Aether-EOS-mujoco-sim/releases/tag/v1.0.1",
+      "source_url": "https://github.com/Island-Team/isos-mujoco-sim",
+      "release_url": "https://github.com/Island-Team/isos-mujoco-sim/releases/tag/v1.0.1",
       "contracts": ["eos.simulator.v1"],
       "assets": [{
         "name": "mujoco-sim-linux-x86_64.tar.gz",
         "os": "linux",
         "arch": "x86_64",
         "libc": "glibc>=2.35",
-        "url": "https://github.com/Island-Team/Aether-EOS-mujoco-sim/releases/download/v1.0.1/mujoco-sim-linux-x86_64.tar.gz",
+        "url": "https://github.com/Island-Team/isos-mujoco-sim/releases/download/v1.0.1/mujoco-sim-linux-x86_64.tar.gz",
         "size_bytes": 123456,
         "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
         "required_libraries": ["libmujoco.so.3"],

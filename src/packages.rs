@@ -1,6 +1,7 @@
 //! Verified local package store. Only explicit install changes the store.
 
 use crate::{
+    auth,
     config::{self, Paths},
     lifecycle::Lock,
     release::{self, Release},
@@ -315,4 +316,57 @@ pub fn search(query: &str) -> Result<serde_json::Value> {
     let response: serde_json::Value = serde_json::from_slice(&curl(&url, None)?)?;
     ensure!(response["success"] == true, "catalog search failed");
     Ok(response["data"].clone())
+}
+
+pub fn publish(paths: &Paths, manifest_path: &Path) -> Result<()> {
+    let credentials = auth::read(paths)?;
+    ensure!(
+        credentials.user.role == "developer",
+        "package publication requires an Island-port developer account; signed-in role is {}",
+        credentials.user.role
+    );
+    let release = read_manifest(manifest_path)?;
+    let source_url = release
+        .source_url
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("manifest source_url is required for publication"))?;
+    let release_url = release
+        .release_url
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("manifest release_url is required for publication"))?;
+    let body = serde_json::json!({
+        "package_id": release.id,
+        "version": release.version,
+        "source_url": source_url,
+        "release_url": release_url,
+        "manifest": release,
+    });
+    let response = auth::authorized_post(
+        paths,
+        &format!("{CATALOG}/api/packages/v1/submissions"),
+        &body,
+    )?;
+    let status = response.status();
+    let envelope: serde_json::Value = response
+        .json()
+        .context("Island-port returned an invalid publication response")?;
+    ensure!(
+        status.is_success() && envelope["success"] == true,
+        "Island-port publication failed: {} ({})",
+        envelope["error"]["message"]
+            .as_str()
+            .unwrap_or("request failed"),
+        envelope["error"]["code"].as_str().unwrap_or("HTTP_ERROR")
+    );
+    let data = &envelope["data"];
+    ensure!(
+        data["status"].as_str() == Some("approved"),
+        "package was submitted but not published (status: {})",
+        data["status"].as_str().unwrap_or("unknown")
+    );
+    println!(
+        "published {} {} to the Island package catalog",
+        release.id, release.version
+    );
+    Ok(())
 }

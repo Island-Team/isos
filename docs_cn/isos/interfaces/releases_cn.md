@@ -2,6 +2,8 @@
 
 IsOS 默认从 os-island.com 获取已批准的发行元数据，从 GitHub Releases 下载资产。候选发行也可以通过 --allow-unapproved 明确安装。发行文件名为 island-release.json，schema_version 为 4。
 
+GitHub Release 资产上传完成后，软件包开发者可运行 `isos packages publish --manifest island-release.json` 发布完整的 v4 清单。该命令只提交目录元数据，不会上传 GitHub Release 资产。详见[身份验证](authentication_cn.md)和[软件包操作](../usage/packages_cn.md)。
+
 [English](../../../docs/isos/interfaces/releases.md)
 
 清单包含 id、kind、version、source_commit、contracts 和 assets。kind 可为 component、service、backend、skill、extension、example。IsOS 解析器允许省略 source_url、release_url、description、license 和 activation；已批准的目录在提交审核时要求 source_url 与 release_url。资产包含 os、arch、url、size_bytes、sha256；可选字段包括 name、libc、gpu、ros、required_libraries 和 tested_ubuntu。
@@ -15,7 +17,7 @@ IsOS 默认从 os-island.com 获取已批准的发行元数据，从 GitHub Rele
       "contracts": ["eos.simulator.v1"],
       "assets": [{
         "os": "linux", "arch": "x86_64", "libc": "glibc>=2.35",
-        "url": "https://github.com/Island-Team/Aether-EOS-mujoco-sim/releases/download/v1.0.1/asset.tar.gz",
+        "url": "https://github.com/Island-Team/isos-mujoco-sim/releases/download/v1.0.1/asset.tar.gz",
         "size_bytes": 123456,
         "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
       }]
