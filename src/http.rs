@@ -62,18 +62,6 @@ fn authorized(
     state: &App,
     headers: &HeaderMap,
 ) -> std::result::Result<(), (StatusCode, Json<Value>)> {
-    let host = headers
-        .get(header::HOST)
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-    if host != "127.0.0.1:16000" {
-        return Err(err(StatusCode::FORBIDDEN, "invalid Host"));
-    }
-    if let Some(origin) = headers.get(header::ORIGIN)
-        && !origin.to_str().ok().is_some_and(allowed_origin)
-    {
-        return Err(err(StatusCode::FORBIDDEN, "invalid Origin"));
-    }
     let bearer = headers
         .get(header::AUTHORIZATION)
         .and_then(|h| h.to_str().ok());
