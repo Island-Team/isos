@@ -14,7 +14,11 @@ The server verifies a local bundle when it first serves it and when the pin chan
 | `GET /api/isos/v2/graph` | Read `{revision,graph}` |
 | `POST /api/isos/v2/graph/validate` | Check `{schema_version:2,graph}` |
 | `PUT /api/isos/v2/graph` | Apply `{schema_version:2,revision,graph}`; stale revision returns 409 |
-| `GET /api/isos/v2/profiles` | Read flattened EOS/EGIA node descriptors |
+| `GET /api/isos/v2/profiles` | Read EOS/EGIA node descriptors with ordered editable field metadata and nested defaults |
 | `GET/POST /api/isos/v2/config/{eos|egia}/{operation}` | Call isolated component config operation |
 
 Successful responses use `{ "schema_version":2, "ok":true, "data":..., "error":null }`. Validation diagnostics include `path`, `code`, and `message`. The private UDS control API retains its v1 one-line JSON operations (`status`, `graph`, `start`, `stop`, `apply`) for CLI clients.
+
+Each profile in `data.profiles` keeps its `id`, `version`, `label`, `description`, `inputs`, and `outputs`. `settings_fields` is an ordered array of `{path,type,label,description?,required?,default?,min?,max?,options?,read_only?}`. Dotted paths address nested settings. `defaults` is a nested object shaped like graph `settings`; derived EOS UDS and EGIA gateway values are omitted from it. EOS `north_http_url` is derived from `host` and `north_http_port`. For example, `server.port` has a numeric field and `defaults.server.port` has its value. The adapter may expose additional field metadata; this route presents the stable editor subset.
+
+Graph validation and Apply reject component settings that the adapter cannot use, including unknown nested keys. They validate edited values through the component adapter. EOS `launch.ready_tcp` must match `host:grpc_port`, EGIA `launch.ready_tcp` must match `server.host:server.port`, and an EOS North HTTP sidecar's readiness must match `host:north_http_port`. EOS `settings.north_http_url` must match the HTTP listener. The EOS UDS endpoint owns `settings.socket_path`; IsOS supplies that path to both component adapters. Diagnostics point to the affected node setting or launch field when possible.
