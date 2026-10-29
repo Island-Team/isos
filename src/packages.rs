@@ -359,14 +359,214 @@ pub fn publish(paths: &Paths, manifest_path: &Path) -> Result<()> {
         envelope["error"]["code"].as_str().unwrap_or("HTTP_ERROR")
     );
     let data = &envelope["data"];
+    if data["status"].as_str() == Some("approved") {
+        println!(
+            "published {} {} to the Island package catalog",
+            release.id, release.version
+        );
+    } else {
+        println!(
+            "submitted {} {} for Island-port review (status: {})",
+            release.id,
+            release.version,
+            data["status"].as_str().unwrap_or("unknown")
+        );
+    }
+    Ok(())
+}
+
+/// Upload without replacing an existing GitHub asset, then submit metadata for review.
+pub fn upload(paths: &Paths, manifest_path: &Path, asset_path: &Path) -> Result<()> {
+    let release = read_manifest(manifest_path)?;
+    let gh = std::env::var("ISOS_GH").unwrap_or_else(|_| "gh".into());
+    github_upload(&release, manifest_path, asset_path, &gh)?;
+    publish(paths, manifest_path)
+}
+
+fn github_upload(
+    release: &Release,
+    manifest_path: &Path,
+    asset_path: &Path,
+    gh: &str,
+) -> Result<()> {
+    let asset_name = asset_path
+        .file_name()
+        .and_then(|v| v.to_str())
+        .ok_or_else(|| anyhow::anyhow!("asset filename must be UTF-8"))?;
+    let selected = release
+        .assets
+        .iter()
+        .find(|a| {
+            a.name.as_deref() == Some(asset_name) || a.url.ends_with(&format!("/{asset_name}"))
+        })
+        .ok_or_else(|| anyhow::anyhow!("asset is not listed in manifest"))?;
+    release::verify_file(selected, asset_path)?;
+    let source = release
+        .source_url
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("manifest source_url is required"))?;
+    let repo = source
+        .strip_prefix("https://github.com/")
+        .unwrap_or("")
+        .trim_end_matches(".git")
+        .trim_end_matches('/');
     ensure!(
-        data["status"].as_str() == Some("approved"),
-        "package was submitted but not published (status: {})",
-        data["status"].as_str().unwrap_or("unknown")
+        repo.split('/').count() == 2 && repo.split('/').all(|s| !s.is_empty()),
+        "source_url must identify one GitHub repository"
     );
+    let release_url = release
+        .release_url
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("manifest release_url is required"))?;
+    let tag = release_url
+        .rsplit('/')
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("release_url has no tag"))?;
+    ensure!(
+        release_url == format!("https://github.com/{repo}/releases/tag/{tag}"),
+        "release_url must match source repository"
+    );
+    let output = Command::new(gh)
+        .args(["api", &format!("repos/{repo}/git/ref/tags/{tag}")])
+        .output()?;
+    ensure!(
+        output.status.success(),
+        "Git tag {tag} does not exist in {repo}"
+    );
+    let reference: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    let mut ref_sha = reference["object"]["sha"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("Git tag has no target SHA"))?
+        .to_owned();
+    if reference["object"]["type"] == "tag" {
+        let peeled = Command::new(gh)
+            .args(["api", &format!("repos/{repo}/git/tags/{ref_sha}")])
+            .output()?;
+        ensure!(
+            peeled.status.success(),
+            "cannot resolve annotated tag {tag}"
+        );
+        let value: serde_json::Value = serde_json::from_slice(&peeled.stdout)?;
+        ensure!(
+            value["object"]["type"] == "commit",
+            "tag {tag} does not resolve to a commit"
+        );
+        ref_sha = value["object"]["sha"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("annotated tag has no commit SHA"))?
+            .to_owned();
+    }
+    ensure!(
+        ref_sha == release.source_commit,
+        "tag {tag} does not point to source_commit {}",
+        release.source_commit
+    );
+    let release_view = Command::new(gh)
+        .args([
+            "release",
+            "view",
+            tag,
+            "--repo",
+            repo,
+            "--json",
+            "isDraft,assets",
+        ])
+        .output()?;
+    if !release_view.status.success() {
+        let stderr = String::from_utf8_lossy(&release_view.stderr).to_ascii_lowercase();
+        ensure!(
+            stderr.contains("release not found") || stderr.contains("http 404"),
+            "cannot inspect GitHub Release: {stderr}"
+        );
+        let create = Command::new(gh)
+            .args([
+                "release",
+                "create",
+                tag,
+                "--repo",
+                repo,
+                "--draft",
+                "--verify-tag",
+                "--title",
+                &format!("{} {}", release.id, release.version),
+            ])
+            .status()?;
+        ensure!(create.success(), "cannot create draft GitHub Release");
+    } else {
+        let view: serde_json::Value = serde_json::from_slice(&release_view.stdout)?;
+        ensure!(
+            view["isDraft"] == true,
+            "existing GitHub Release is published; upload requires a draft"
+        );
+        let names: Vec<&str> = view["assets"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v["name"].as_str())
+            .collect();
+        ensure!(
+            !names.contains(&asset_name),
+            "GitHub Release already contains {asset_name}; refusing overwrite"
+        );
+        let manifest_name = manifest_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        ensure!(
+            !names.contains(&manifest_name),
+            "GitHub Release already contains {manifest_name}; refusing overwrite"
+        );
+    }
+    let uploaded = Command::new(gh)
+        .args(["release", "upload", tag, "--repo", repo])
+        .arg(asset_path)
+        .arg(manifest_path)
+        .status()?;
+    ensure!(uploaded.success(), "GitHub Release upload failed");
     println!(
-        "published {} {} to the Island package catalog",
-        release.id, release.version
+        "uploaded {} and {} to draft release {release_url}",
+        asset_name,
+        manifest_path.display()
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod upload_tests {
+    use super::*;
+    use sha2::Digest;
+    use std::os::unix::fs::PermissionsExt;
+    #[test]
+    fn github_upload_checks_tag_and_never_overwrites_assets() {
+        let root = std::env::temp_dir().join(format!("isos-upload-test-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let asset = root.join("asset.tgz");
+        fs::write(&asset, b"abc").unwrap();
+        let hash = hex::encode(sha2::Sha256::digest(b"abc"));
+        let manifest = root.join("release.json");
+        let sha = "a".repeat(40);
+        let release:Release=serde_json::from_value(serde_json::json!({
+            "schema_version":4,"id":"island/test","kind":"skill","version":"1.0.0","source_commit":sha,
+            "source_url":"https://github.com/Island-Team/test","release_url":"https://github.com/Island-Team/test/releases/tag/v1.0.0",
+            "assets":[{"name":"asset.tgz","os":"linux","arch":"x86_64","url":"https://github.com/Island-Team/test/releases/download/v1.0.0/asset.tgz","size_bytes":3,"sha256":hash}]
+        })).unwrap();
+        fs::write(&manifest, serde_json::to_vec(&release).unwrap()).unwrap();
+        let mock = root.join("gh");
+        let script = format!(
+            "#!/bin/sh\ncase \"$1 $2\" in\n  'api repos/Island-Team/test/git/ref/tags/v1.0.0') echo '{{\"object\":{{\"type\":\"commit\",\"sha\":\"{}\"}}}}';;\n  'release view') echo '{{\"isDraft\":true,\"assets\":[]}}';;\n  'release upload') exit 0;;\n  *) exit 2;;\nesac\n",
+            release.source_commit
+        );
+        fs::write(&mock, &script).unwrap();
+        fs::set_permissions(&mock, fs::Permissions::from_mode(0o700)).unwrap();
+        github_upload(&release, &manifest, &asset, mock.to_str().unwrap()).unwrap();
+        let blocked = script.replace("\"assets\":[]", "\"assets\":[{\"name\":\"asset.tgz\"}]");
+        fs::write(&mock, blocked).unwrap();
+        assert!(
+            github_upload(&release, &manifest, &asset, mock.to_str().unwrap())
+                .unwrap_err()
+                .to_string()
+                .contains("refusing overwrite")
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 }

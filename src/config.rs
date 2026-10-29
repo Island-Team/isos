@@ -1,4 +1,5 @@
 use crate::{
+    component,
     graph::{Deployment, EdgeKind, NodeKind},
     packages, release,
 };
@@ -303,6 +304,7 @@ fn render_activations(
 
 pub fn apply(paths: &Paths, graph: &Deployment) -> Result<()> {
     graph.validate()?;
+    component::validate_profiles(graph)?;
     paths.prepare()?;
     let graph_bytes = serde_json::to_vec_pretty(graph)?;
     let dir = paths.generated(&graph.name);
@@ -312,6 +314,7 @@ pub fn apply(paths: &Paths, graph: &Deployment) -> Result<()> {
     }
     fs::create_dir_all(&staging)?;
     let result = (|| -> Result<()> {
+        component::render(paths, graph, &staging)?;
         let modules = render_activations(paths, graph, &staging, &dir)?;
         let stack = generated_stack(graph, &modules)?;
         atomic_write(&staging.join("stack.toml"), stack.as_bytes())?;

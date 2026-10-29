@@ -1,109 +1,17 @@
-# Local manager API
-
-The IsOS manager owns deployment graphs and scoped process state. The CLI calls the same core directly. Local clients can use an owner-only Unix socket, and the hosted WebUI can use a loopback HTTP bridge. API apply saves configuration without restarting a running stack.
+# Local IsOS API
 
 [中文](../../../docs_cn/isos/interfaces/local-api_cn.md)
 
-## Authentication and transport
+`isos init` starts one IsOS user service. It serves the standalone Island-web editor and `/api/isos/v2` on `127.0.0.1:16000`, plus the owner-only control socket at `$XDG_RUNTIME_DIR/isos/manager.sock` (`0700` parent, `0600` socket). EOS and EGIA expose no configuration HTTP server.
 
-Run isos daemon for the Unix socket at $XDG_RUNTIME_DIR/isos/manager.sock. Its parent directory has mode 0700 and its socket has mode 0600. Each connection sends one JSON request line and receives one JSON response line.
+`isos open` passes a temporary bearer token in the URL fragment. The editor removes the fragment and keeps the token only in memory. HTTP API requests require `Authorization: Bearer <token>`, exact `Host: 127.0.0.1:16000`, and, if present, exact `Origin: http://127.0.0.1:16000`. The bearer token is never stored in browser persistent storage.
 
-Run isos ui to bind the HTTP bridge to 127.0.0.1:17600. It prints a random 256-bit token that lasts only while that command runs, plus a local page URL with the token in a fragment. The local page removes the fragment immediately and holds the token only in memory. The hosted WebUI asks the operator to paste the token and also holds it in memory. HTTP clients send Authorization: Bearer <token>; the EGIA WebSocket authenticates with the token as its first message because browser WebSocket APIs do not permit custom authorization headers. Browser requests are allowed from the exact local origin, https://www.os-island.com, or https://os-island.com. A local development origin can be added with isos ui --allow-origin <exact-origin>. The HTTP Host must be 127.0.0.1:17600, using the actual selected port. The bridge does not set cookies or listen on a network interface.
+| Route | Purpose |
+| --- | --- |
+| `GET /api/isos/v2/graph` | Read `{revision,graph}` |
+| `POST /api/isos/v2/graph/validate` | Check `{schema_version:2,graph}` |
+| `PUT /api/isos/v2/graph` | Apply `{schema_version:2,revision,graph}`; stale revision returns 409 |
+| `GET /api/isos/v2/profiles` | Read flattened EOS/EGIA node descriptors |
+| `GET/POST /api/isos/v2/config/{eos|egia}/{operation}` | Call isolated component config operation |
 
-## Shared wire rules
-
-The API version is 1. JSON requests use Content-Type: application/json. A successful operation returns HTTP 200 with:
-
-    {"schema_version":1,"ok":true,"data":{"started":["eos"]},"error":null}
-
-A graph or lifecycle validation failure returns HTTP 400:
-
-    {"schema_version":1,"ok":false,"data":null,"error":"EOS and EGIA require the same explicit protocol contract"}
-
-An absent or wrong token returns HTTP 401. An unapproved browser Origin or Host returns HTTP 403. The unauthenticated health route returns only the service name and version. CORS preflight uses OPTIONS with the approved Origin and returns HTTP 204. If that approved preflight includes Access-Control-Request-Private-Network: true, its response includes Access-Control-Allow-Private-Network: true. A request body larger than 2 MB is rejected.
-
-The deployment query field and JSON field default to ISOS_DEPLOYMENT or default. A role may be eos or egia; omitting it addresses the full deployment. In a graph edge, from is the consumer and to is the provider.
-
-## GET /api/isos/v1/health
-
-This route is unauthenticated and checks whether the local bridge is available. It reveals no graph or token.
-
-    GET /api/isos/v1/health
-
-    {"schema_version":1,"ok":true,"data":{"service":"isos","version":"0.1.0"},"error":null}
-
-## Local page and package reads
-
-GET /, /ui.js, and /ui.css serve token-free static assets without a bearer token. The exact Host check and approved Origin check still apply. Assets set no-store, no-referrer, and a restrictive Content Security Policy. The page contains no remote assets. A URL fragment carrying the token is never part of an HTTP request.
-
-GET /api/isos/v1/packages returns an array of installed package receipts. GET /api/isos/v1/catalog?q=mujoco forwards a search to the approved catalog and returns its data. Both require the bearer token and use the same response envelope. Search uses the same restricted query format as isos packages search. Catalog errors return HTTP 400.
-
-## GET /api/isos/v1/status
-
-The paired WebUI reads the selected deployment or component status. A running EOS returns active, north_http_url, running, and per-node state:
-
-    GET /api/isos/v1/status?deployment=default&role=eos
-
-    {"schema_version":1,"ok":true,"data":{"schema_version":1,"active":"default","north_http_url":"http://127.0.0.1:16005","running":true,"nodes":[{"id":"eos","running":true}]},"error":null}
-
-When EOS is offline, active is null, north_http_url is empty, and running is false. Authentication failure is HTTP 401; an invalid role or state is HTTP 400.
-
-## GET /api/isos/v1/graph
-
-The paired WebUI reads the applied graph for editing. If no graph is applied, the route returns HTTP 400 with an explanatory error.
-
-    GET /api/isos/v1/graph?deployment=default
-
-    {"schema_version":1,"ok":true,"data":{"schema_version":1,"name":"default","nodes":[],"edges":[]},"error":null}
-
-## POST /api/isos/v1/apply
-
-The paired WebUI submits the complete graph. Apply validates and formats it, renders activation templates and generated TOML, then saves it. It does not restart active nodes.
-
-    {"schema_version":1,"deployment":"default","graph":{"schema_version":1,"name":"default","nodes":[],"edges":[]}}
-
-    {"schema_version":1,"ok":true,"data":{"applied":"default"},"error":null}
-
-A malformed graph, missing package file, cycle, or contract mismatch returns HTTP 400. The graph schema is documented in [deployment-graph.md](deployment-graph.md).
-
-## POST /api/isos/v1/start
-
-The paired WebUI starts the full deployment or a component dependency closure.
-
-    {"schema_version":1,"deployment":"default","role":"eos"}
-
-    {"schema_version":1,"ok":true,"data":{"started":["model-service","eos"]},"error":null}
-
-Missing components, incompatible packages, unavailable user systemd, or failed readiness return HTTP 400 with an actionable error. Already-running nodes are omitted from started.
-
-## POST /api/isos/v1/stop
-
-The paired WebUI stops deployment-owned nodes in reverse dependency order. A component stop also stops dependents and preserves shared prerequisites required by remaining active nodes.
-
-    {"schema_version":1,"deployment":"default","role":"eos"}
-
-    {"schema_version":1,"ok":true,"data":{"stopped":["egia","eos"]},"error":null}
-
-An inactive deployment succeeds with an empty stopped array. A user-systemd stop failure returns HTTP 400.
-
-## GET /api/isos/v1/egia/ws
-
-The paired browser uses this loopback WebSocket bridge for the EGIA operator console. The browser first completes the WebSocket upgrade after the existing exact Origin and Host checks, then sends one JSON text frame within 10 seconds:
-
-    {"type":"authenticate","token":"<pairing-token>","deployment":"default","route":"/api/aether/egia/health"}
-
-The bridge checks the pairing token before opening an upstream connection. `deployment` defaults to `default`; its selected, validated graph must contain an enabled EGIA component with `launch.ready_tcp`. IsOS accepts only targets that resolve exclusively to loopback addresses. The browser cannot supply an upstream host, port, URL, or route outside the fixed EGIA route allowlist: health, backend, chat, mission stream/command, review, context, model I/O, prompts, primitives, skills/command/execution, perceptions, world state, detection, ASR, and primitive invocation.
-
-After connecting to the configured EGIA listener, IsOS sends `{"type":"ready","route":"/api/aether/egia/health"}` and then relays text, binary, ping, pong, and close frames in both directions. Before readiness, an error is a JSON frame such as `{"type":"error","error":"pairing token rejected"}` followed by close. A token is sent only in the first frame and remains in browser memory; IsOS opens its EGIA upstream socket without an Origin header, so EGIA's Origin allowlist remains unchanged.
-
-The bridge bounds the first-frame wait to 10 seconds and WebSocket messages/frames to 1 MiB. A client disconnect closes the upstream socket. The IsOS listener remains bound to `127.0.0.1`; browsers may still apply local-network or loopback access policy when a hosted HTTPS page opens this local WebSocket.
-
-## Unix socket operations
-
-The Unix socket has equivalent status, graph, start, stop, and apply operations. Its request envelope includes op and schema_version:
-
-    {"schema_version":1,"op":"status","deployment":"default","role":"eos"}
-
-It returns the same success or error JSON line, without HTTP status codes. The CLI-specific isos eos status --json command returns the unwrapped status data for compatibility with eos-cli.
-
-Related: [deployment graph](deployment-graph.md), [release manifest](releases.md).
+Successful responses use `{ "schema_version":2, "ok":true, "data":..., "error":null }`. Validation diagnostics include `path`, `code`, and `message`. The private UDS control API retains its v1 one-line JSON operations (`status`, `graph`, `start`, `stop`, `apply`) for CLI clients.

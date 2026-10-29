@@ -9,6 +9,6 @@ IsOS 0.1 implements a working manager core. The [platform integration plan](plan
 3. Publish approved v4 release manifests and matching GitHub Release assets through Island Port, with SHA-256, platform metadata, reproducible build evidence, and install/rollback gates.
 4. Add a Python 3.12 external skill worker that can select a configurable interpreter, uv environment, or Conda environment. Use pybind11 within that isolated worker to call the existing native C++ skill ABI.
 5. Keep IsOS lifecycle, package selection, policy, and graph validation in Rust. Keep performance-sensitive EOS/EGIA runtime and native skills in C++. Prefer a supervised process boundary and versioned IPC between Rust and C++; use a narrow C ABI only when an in-process call is measured to be necessary. Never exchange C++ objects, Rust ownership, or Python objects across that ABI.
-6. Finish live hosted-origin WebUI pairing and migrate the legacy GECA operator client after EGIA's EOS 2 contract port. The IsOS graph editor and package details are already implemented in Island-web.
+6. Migrate the legacy GECA operator client after EGIA's EOS 2 contract port.
 
 Before a release, run format/lint/tests in each repository, verify a clean install on supported Linux platforms, smoke EOS attach/shutdown and EGIA managed mode, and check English/Chinese task guides and interface examples.

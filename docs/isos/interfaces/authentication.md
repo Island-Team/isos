@@ -1,13 +1,13 @@
 # Island-port authentication
 
-`isos login` signs in through GitHub OAuth Device Flow and exchanges the temporary GitHub user token for an Island-port access and refresh token. It requests only the GitHub `user:email` scope. The GitHub token is never written to disk. IsOS stores Island-port credentials in `auth.json` under its config directory using owner-only permissions.
+`isos auth login` signs in through GitHub OAuth Device Flow and exchanges the temporary GitHub user token for an Island-port access and refresh token. It requests only the GitHub `user:email` scope. The GitHub token is never written to disk. IsOS stores Island-port credentials in `auth.json` under its config directory using owner-only permissions (mode `0600`).
 
-GitHub Device Flow must be enabled in the IslandOS OAuth app. Island-port must be deployed with `ISLAND_GITHUB_DEVICE_FLOW_ENABLED=true`; the public `GET /api/auth/github/config` response advertises this as `device_flow_enabled`. If either setting is disabled, `isos login` reports that login is unavailable.
+GitHub Device Flow must be enabled in the IslandOS OAuth app. Island-port must be deployed with `ISLAND_GITHUB_DEVICE_FLOW_ENABLED=true`; the public `GET /api/auth/github/config` response advertises this as `device_flow_enabled`. If either setting is disabled, `isos auth login` reports that login is unavailable.
 
-    isos login
-    isos whoami
+    isos auth login
+    isos auth whoami
     isos packages publish --manifest island-release.json
-    isos logout
+    isos auth logout
 
 GitHub sign-in preserves the role of an existing account matched by verified email. A new GitHub-linked account is a member and can submit packages for review, but direct publication requires the developer role. Package publication sends a complete validated schema v4 manifest to Island-port; the referenced archive must already be attached to the matching GitHub release. GitHub repository credentials are not requested or stored by IsOS.
 
