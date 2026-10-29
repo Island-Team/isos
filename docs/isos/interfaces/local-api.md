@@ -8,7 +8,7 @@ The IsOS manager owns deployment graphs and scoped process state. The CLI calls 
 
 Run isos daemon for the Unix socket at $XDG_RUNTIME_DIR/isos/manager.sock. Its parent directory has mode 0700 and its socket has mode 0600. Each connection sends one JSON request line and receives one JSON response line.
 
-Run isos ui to bind the HTTP bridge to 127.0.0.1:17600. It prints a random 256-bit token that lasts only while that command runs. The WebUI asks the operator to paste it and holds it in memory; clients send Authorization: Bearer <token>. Browser requests are allowed only from https://www.os-island.com or https://os-island.com. A local development origin can be added with isos ui --allow-origin <exact-origin>. The HTTP Host must be 127.0.0.1:17600, using the actual selected port. The bridge does not set cookies or listen on a network interface.
+Run isos ui to bind the HTTP bridge to 127.0.0.1:17600. It prints a random 256-bit token that lasts only while that command runs, plus a local page URL with the token in a fragment. The local page removes the fragment immediately and holds the token only in memory. The hosted WebUI asks the operator to paste the token and also holds it in memory. Clients send Authorization: Bearer <token>. Browser requests are allowed from the exact local origin, https://www.os-island.com, or https://os-island.com. A local development origin can be added with isos ui --allow-origin <exact-origin>. The HTTP Host must be 127.0.0.1:17600, using the actual selected port. The bridge does not set cookies or listen on a network interface.
 
 ## Shared wire rules
 
@@ -31,6 +31,12 @@ This route is unauthenticated and checks whether the local bridge is available. 
     GET /api/isos/v1/health
 
     {"schema_version":1,"ok":true,"data":{"service":"isos","version":"0.1.0"},"error":null}
+
+## Local page and package reads
+
+GET /, /ui.js, and /ui.css serve token-free static assets without a bearer token. The exact Host check and approved Origin check still apply. Assets set no-store, no-referrer, and a restrictive Content Security Policy. The page contains no remote assets. A URL fragment carrying the token is never part of an HTTP request.
+
+GET /api/isos/v1/packages returns an array of installed package receipts. GET /api/isos/v1/catalog?q=mujoco forwards a search to the approved catalog and returns its data. Both require the bearer token and use the same response envelope. Search uses the same restricted query format as isos packages search. Catalog errors return HTTP 400.
 
 ## GET /api/isos/v1/status
 

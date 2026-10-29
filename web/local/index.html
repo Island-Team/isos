@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>IsOS · Local manager</title>
+  <link rel="stylesheet" href="/ui.css">
+  <script src="/ui.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <header class="masthead">
+      <div class="identity"><span class="mark">I</span><div><strong>IsOS</strong><small data-i18n="subtitle">Local manager</small></div></div>
+      <div class="head-actions"><span id="connection" class="connection" data-i18n="unpaired">Not paired</span><button id="language" class="quiet" type="button">中文</button></div>
+    </header>
+    <section id="pairing" class="pairing panel">
+      <div><span class="eyebrow" data-i18n="pairing">PAIRING</span><h1 data-i18n="pairTitle">Connect to this IsOS session</h1><p data-i18n="pairHelp">Open the local link printed by isos ui, or paste its one-time token here. The token stays in this tab only.</p></div>
+      <form id="pairForm" class="pair-form"><label for="tokenInput" data-i18n="token">Pairing token</label><div class="input-row"><input id="tokenInput" type="password" autocomplete="off" spellcheck="false" placeholder="64 hexadecimal characters"><button type="submit" data-i18n="connect">Connect</button></div></form>
+    </section>
+    <div id="workspace" hidden>
+      <div class="toolbar"><div><span class="eyebrow" data-i18n="workspace">WORKSPACE</span><h1 data-i18n="heading">Your local deployment</h1></div><div class="deployment"><label for="deployment" data-i18n="deployment">Deployment</label><input id="deployment" value="default" spellcheck="false"><button id="reload" class="quiet" type="button" data-i18n="refresh">Refresh</button></div></div>
+      <nav class="tabs" aria-label="Sections"><button class="tab active" type="button" data-tab="overview" data-i18n="overview">Overview</button><button class="tab" type="button" data-tab="packages" data-i18n="packages">Packages</button><button class="tab" type="button" data-tab="graph" data-i18n="graph">Config graph</button></nav>
+      <main>
+        <section id="overview" class="page">
+          <div class="section-head"><div><h2 data-i18n="runtime">Runtime</h2><p data-i18n="runtimeHelp">Start or stop the deployment and its components.</p></div><div class="actions"><button id="startAll" type="button" data-i18n="startAll">Start stack</button><button id="stopAll" class="danger" type="button" data-i18n="stopAll">Stop stack</button></div></div>
+          <div class="component-grid"><article class="panel component"><div class="component-title"><span class="symbol">E</span><div><h3>EOS</h3><span id="eosState" class="state">—</span></div></div><p data-i18n="eosHelp">Core execution backend</p><div class="actions"><button data-action="start" data-role="eos" type="button" data-i18n="start">Start</button><button data-action="stop" data-role="eos" class="quiet" type="button" data-i18n="stop">Stop</button></div></article><article class="panel component"><div class="component-title"><span class="symbol egia">G</span><div><h3>EGIA</h3><span id="egiaState" class="state">—</span></div></div><p data-i18n="egiaHelp">Agent and gateway backend</p><div class="actions"><button data-action="start" data-role="egia" type="button" data-i18n="start">Start</button><button data-action="stop" data-role="egia" class="quiet" type="button" data-i18n="stop">Stop</button></div></article></div>
+          <section class="panel nodes-panel"><div class="section-head"><h3 data-i18n="runningNodes">Deployment nodes</h3><span id="activeName" class="muted">—</span></div><div id="runtimeNodes" class="rows"></div></section>
+        </section>
+        <section id="packages" class="page" hidden>
+          <div class="section-head"><div><h2 data-i18n="packageLibrary">Package library</h2><p data-i18n="packageHelp">Installed releases are managed by IsOS. Search the approved catalog, then install with the CLI.</p></div><button id="reloadPackages" class="quiet" type="button" data-i18n="refresh">Refresh</button></div>
+          <div class="package-layout"><div><section class="panel list-panel"><div class="panel-head"><h3 data-i18n="installed">Installed</h3><span id="packageCount" class="count">0</span></div><div id="installedList" class="rows"></div></section><section class="panel list-panel"><div class="panel-head"><h3 data-i18n="catalog">Approved catalog</h3></div><form id="searchForm" class="input-row search"><input id="searchQuery" aria-label="Search packages" maxlength="100" placeholder="e.g. mujoco"><button type="submit" data-i18n="search">Search</button></form><div id="catalogList" class="rows"></div></section></div><aside class="panel detail"><span class="eyebrow" data-i18n="details">DETAILS</span><h3 id="detailTitle" data-i18n="choosePackage">Choose a package</h3><pre id="packageDetail"></pre></aside></div>
+        </section>
+        <section id="graph" class="page" hidden>
+          <div class="section-head"><div><h2 data-i18n="graphTitle">Config graph</h2><p data-i18n="graphHelp">Edit nodes and edges, then apply the complete graph. Running nodes keep their current snapshot until restart.</p></div><div class="actions"><button id="newGraph" class="quiet" type="button" data-i18n="newGraph">New graph</button><button id="applyGraph" type="button" data-i18n="apply">Apply graph</button></div></div>
+          <div class="graph-layout"><section class="panel graph-panel"><div class="panel-head"><h3 data-i18n="nodes">Nodes</h3><select id="nodeKind" aria-label="Add node kind"><option value="component">Component</option><option value="service">Service</option><option value="backend">Backend</option><option value="skill">Skill</option></select><button id="addNode" class="quiet" type="button" data-i18n="addNode">Add node</button></div><div id="graphNodes" class="graph-nodes"></div><div class="panel-head edges-head"><h3 data-i18n="edges">Edges</h3></div><div id="graphEdges" class="rows"></div></section><section class="panel editor"><div class="panel-head"><h3 data-i18n="jsonEditor">Graph JSON</h3><button id="formatGraph" class="quiet" type="button" data-i18n="format">Format</button></div><label for="graphJson" class="muted" data-i18n="jsonHelp">Full schema; edit edges here. Click a node to edit its JSON.</label><textarea id="graphJson" spellcheck="false" aria-label="Graph JSON"></textarea><div id="nodeInspector" hidden><div class="panel-head"><h3 id="nodeTitle">Node</h3><button id="deleteNode" class="danger" type="button" data-i18n="delete">Delete</button></div><textarea id="nodeJson" spellcheck="false" aria-label="Node JSON"></textarea><button id="saveNode" type="button" data-i18n="saveNode">Save node</button></div></section></div>
+        </section>
+      </main>
+    </div>
+    <div id="notice" class="notice" role="status" aria-live="polite"></div>
+    <footer><span>IsOS · 127.0.0.1</span><span data-i18n="footer">Local session · no cloud account required</span></footer>
+  </div>
+</body>
+</html>

@@ -2,7 +2,7 @@
 
 IsOS is the local manager for Island EOS and EGIA. It keeps the package library, deployment configuration, and process lifecycle in one place. EOS and EGIA remain independent runtimes: you can start EOS alone, attach its CLI, or start a configured EOS and EGIA stack.
 
-This repository is an early, working manager core. Its command line, graph validator, release validator, package store, systemd lifecycle, owner-only Unix socket API, and paired loopback WebUI bridge are implemented. The browser pages live in Island-web; automatic migration from old TOML files is future work.
+This repository is an early, working manager core. Its command line, graph validator, release validator, package store, systemd lifecycle, owner-only Unix socket API, and paired loopback WebUI bridge are implemented. `isos ui` serves a compact local manager page; the larger hosted experience lives in Island-web. Automatic migration from old TOML files is future work.
 
 ## Install
 
@@ -53,6 +53,8 @@ Inside the EOS CLI, leave, quit, and exit leave the client. shutdown stops EOS, 
     isos doctor
     isos daemon
     isos ui
+
+Run `isos ui`, open the local link it prints, and use the page for EOS/EGIA lifecycle, installed packages, approved catalog search, and graph editing. The link's one-time token is removed from the browser address bar after loading. See the [local UI guide](docs/isos/usage/local-ui.md).
 
 isos services is the model service library; isos backends is the hardware and simulator library. The three library commands inspect graph nodes and manage releases of their matching package kind. Install and remove use the same verified package store as isos packages. EOS and EGIA are components. EOS's Inner Skills Community (ISC) is a separate runtime mechanism for skill communication, and ss is its execution monitor.
 

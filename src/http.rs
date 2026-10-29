@@ -1,7 +1,7 @@
 //! Loopback HTTP bridge for the hosted WebUI. The token exists only for the
 //! lifetime of this process and never enters browser persistent storage.
 
-use crate::{ApiRequest, ApiResponse, api_call, config::Paths};
+use crate::{ApiRequest, ApiResponse, api_call, config::Paths, packages};
 use anyhow::{Context, Result};
 use axum::{
     Json, Router,
@@ -10,9 +10,9 @@ use axum::{
         DefaultBodyLimit, Query, State,
         rejection::{JsonRejection, QueryRejection},
     },
-    http::{HeaderValue, Method, Request, StatusCode, header},
+    http::{HeaderMap, HeaderValue, Method, Request, StatusCode, header},
     middleware::{self, Next},
-    response::{IntoResponse, Response},
+    response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
 use serde::Deserialize;
@@ -31,6 +31,47 @@ struct HttpState {
 struct QueryParams {
     deployment: Option<String>,
     role: Option<String>,
+    q: Option<String>,
+}
+
+fn static_headers(content_type: &'static str) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"),
+    );
+    headers
+}
+
+async fn local_page() -> (HeaderMap, Html<&'static str>) {
+    (
+        static_headers("text/html; charset=utf-8"),
+        Html(include_str!("../web/local/index.html")),
+    )
+}
+
+async fn local_script() -> (HeaderMap, &'static str) {
+    (
+        static_headers("text/javascript; charset=utf-8"),
+        include_str!("../web/local/app.js"),
+    )
+}
+
+async fn local_style() -> (HeaderMap, &'static str) {
+    (
+        static_headers("text/css; charset=utf-8"),
+        include_str!("../web/local/style.css"),
+    )
 }
 
 #[derive(Deserialize)]
@@ -119,6 +160,30 @@ async fn graph(
     .await
 }
 
+async fn installed_packages(State(state): State<HttpState>) -> (StatusCode, Json<ApiResponse>) {
+    let paths = state.paths;
+    match tokio::task::spawn_blocking(move || Ok(serde_json::to_value(packages::list(&paths)?)?))
+        .await
+    {
+        Ok(result) => reply(result),
+        Err(error) => reply(Err(error.into())),
+    }
+}
+
+async fn catalog_search(
+    params: Result<Query<QueryParams>, QueryRejection>,
+) -> (StatusCode, Json<ApiResponse>) {
+    let Query(params) = match params {
+        Ok(value) => value,
+        Err(error) => return reply(Err(error.into())),
+    };
+    let query = params.q.unwrap_or_default();
+    match tokio::task::spawn_blocking(move || packages::search(&query)).await {
+        Ok(result) => reply(result),
+        Err(error) => reply(Err(error.into())),
+    }
+}
+
 async fn action(
     State(state): State<HttpState>,
     method: &'static str,
@@ -160,11 +225,12 @@ async fn apply(
     action(state, "apply", body).await
 }
 
-fn allowed_origin(origin: &str, extra: Option<&str>) -> bool {
+fn allowed_origin(origin: &str, extra: Option<&str>, port: u16) -> bool {
     matches!(
         origin,
         "https://www.os-island.com" | "https://os-island.com"
-    ) || extra == Some(origin)
+    ) || origin == format!("http://127.0.0.1:{port}")
+        || extra == Some(origin)
 }
 
 fn cors_headers(response: &mut Response, origin: &str) {
@@ -215,7 +281,7 @@ async fn authorize(State(state): State<HttpState>, request: Request<Body>, next:
         .map(str::to_owned);
     if origin
         .as_deref()
-        .is_some_and(|value| !allowed_origin(value, state.extra_origin.as_deref()))
+        .is_some_and(|value| !allowed_origin(value, state.extra_origin.as_deref(), state.port))
     {
         return denied(StatusCode::FORBIDDEN, "origin is not allowed", None);
     }
@@ -248,7 +314,11 @@ async fn authorize(State(state): State<HttpState>, request: Request<Body>, next:
         }
         return response;
     }
-    if request.uri().path() != "/api/isos/v1/health" {
+    let public_path = matches!(
+        request.uri().path(),
+        "/" | "/ui.js" | "/ui.css" | "/api/isos/v1/health"
+    );
+    if !public_path {
         let expected = format!("Bearer {}", state.token);
         let received = request
             .headers()
@@ -289,9 +359,14 @@ pub fn serve(paths: Paths, port: u16, extra_origin: Option<String>) -> Result<()
         .context("start IsOS HTTP runtime")?;
     runtime.block_on(async move {
         let app = Router::new()
+            .route("/", get(local_page))
+            .route("/ui.js", get(local_script))
+            .route("/ui.css", get(local_style))
             .route("/api/isos/v1/health", get(health))
             .route("/api/isos/v1/status", get(status))
             .route("/api/isos/v1/graph", get(graph))
+            .route("/api/isos/v1/packages", get(installed_packages))
+            .route("/api/isos/v1/catalog", get(catalog_search))
             .route("/api/isos/v1/start", post(start))
             .route("/api/isos/v1/stop", post(stop))
             .route("/api/isos/v1/apply", post(apply))
@@ -300,7 +375,10 @@ pub fn serve(paths: Paths, port: u16, extra_origin: Option<String>) -> Result<()
             .with_state(state.clone());
         let listener =
             tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], port))).await?;
-        println!("IsOS local manager: http://127.0.0.1:{port}");
+        println!(
+            "IsOS local manager: http://127.0.0.1:{port}/#token={}",
+            state.token
+        );
         println!(
             "Pairing token (valid only while this command runs): {}",
             state.token
@@ -316,11 +394,14 @@ mod tests {
     use super::*;
     #[test]
     fn only_known_origins_are_allowed() {
-        assert!(allowed_origin("https://www.os-island.com", None));
-        assert!(!allowed_origin("https://evil.example", None));
+        assert!(allowed_origin("https://www.os-island.com", None, 17600));
+        assert!(allowed_origin("http://127.0.0.1:17600", None, 17600));
+        assert!(!allowed_origin("http://127.0.0.1:17601", None, 17600));
+        assert!(!allowed_origin("https://evil.example", None, 17600));
         assert!(allowed_origin(
             "http://localhost:5173",
-            Some("http://localhost:5173")
+            Some("http://localhost:5173"),
+            17600
         ));
     }
     #[test]
