@@ -382,7 +382,9 @@ pub fn open_url(paths: &Paths) -> Result<String> {
 }
 pub fn serve(paths: Paths, deployment: String) -> Result<()> {
     paths.prepare()?;
-    let web = std::env::var_os("ISOS_WEB_DIST").map(PathBuf::from);
+    let web = std::env::var_os("ISOS_WEB_DIST")
+        .map(PathBuf::from)
+        .filter(|path| path.join("index.html").is_file());
     let app = Arc::new(App {
         token: token(&paths)?,
         paths,
