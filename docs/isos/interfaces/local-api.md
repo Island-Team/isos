@@ -6,7 +6,7 @@
 
 The server verifies a local bundle when it first serves it and when the pin changes. `isos open` and `isos version check` verify the bundle on each invocation, so a damaged pin fails rather than opening the hosted editor.
 
-`isos open` passes a temporary bearer token in the URL fragment. The editor removes the fragment and keeps the token only in memory. HTTP API requests require `Authorization: Bearer <token>` and exact `Host: 127.0.0.1:16000`. If an `Origin` is present, it must be `http://127.0.0.1:16000`, `https://www.os-island.com`, or `https://os-island.com`. Successful CORS preflights allow GET, POST, PUT, Authorization, and Content-Type. An origin outside this list or a wrong Host gets 403; missing or invalid bearer gets 401. The bearer token is never stored in browser persistent storage.
+`isos open` opens the editor without a token in the URL. Browser requests from `http://127.0.0.1:16000`, `https://www.os-island.com`, or `https://os-island.com` may use the loopback API without a bearer token. Same-origin browser GET requests that omit `Origin` are recognized by `Sec-Fetch-Site: same-origin`. Other clients must send `Authorization: Bearer <token>`. All API requests require exact `Host: 127.0.0.1:16000`; an unapproved `Origin` gets 403, even with a bearer. CORS preflights allow GET, POST, PUT, Authorization, and Content-Type. Requests without an approved browser origin or valid bearer get 401. Legacy editors may still supply a bearer from a URL fragment; it remains in memory only.
 
 | Route | Purpose |
 | --- | --- |

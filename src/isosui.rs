@@ -281,7 +281,7 @@ mod tests {
         assert!(
             crate::http::open_url(&paths)
                 .unwrap()
-                .starts_with("https://www.os-island.com/en/isos#token=")
+                .eq("https://www.os-island.com/en/isos")
         );
         let commit = "a".repeat(40);
         let directory = build_root(&paths).join(&commit);
@@ -309,7 +309,7 @@ mod tests {
         assert!(
             crate::http::open_url(&paths)
                 .unwrap()
-                .starts_with("http://127.0.0.1:16000/en/isos#token=")
+                .eq("http://127.0.0.1:16000/en/isos")
         );
         fs::write(directory.join("index.html"), "damaged").unwrap();
         assert!(crate::http::open_url(&paths).is_err());

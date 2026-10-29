@@ -6,7 +6,7 @@
 
 服务首次提供本地页面及固定版本改变时会校验页面。每次执行 `isos open` 或 `isos version check` 也会校验页面；固定版本损坏时会报错，不会改为打开托管编辑器。
 
-`isos open` 将临时令牌放在 URL 片段中。页面立即移除片段，只在内存中保存令牌。HTTP API 要求 `Authorization: Bearer <token>` 和准确的 `Host: 127.0.0.1:16000`。若含 `Origin`，必须为 `http://127.0.0.1:16000`、`https://www.os-island.com` 或 `https://os-island.com`。CORS 预检允许 GET、POST、PUT、Authorization 和 Content-Type。未允许的 Origin 或错误的 Host 返回 403；缺失或无效的令牌返回 401。令牌不会写入浏览器持久存储。
+`isos open` 打开编辑器时不再在 URL 中附带令牌。来自 `http://127.0.0.1:16000`、`https://www.os-island.com` 或 `https://os-island.com` 的浏览器请求可直接访问本机 API。同源浏览器 GET 请求若不含 `Origin`，可由 `Sec-Fetch-Site: same-origin` 识别。其他客户端仍须发送 `Authorization: Bearer <token>`。所有 API 请求都要求准确的 `Host: 127.0.0.1:16000`；未允许的 `Origin` 即使带有令牌也返回 403。CORS 预检允许 GET、POST、PUT、Authorization 和 Content-Type。没有可信浏览器来源或有效令牌的请求返回 401。旧版编辑器仍可提供 URL 片段中的令牌，页面只在内存中保存它。
 
 | 路由 | 用途 |
 | --- | --- |

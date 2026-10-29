@@ -62,6 +62,20 @@ fn authorized(
     state: &App,
     headers: &HeaderMap,
 ) -> std::result::Result<(), (StatusCode, Json<Value>)> {
+    // Browsers identify the editor's origin. Keep bearer authentication for
+    // non-browser clients and older editor builds.
+    if headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(allowed_origin)
+        || (!headers.contains_key(header::ORIGIN)
+            && headers
+                .get("sec-fetch-site")
+                .and_then(|value| value.to_str().ok())
+                == Some("same-origin"))
+    {
+        return Ok(());
+    }
     let bearer = headers
         .get(header::AUTHORIZATION)
         .and_then(|h| h.to_str().ok());
@@ -374,7 +388,7 @@ pub fn open_url(paths: &Paths) -> Result<String> {
     } else {
         HOSTED_EDITOR
     };
-    Ok(format!("{base}#token={}", token(paths)?))
+    Ok(base.to_owned())
 }
 pub fn serve(paths: Paths, deployment: String) -> Result<()> {
     paths.prepare()?;
@@ -450,7 +464,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hosted_origin_preflight_and_bearer_boundary() {
+    async fn trusted_browser_origins_connect_without_bearer() {
         let request = Request::builder()
             .method(Method::OPTIONS)
             .uri("/api/isos/v2/version")
@@ -488,10 +502,47 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let response = test_router().oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
             response.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN],
             "https://www.os-island.com"
+        );
+
+        for headers in [
+            [("origin", "http://127.0.0.1:16000")],
+            [("sec-fetch-site", "same-origin")],
+        ] {
+            let mut request = Request::builder()
+                .uri("/api/isos/v2/version")
+                .header(header::HOST, "127.0.0.1:16000");
+            for (name, value) in headers {
+                request = request.header(name, value);
+            }
+            let response = test_router()
+                .oneshot(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        let request = Request::builder()
+            .uri("/api/isos/v2/version")
+            .header(header::HOST, "127.0.0.1:16000")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            test_router().oneshot(request).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let request = Request::builder()
+            .uri("/api/isos/v2/version")
+            .header(header::HOST, "127.0.0.1:16000")
+            .header("sec-fetch-site", "cross-site")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            test_router().oneshot(request).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
         );
     }
 

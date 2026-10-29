@@ -41,7 +41,7 @@ The IsOS editor stays available while EOS and EGIA are stopped. Point the checko
     isos version pin egia <exact-commit-or-version>
     isos version check
 
-`init` creates a disabled v2 starter graph and starts the local IsOS service on `127.0.0.1:16000`. The editor gets its temporary token from `isos open`; it holds the token in memory and has explicit Validate and Apply actions. Enable `eos`, `eos-uds`, and `egia` after pinning both builds. The `eos.uds` node is a logical endpoint on the EOS process. IsOS renders EOS and EGIA configuration without starting either runtime. A local EOS build supplies a first-party demo binding; its primitives need a simulator service to become ready.
+`init` creates a disabled v2 starter graph and starts the local IsOS service on `127.0.0.1:16000`. The editor connects to that port without a token and has explicit Validate and Apply actions. Enable `eos`, `eos-uds`, and `egia` after pinning both builds. The `eos.uds` node is a logical endpoint on the EOS process. IsOS renders EOS and EGIA configuration without starting either runtime. A local EOS build supplies a first-party demo binding; its primitives need a simulator service to become ready.
 
     isos config validate ~/.config/isos/deployments/default.json
     isos run
