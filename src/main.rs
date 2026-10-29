@@ -3,6 +3,7 @@ mod component;
 mod config;
 mod graph;
 mod http;
+mod isosui;
 mod lifecycle;
 mod packages;
 mod release;
@@ -50,9 +51,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum CommandLine {
-    /// Build EOS, EGIA, or both from configured source checkouts.
+    /// Build EOS, EGIA, or IsosUI from configured source checkouts.
     Build {
-        #[arg(value_parser = ["eos", "egia", "all"])]
+        #[arg(value_parser = ["eos", "egia", "all", "isosui"])]
         target: String,
         #[arg(long)]
         install_deps: bool,
@@ -148,7 +149,7 @@ enum AuthCommand {
 enum VersionCommand {
     Check,
     Pin {
-        #[arg(value_parser = ["eos", "egia"])]
+        #[arg(value_parser = ["eos", "egia", "isosui"])]
         component: String,
         version: String,
     },
@@ -793,9 +794,18 @@ fn main_run() -> Result<()> {
             target,
             install_deps,
         } => {
+            if target == "isosui" {
+                ensure!(!install_deps, "--install-deps applies to EOS only");
+                let receipt = isosui::build(&paths)?;
+                println!(
+                    "built isosui {} {} sha256:{}",
+                    receipt.manifest.version, receipt.manifest.source_commit, receipt.sha256
+                );
+                return Ok(());
+            }
             ensure!(
                 matches!(target.as_str(), "eos" | "egia" | "all"),
-                "build target must be eos, egia, or all"
+                "build target must be eos, egia, all, or isosui"
             );
             for role in if target == "all" {
                 vec!["eos", "egia"]
@@ -818,6 +828,14 @@ fn main_run() -> Result<()> {
                 );
             }
             VersionCommand::Pin { component, version } => {
+                if component == "isosui" {
+                    let receipt = isosui::pin(&paths, &version)?;
+                    println!(
+                        "pinned isosui {} ({})",
+                        receipt.manifest.version, receipt.manifest.source_commit
+                    );
+                    return Ok(());
+                }
                 let receipt = versions::pin(&paths, &component, &version, &name)?;
                 println!(
                     "pinned {} {} ({})",

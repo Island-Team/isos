@@ -20,14 +20,6 @@ fi
 mkdir -p "$CONFIG_ROOT"
 "$INSTALL_ROOT/bin/isos" --version | awk '{print $2}' > "$CONFIG_ROOT/isos-version"
 chmod 600 "$CONFIG_ROOT/isos-version"
-if [[ -n "${ISOS_HOME:-}" ]]; then
-  DATA_ROOT="$ISOS_HOME/data/ui"
-else
-  DATA_ROOT="${XDG_DATA_HOME:-${HOME}/.local/share}/isos/ui"
-fi
-mkdir -p "$DATA_ROOT"
-cp -a "$ROOT/target/isos-ui/." "$DATA_ROOT/"
-echo "Installed IsOS configuration UI at $DATA_ROOT"
 COMPLETION_ROOT="${XDG_DATA_HOME:-${HOME}/.local/share}/isos/completions"
 mkdir -p "$COMPLETION_ROOT" "${XDG_CONFIG_HOME:-${HOME}/.config}/fish/completions"
 "$INSTALL_ROOT/bin/isos" --generate-completion bash > "$COMPLETION_ROOT/isos.bash"

@@ -11,12 +11,3 @@ else
   exit 127
 fi
 "$CARGO_BIN" build --release
-WEB_BUNDLE="${ISOS_WEB_BUNDLE:-$ROOT/../Island-web/dist/isos}"
-if [[ ! -f "$WEB_BUNDLE/index.html" ]]; then
-  if [[ -z "${ISOS_WEB_BUNDLE:-}" && -f "$ROOT/../Island-web/package.json" ]]; then
-    (cd "$ROOT/../Island-web" && npm run build)
-  fi
-fi
-[[ -f "$WEB_BUNDLE/index.html" ]] || { echo "IsOS web bundle missing: $WEB_BUNDLE" >&2; exit 1; }
-mkdir -p "$ROOT/target/isos-ui"
-cp -a "$WEB_BUNDLE/." "$ROOT/target/isos-ui/"
