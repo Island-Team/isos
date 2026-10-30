@@ -6,14 +6,14 @@ IsOS 管理共享 Aether v2 图、后端软件包、本地工作台 API 和直�
 
 从 v2 `master` 源码目录运行 `./install.sh` 以替换已安装的 IsOS 命令。安装程序会停止旧部署及旧版 `isos-server.service`，删除已废弃的 UI 令牌，并强制安装当前源码构建的可执行文件。随后用 `isos --version` 确认版本为 `2.0.0`。`isos stop` 也能停止残留的旧版 IsOS 服务。v2 的 `isos init` 服务在当前终端运行，按 Ctrl+C 退出。
 
-构建并安装 IsOS、IsosUI 本地构建（`npm run build:local`）及 Aether Rust 可执行文件（`aether-profile`、`aether-runtime`、`aether-http-bridge`、`aether-config-server`）。将 Aether 可执行文件放在 `isos` 旁边或 `PATH` 中，或者在运行 `isos init` 前把 `ISOS_AETHER_BIN_DIR` 设为其绝对构建目录。将 `ISOSUI_REPO_PATH` 指向已构建的 IsosUI 仓库，或将 `ISOS_WEB_DIST` 指向其 `dist/local` 目录；IsOS 也会读取命令工作目录下 `.env` 中的这些设置。在 MuJoCo 仓库构建仿真器，并用 `tools/build-backend-bundle.py` 制作 v2 包。把 `MUJOCO_ROOT` 指向已安装的 MuJoCo 运行环境，然后执行：
+构建并安装 IsOS 及 Aether Rust 可执行文件（`aether-profile`、`aether-runtime`、`aether-http-bridge`、`aether-config-server`）。先在相邻的 IsosUI 仓库执行一次 `npm ci`；随后 `isos init` 会启动其 `npm start` 服务。将 Aether 可执行文件放在 `isos` 旁边或 `PATH` 中，或者在运行 `isos init` 前把 `ISOS_AETHER_BIN_DIR` 设为其绝对构建目录。如果 IsosUI 不在 `../IsosUI`，设置 `ISOSUI_REPO_PATH`；IsOS 也会读取命令工作目录下 `.env` 中的设置。在 MuJoCo 仓库构建仿真器，并用 `tools/build-backend-bundle.py` 制作 v2 包。把 `MUJOCO_ROOT` 指向已安装的 MuJoCo 运行环境，然后执行：
 
 ```sh
 isos pkg link island/mujoco-sim 2.0.0 /absolute/path/to/bundle
 isos init
 ```
 
-`isos init` 在 `http://127.0.0.1:16000/en/isos` 提供本地前端和 API，无需 URL 令牌。它会在当前终端保持工作台和进程管理器运行。请保持此终端开启，在第二个终端编辑图并执行部署命令。按 Ctrl+C 会停止服务和受管理的子进程。
+`isos init` 在 `http://127.0.0.1:16001/en/isos` 启动 IsosUI，IsOS 仅在 `http://127.0.0.1:16000/api/isos/v2` 提供 API，无需 URL 令牌。`ISOSUI_PORT` 和 `ISOS_HTTP_PORT` 可分别调整端口；两者都只绑定环回地址。请保持此终端开启，在第二个终端编辑图并执行部署命令。按 Ctrl+C 会停止 npm 前端、API、进程管理器和受管理的子进程。
 
 在第二个终端执行：
 
@@ -30,7 +30,7 @@ isos run
 
 如果已链接或安装 v2 MuJoCo 软件包，新图会选用其固定版本和声明的第一个场景；已有的编写图不会被覆盖。
 
-默认路径为 `~/.config/isos/deployments/<name>.nodes.json`、`~/.local/share/isos/packages/` 和 `$XDG_RUNTIME_DIR/isos/`。设置 `ISOS_HOME` 可创建隔离测试目录，其中有 `config/`、`data/` 和 `run/`。仅所有者可访问的控制套接字位于运行目录；浏览器 API 监听 `127.0.0.1:16000`。本地 IsosUI 也可独立固定版本。
+默认路径为 `~/.config/isos/deployments/<name>.nodes.json`、`~/.local/share/isos/packages/` 和 `$XDG_RUNTIME_DIR/isos/`。设置 `ISOS_HOME` 可创建隔离测试目录，其中有 `config/`、`data/` 和 `run/`。仅所有者可访问的控制套接字位于运行目录；浏览器 API 监听 `127.0.0.1:16000`，npm 在 `127.0.0.1:16001` 提供 IsosUI。
 
 归档包可先执行 `isos pkg verify <manifest> <asset>`，再用 `isos pkg install --manifest <manifest> --asset <asset> --allow-unapproved` 安装本地候选包。发布后可用 `isos pkg install island/mujoco-sim --version 2.0.0` 安装已批准的软件包。已应用图仍引用软件包时，`isos pkg remove` 会拒绝删除。
 

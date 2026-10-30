@@ -1,9 +1,9 @@
-//! Loopback configuration API and optional pinned IsosUI bundle.
+//! Loopback configuration API. IsosUI runs in a separate npm process.
 use crate::{
     component,
     config::{self, Paths},
     graph::Deployment,
-    isosui, lifecycle, packages, v2_process,
+    lifecycle, packages, v2_process,
 };
 use anyhow::{Context, Result};
 use axum::{
@@ -18,26 +18,11 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::{
-    fs,
-    net::SocketAddr,
-    path::PathBuf,
-    sync::{Arc, Mutex},
-    time::SystemTime,
-};
+use std::{fs, net::SocketAddr, path::PathBuf, sync::Arc};
 
 struct App {
     paths: Paths,
     deployment: String,
-    web: Option<PathBuf>,
-    pin_cache: Mutex<PinCache>,
-}
-
-#[derive(Default)]
-struct PinCache {
-    observed: bool,
-    signature: Option<(SystemTime, u64)>,
-    directory: Option<PathBuf>,
 }
 
 fn local_port() -> Result<u16> {
@@ -47,8 +32,22 @@ fn local_port() -> Result<u16> {
     anyhow::ensure!(port >= 1024, "ISOS_HTTP_PORT must be 1024..65535");
     Ok(port)
 }
-fn local_origin() -> String {
+pub fn local_origin() -> String {
     format!("http://127.0.0.1:{}", local_port().unwrap_or(16000))
+}
+pub fn ui_port() -> Result<u16> {
+    let port = std::env::var("ISOSUI_PORT")
+        .unwrap_or_else(|_| "16001".into())
+        .parse::<u16>()?;
+    anyhow::ensure!(port >= 1024, "ISOSUI_PORT must be 1024..65535");
+    anyhow::ensure!(
+        port != local_port()?,
+        "ISOSUI_PORT must differ from ISOS_HTTP_PORT"
+    );
+    Ok(port)
+}
+pub fn ui_url() -> Result<String> {
+    Ok(format!("http://127.0.0.1:{}/en/isos", ui_port()?))
 }
 const HOSTED_ORIGINS: [&str; 2] = ["https://www.os-island.com", "https://os-island.com"];
 
@@ -82,7 +81,9 @@ fn authorized(
     Ok(())
 }
 fn allowed_origin(origin: &str) -> bool {
-    origin == local_origin() || HOSTED_ORIGINS.contains(&origin)
+    origin == local_origin()
+        || ui_port().is_ok_and(|port| origin == format!("http://127.0.0.1:{port}"))
+        || HOSTED_ORIGINS.contains(&origin)
 }
 
 async fn cors(request: Request<Body>, next: Next) -> Response {
@@ -568,90 +569,9 @@ async fn component_route(
         .map_err(|e| err(StatusCode::UNPROCESSABLE_ENTITY, e))?;
     ok(value)
 }
-async fn static_file(State(app): State<Arc<App>>, UrlPath(path): UrlPath<String>) -> Response {
-    let web = if let Some(dev) = &app.web {
-        Some(dev.clone())
-    } else {
-        match cached_pin(&app) {
-            Ok(directory) => directory,
-            Err(error) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Pinned IsosUI is invalid: {error}"),
-                )
-                    .into_response();
-            }
-        }
-    };
-    let Some(web) = web else {
-        return (
-            StatusCode::NOT_FOUND,
-            "No IsosUI build is pinned; run isos build isosui and isos version pin isosui <commit>",
-        )
-            .into_response();
-    };
-    let relative = path.trim_start_matches('/');
-    let candidate = web.join(relative);
-    let file =
-        if relative.is_empty() || !candidate.is_file() || relative.split('/').any(|p| p == "..") {
-            web.join("index.html")
-        } else {
-            candidate
-        };
-    let mime = match file.extension().and_then(|x| x.to_str()) {
-        Some("js") => "text/javascript",
-        Some("css") => "text/css",
-        Some("svg") => "image/svg+xml",
-        Some("png") => "image/png",
-        _ => "text/html; charset=utf-8",
-    };
-    match fs::read(file) {
-        Ok(bytes) => ([(header::CONTENT_TYPE, mime)], Body::from(bytes)).into_response(),
-        Err(_) => (StatusCode::NOT_FOUND, "IsOS UI bundle is not installed").into_response(),
-    }
-}
-fn cached_pin(app: &App) -> Result<Option<PathBuf>> {
-    let path = app.paths.config.join("pins/isosui.json");
-    let signature = match fs::metadata(path) {
-        Ok(metadata) => Some((metadata.modified()?, metadata.len())),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error.into()),
-    };
-    let mut cache = app
-        .pin_cache
-        .lock()
-        .map_err(|_| anyhow::anyhow!("IsosUI pin cache poisoned"))?;
-    if !cache.observed || cache.signature != signature {
-        cache.directory = isosui::pinned_dir(&app.paths)?;
-        cache.signature = signature;
-        cache.observed = true;
-    }
-    Ok(cache.directory.clone())
-}
-fn local_web_dist() -> Option<PathBuf> {
-    std::env::var_os("ISOS_WEB_DIST")
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("ISOSUI_REPO_PATH").map(|root| PathBuf::from(root).join("dist/local"))
-        })
-        .filter(|path| path.join("index.html").is_file())
-}
-pub fn open_url(paths: &Paths) -> Result<String> {
-    anyhow::ensure!(
-        local_web_dist().is_some() || isosui::pinned_dir(paths)?.is_some(),
-        "local IsosUI build is missing; set ISOS_WEB_DIST or ISOSUI_REPO_PATH to a built IsosUI checkout, or pin a local build"
-    );
-    Ok(format!("{}/en/isos", local_origin()))
-}
 pub fn serve(paths: Paths, deployment: String) -> Result<()> {
     paths.prepare()?;
-    let web = local_web_dist();
-    let app = Arc::new(App {
-        paths,
-        deployment,
-        web,
-        pin_cache: Mutex::new(PinCache::default()),
-    });
+    let app = Arc::new(App { paths, deployment });
     let router = router(app);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -731,14 +651,7 @@ fn router(app: Arc<App>) -> Router {
                 .options(preflight),
         )
         .route_layer(middleware::from_fn(cors));
-    Router::new()
-        .merge(api)
-        .route("/", get(static_file_root))
-        .route("/{*path}", get(static_file))
-        .with_state(app)
-}
-async fn static_file_root(State(app): State<Arc<App>>) -> Response {
-    static_file(State(app), UrlPath(String::new())).await
+    Router::new().merge(api).with_state(app)
 }
 
 #[cfg(test)]
@@ -755,8 +668,6 @@ mod tests {
                 runtime: PathBuf::from("/tmp/isos-test/run"),
             },
             deployment: "default".into(),
-            web: None,
-            pin_cache: Mutex::new(PinCache::default()),
         }))
     }
 
@@ -770,8 +681,6 @@ mod tests {
                 runtime: temp.path().join("run"),
             },
             deployment: "default".into(),
-            web: None,
-            pin_cache: Mutex::new(PinCache::default()),
         });
         let request = Request::builder()
             .uri("/api/isos/v2/node-graph")
@@ -797,8 +706,6 @@ mod tests {
                 runtime: temp.path().join("run"),
             },
             deployment: "default".into(),
-            web: None,
-            pin_cache: Mutex::new(PinCache::default()),
         });
         for route in ["/api/isos/v2/backends", "/api/isos/v2/setup-status"] {
             let request = Request::builder()
@@ -832,8 +739,6 @@ mod tests {
                 runtime: temp.path().join("run"),
             },
             deployment: "default".into(),
-            web: None,
-            pin_cache: Mutex::new(PinCache::default()),
         });
         app.paths.prepare().unwrap();
         let body = json!({"id":"island/mujoco-sim","version":"2.0.0","path":bundle});
@@ -908,6 +813,7 @@ mod tests {
 
         for headers in [
             [("origin", "http://127.0.0.1:16000")],
+            [("origin", "http://127.0.0.1:16001")],
             [("sec-fetch-site", "same-origin")],
         ] {
             let mut request = Request::builder()
@@ -948,6 +854,7 @@ mod tests {
     async fn rejects_other_origins_and_hosts() {
         for (host, origin) in [
             ("127.0.0.1:16000", "https://evil.example"),
+            ("127.0.0.1:16000", "http://127.0.0.1:16002"),
             ("localhost:16000", "https://www.os-island.com"),
         ] {
             let request = Request::builder()
@@ -958,6 +865,22 @@ mod tests {
                 .unwrap();
             let response = test_router().oneshot(request).await.unwrap();
             assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        }
+    }
+    #[tokio::test]
+    async fn api_does_not_serve_frontend_pages() {
+        for route in ["/", "/en/isos", "/assets/app.js"] {
+            let response = test_router()
+                .oneshot(
+                    Request::builder()
+                        .uri(route)
+                        .header(header::HOST, "127.0.0.1:16000")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
         }
     }
     #[test]

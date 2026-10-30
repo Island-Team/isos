@@ -74,20 +74,23 @@ def main():
     bundle = Path(os.environ["ISOS_TEST_REAL_BUNDLE"])
     aether = Path(os.environ["ISOS_AETHER_BIN_DIR"])
     mujoco = Path(os.environ["MUJOCO_ROOT"])
-    web = Path(os.environ["ISOS_WEB_DIST"])
+    ui_repo = Path(os.environ.get("ISOSUI_REPO_PATH", str(Path(__file__).resolve().parents[2] / "IsosUI")))
+    if not (ui_repo / "node_modules").is_dir():
+        raise RuntimeError(f"install IsosUI dependencies first: {ui_repo}")
     descriptor = json.loads((bundle / "backend-v2.json").read_text())
     assert descriptor["entrypoint"] == "bin/eos-mujoco-sim"
     scene = descriptor["scenes"][0]["id"]
-    print(f"Environment: IsOS={isos} Aether={aether} bundle={bundle} MuJoCo={mujoco} web={web} DISPLAY={os.environ.get('DISPLAY')} WAYLAND_DISPLAY={os.environ.get('WAYLAND_DISPLAY')}", flush=True)
+    print(f"Environment: IsOS={isos} Aether={aether} bundle={bundle} MuJoCo={mujoco} ui_repo={ui_repo} DISPLAY={os.environ.get('DISPLAY')} WAYLAND_DISPLAY={os.environ.get('WAYLAND_DISPLAY')}", flush=True)
     with tempfile.TemporaryDirectory(prefix="isos-real-v2-") as temporary:
         root = Path(temporary)
         linked_bundle = root / "bundle"
         shutil.copytree(bundle, linked_bundle)
-        isos_port, bridge_port, config_port = port(), port(), port()
+        isos_port, ui_port, bridge_port, config_port = port(), port(), port(), port()
         env = dict(os.environ, ISOS_HOME=str(root / "home"),
                    ISOS_HTTP_PORT=str(isos_port),
+                   ISOSUI_PORT=str(ui_port),
                    ISOS_AETHER_BIN_DIR=str(aether), MUJOCO_ROOT=str(mujoco),
-                   ISOS_WEB_DIST=str(web))
+                   ISOSUI_REPO_PATH=str(ui_repo))
         command(isos, env, "pkg", "link", "island/mujoco-sim", "2.0.0", str(linked_bundle))
         init_log = (root / "init.log").open("w+")
         init = subprocess.Popen([str(isos), "init"], env=env, stdout=init_log,

@@ -6,14 +6,14 @@ IsOS owns the shared Aether v2 graph, backend packages, local workbench API, and
 
 Run `./install.sh` from the v2 `master` checkout to replace the installed IsOS command. The installer stops the previous deployment and legacy `isos-server.service`, removes its obsolete UI token, and force installs the binary built from this checkout. Check `isos --version` afterward; it must report `2.0.0`. `isos stop` also stops a remaining legacy IsOS server. A v2 `isos init` server runs in its terminal and exits with Ctrl+C.
 
-Build and install IsOS, the IsosUI local bundle (`npm run build:local`), and the Aether Rust executables (`aether-profile`, `aether-runtime`, `aether-http-bridge`, `aether-config-server`). Put the Aether binaries beside `isos`, on `PATH`, or set `ISOS_AETHER_BIN_DIR` to their absolute build directory before `isos init`. Set `ISOSUI_REPO_PATH` to the built IsosUI checkout or `ISOS_WEB_DIST` to its `dist/local` directory; IsOS also reads these from a `.env` file in the command's working directory. Build the MuJoCo simulator and stage a v2 bundle with `tools/build-backend-bundle.py` in its repository. Set `MUJOCO_ROOT` to the installed MuJoCo runtime, then:
+Build and install IsOS and the Aether Rust executables (`aether-profile`, `aether-runtime`, `aether-http-bridge`, `aether-config-server`). In the sibling IsosUI checkout, run `npm ci` once; `isos init` subsequently starts its `npm start` server. Put the Aether binaries beside `isos`, on `PATH`, or set `ISOS_AETHER_BIN_DIR` to their absolute build directory before `isos init`. Set `ISOSUI_REPO_PATH` if IsosUI is not at `../IsosUI`; IsOS also reads it from a `.env` file in the command's working directory. Build the MuJoCo simulator and stage a v2 bundle with `tools/build-backend-bundle.py` in its repository. Set `MUJOCO_ROOT` to the installed MuJoCo runtime, then:
 
 ```sh
 isos pkg link island/mujoco-sim 2.0.0 /absolute/path/to/bundle
 isos init
 ```
 
-`isos init` serves the local frontend and API at `http://127.0.0.1:16000/en/isos` without a URL token. It keeps the workbench and process manager attached to this terminal. Leave it running while you use a second terminal for graph editing and deployment commands. Press Ctrl+C to stop the server and any managed children.
+`isos init` starts IsosUI at `http://127.0.0.1:16001/en/isos` and serves the IsOS API only at `http://127.0.0.1:16000/api/isos/v2`, without a URL token. `ISOSUI_PORT` and `ISOS_HTTP_PORT` can change the ports; both bind only to loopback. Leave the command running while editing the graph and deploying. Ctrl+C stops the npm frontend, API, manager, and managed children.
 
 In the second terminal:
 
@@ -30,7 +30,7 @@ isos run
 
 When a v2 MuJoCo bundle is already linked or installed, a new graph selects its pinned version and first advertised scene. Existing authored graphs are preserved.
 
-IsOS uses `~/.config/isos/deployments/<name>.nodes.json`, `~/.local/share/isos/packages/`, and `$XDG_RUNTIME_DIR/isos/` by default. `ISOS_HOME` creates isolated `config/`, `data/`, and `run/` directories for testing. The owner-only control socket is in the runtime directory; the browser API listens on `127.0.0.1:16000`. A local IsosUI bundle may also be pinned separately.
+IsOS uses `~/.config/isos/deployments/<name>.nodes.json`, `~/.local/share/isos/packages/`, and `$XDG_RUNTIME_DIR/isos/` by default. `ISOS_HOME` creates isolated `config/`, `data/`, and `run/` directories for testing. The owner-only control socket is in the runtime directory; the browser API listens on `127.0.0.1:16000`, while npm serves IsosUI on `127.0.0.1:16001`.
 
 To use an archive instead of a local link, run `isos pkg verify <manifest> <asset>` and `isos pkg install --manifest <manifest> --asset <asset> --allow-unapproved` for a local candidate. Approved catalog packages can use `isos pkg install island/mujoco-sim --version 2.0.0` when published. `isos pkg remove` rejects packages referenced by an applied graph.
 

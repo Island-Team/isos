@@ -87,13 +87,15 @@ def main():
         library = root / "mujoco/lib"
         library.mkdir(parents=True)
         (library / "libmujoco.so.3.16.0").write_bytes(b"test-only dependency stub")
-        web = Path(os.environ["ISOS_TEST_WEB_DIST"]) if "ISOS_TEST_WEB_DIST" in os.environ else root / "web"
-        if "ISOS_TEST_WEB_DIST" not in os.environ:
-            web.mkdir()
-            (web / "index.html").write_text("<html><body>IsOS test workbench</body></html>")
+        ui_repo = root / "ui"
+        (ui_repo / "node_modules").mkdir(parents=True)
+        (ui_repo / "en/isos").mkdir(parents=True)
+        (ui_repo / "en/isos/index.html").write_text("<html><body>IsOS test workbench</body></html>")
+        (ui_repo / "package.json").write_text(json.dumps({"name": "isos-ui-stub", "version": "2.0.0", "scripts": {"start": "python3 -m http.server ${ISOSUI_PORT} --bind 127.0.0.1"}}))
         isos_port = free_port()
+        ui_port = free_port()
         env = dict(os.environ, ISOS_HOME=str(home), MUJOCO_ROOT=str(library.parent),
-                   ISOS_HTTP_PORT=str(isos_port), ISOS_WEB_DIST=str(web),
+                   ISOS_HTTP_PORT=str(isos_port), ISOSUI_PORT=str(ui_port), ISOSUI_REPO_PATH=str(ui_repo),
                    ISOS_AETHER_BIN_DIR=str(EOS_BIN))
         run("pkg", "link", "island/mujoco-sim", "2.0.0", str(bundle), env=env)
         init_log = (root / "init.log").open("w+")
@@ -156,9 +158,24 @@ def main():
             else:
                 raise RuntimeError("IsOS HTTP API did not appear")
             assert document["revision"] == saved_hash
-            with urlopen(f"http://127.0.0.1:{isos_port}/en/isos", timeout=4) as response:
-                assert b"<html" in response.read().lower()
-            print("ISOS WORKBENCH static page: PASS")
+            for _ in range(200):
+                try:
+                    with urlopen(f"http://127.0.0.1:{ui_port}/en/isos", timeout=2) as response:
+                        assert b"<html" in response.read().lower()
+                    break
+                except OSError:
+                    if init_process.poll() is not None:
+                        raise RuntimeError("IsOS init exited before npm frontend was ready")
+                    time.sleep(0.05)
+            else:
+                raise RuntimeError("npm frontend did not become ready")
+            try:
+                urlopen(f"http://127.0.0.1:{isos_port}/en/isos", timeout=4)
+            except HTTPError as error:
+                assert error.code == 404
+            else:
+                raise AssertionError("backend unexpectedly served frontend")
+            print("ISOS npm frontend and API split: PASS")
             assert isos_api("backends")["backends"][0]["scenes"] == ["default", "navigation"]
             assert isos_api("setup-status")["ready"]
             assert isos_api("node-graph/validate", "POST", {"schema_version": 2, "graph": document["graph"]})["valid"]
@@ -253,7 +270,10 @@ def main():
                 run_process.wait(timeout=10)
             if init_process.poll() is None:
                 init_process.send_signal(signal.SIGINT)
-            assert init_process.wait(timeout=10) == 0
+            init_exit = init_process.wait(timeout=10)
+            init_log.flush()
+            if init_exit != 0:
+                raise AssertionError(f"isos init exited {init_exit}:\n{(root / 'init.log').read_text()}")
             for pid in shutdown_pids:
                 try:
                     os.kill(pid, 0)
@@ -263,10 +283,13 @@ def main():
             assert not (home / "run/manager.sock").exists()
             init_log.close()
             init_output = (root / "init.log").read_text()
-            assert f"http://127.0.0.1:{isos_port}/en/isos" in init_output
+            assert f"http://127.0.0.1:{ui_port}/en/isos" in init_output
             assert "#token=" not in init_output
             assert not (home / "run/ui-token").exists()
-            print("ISOS INIT Ctrl+C stopped foreground server: PASS")
+            with socket.socket() as probe:
+                probe.settimeout(0.2)
+                assert probe.connect_ex(("127.0.0.1", ui_port)) != 0
+            print("ISOS INIT Ctrl+C stopped API and npm frontend: PASS")
 
 
 if __name__ == "__main__":

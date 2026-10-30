@@ -242,14 +242,6 @@ pub fn pin(paths: &Paths, version: &str) -> Result<Receipt> {
     Ok(receipt)
 }
 
-pub fn pinned_dir(paths: &Paths) -> Result<Option<PathBuf>> {
-    let Some(receipt) = read_pin(paths)? else {
-        return Ok(None);
-    };
-    verify(&receipt)?;
-    Ok(Some(receipt.directory))
-}
-
 pub fn check(paths: &Paths) -> Result<Value> {
     let available: Vec<_> = candidates(paths)?
         .into_iter()
@@ -270,7 +262,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn open_prefers_verified_pin_and_rejects_damage() {
+    fn pin_validation_rejects_damage() {
         let temporary = tempfile::tempdir().unwrap();
         let paths = Paths {
             config: temporary.path().join("config"),
@@ -278,7 +270,7 @@ mod tests {
             runtime: temporary.path().join("run"),
         };
         paths.prepare().unwrap();
-        assert!(crate::http::open_url(&paths).is_err());
+        assert_eq!(check(&paths).unwrap()["status"], "unpinned");
         let commit = "a".repeat(40);
         let directory = build_root(&paths).join(&commit);
         fs::create_dir_all(&directory).unwrap();
@@ -302,12 +294,8 @@ mod tests {
             sha256: digest(&directory).unwrap(),
         };
         config::atomic_write(&pin_path(&paths), &serde_json::to_vec(&receipt).unwrap()).unwrap();
-        assert!(
-            crate::http::open_url(&paths)
-                .unwrap()
-                .eq("http://127.0.0.1:16000/en/isos")
-        );
+        assert_eq!(check(&paths).unwrap()["status"], "pinned");
         fs::write(directory.join("index.html"), "damaged").unwrap();
-        assert!(crate::http::open_url(&paths).is_err());
+        assert!(check(&paths).is_err());
     }
 }
