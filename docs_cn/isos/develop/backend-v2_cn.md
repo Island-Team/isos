@@ -4,6 +4,8 @@
 
 ## 软件包节点契约更新（2026-10-30）
 
+起始图现在直接读取 `templates/generic-graph-v2.toml`；过时的 MuJoCo 起始模板已移除。清理后 `cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test v2_starter`（3 项）及 clean-home 集成测试均通过。日志位于 `logs/test/20261030-package-node-contract/*generic-template.log` 与 `starter.log`。
+
 新的 `isos init` 草稿包含 EOS 调度器和 IsOS 管理的 EOS/bridge/config 进程，不预先选择硬件包。用 `isos pkg link island/mujoco-sim 2.0.0 <bundle> --manifest <bundle>/release.json` 链接 v4 MuJoCo 包，然后以 `isos pkg preview-set island/mujoco-sim 2.0.0 sim-hardware <graph> --values <values.json>` 预览节点集合。值文件须包含描述文件中的场景 ID，以及位于 IsOS 运行目录中的套接字路径。返回的 `graph` 通过常规图操作应用。现有已应用图不会自动变更；`--replace-legacy-mujoco` 执行显式预览迁移并保留无关节点。
 
 运行 `cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test`、`cargo build`，再运行 `ISOS_BIN=target/debug/isos AETHER_BIN_DIR=../Island-eos/target/debug python3 tests/clean_home_v2.py`。Linux x86_64 上 40 项 Rust 测试与 clean-home 协议桩均通过。协议桩检查软件包链接、合成、准入失败、进程归属、采集、观测、运动、停止、重启、修订检查和软件包删除保护。固定负载的五次启动/重启中位数/p99 为 252.165/300.935 毫秒；200 次 HTTP 至 EOS 时间请求中位数/p99 为 10.160/10.612 毫秒，吞吐量为每秒 98.4 次。使用 MuJoCo 3.16.0 暂存包，运行 `ISOS_BIN=target/debug/isos ISOS_TEST_REAL_BUNDLE=<bundle> ISOS_AETHER_BIN_DIR=../Island-eos/target/debug MUJOCO_ROOT=<mujoco-root> ISOSUI_REPO_PATH=../IsosUI python3 tests/real_home_v2.py` 也通过：GUI 可见、采集、底盘/机械臂命令与停止、重启、链接资源变更拒绝和 Ctrl+C。真实启动为 1486.053 毫秒；20 次采集中位数/p99 为 356.168/375.170 毫秒，吞吐量每秒 2.8 次。这些是单机基线。完整输出保存在 `logs/test/20261030-package-node-contract/`。以下历史运行使用较早的自动 MuJoCo 起始图。
@@ -12,7 +14,7 @@
 
 新建节点图会固定已安装的第一个 v2 MuJoCo 软件包版本及其声明的第一个场景。2026-10-30 使用 `/home/ashex/.cargo/bin/isos` 和同目录 Aether release 可执行文件进行了无二进制路径覆盖的检查：`pkg link`、前台 `init`、`v2 validate`、`v2 apply` 和前台 `run` 均通过。四个子进程依赖顺序启动，Ctrl+C 依赖顺序停止；所选场景为 `pick-place`。命令与节点图记录位于 `logs/test/20261030-starter-scene/installed-home.log`。
 
-IsOS 源模板为 `templates/mujoco-graph-v2.toml`。`src/v2_starter.rs` 选择本机路径，`src/v2_backend.rs` 解析软件包回执、描述文件与资源，`src/v2_process.rs` 校验后端/设备/套接字引用并管理直接子进程，`src/http.rs` 仅提供环回 API。`src/main.rs` 从 `ISOSUI_REPO_PATH` 或相邻的 `../IsosUI` 运行并管理 IsosUI 的 `npm start` 进程组，设置 `ISOSUI_PORT` 和 `ISOSUI_API_ORIGIN`。按 Ctrl+C 会停止 npm 子进程、API、管理器和部署子进程。EOS 注册表与适配器位于自身 `crates/` 工作区；IsosUI 拥有编辑器。软件包描述文件、图节点设置和仿真器数据结构应各自独立。
+IsOS 源模板为 `templates/generic-graph-v2.toml`。`src/v2_starter.rs` 选择本机路径，`src/v2_backend.rs` 解析软件包回执、描述文件与资源，`src/v2_process.rs` 校验后端/设备/套接字引用并管理直接子进程，`src/http.rs` 仅提供环回 API。`src/main.rs` 从 `ISOSUI_REPO_PATH` 或相邻的 `../IsosUI` 运行并管理 IsosUI 的 `npm start` 进程组，设置 `ISOSUI_PORT` 和 `ISOSUI_API_ORIGIN`。按 Ctrl+C 会停止 npm 子进程、API、管理器和部署子进程。EOS 注册表与适配器位于自身 `crates/` 工作区；IsosUI 拥有编辑器。软件包描述文件、图节点设置和仿真器数据结构应各自独立。
 
 可重复检查：运行 `cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test` 和 `python3 tests/clean_home_v2.py`。测试程序在全新 home 中制作协议模拟包，检查缺失资源、错误设备准入、删除保护、进程顺序、修订不变性、发现、相机采集、底盘与机械臂观测及运动、安全停止、重启和日志；测量五次启动/重启和 200 次 HTTP→EOS 套接字请求。此程序不测试 MuJoCo 物理或真实库加载。
 
