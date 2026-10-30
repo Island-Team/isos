@@ -10,4 +10,6 @@ The shared graph at `config/deployments/<name>.nodes.json` is the v2 source of t
 
 IsosUI owns frontend source and static builds. Do not copy it into this repository. The UI applies revisions through the same IsOS node-graph API used by the CLI. Graph layout is visual state; node settings and typed ports are runtime state.
 
+The v2 starter graph declares EOS manual, primitive, and skill control nodes with typed status and observation inputs. Keep the dispatcher as the sole actuator command route. Every control target and ordered skill step must be explicit in settings and references; IsOS must not synthesize hidden controls at run time.
+
 `isos init` starts the IsosUI repository's `npm start` command as a supervised process on `127.0.0.1:16001` and runs only the IsOS API on `127.0.0.1:16000`. The source path comes from `ISOSUI_REPO_PATH` or sibling `../IsosUI`; npm dependencies must be installed there. Both servers and the manager stay attached to the foreground command, and Ctrl+C stops them. Never serve UI files from the IsOS API port. Preserve strict loopback Host and Origin checks, and load local `.env` before resolving settings.

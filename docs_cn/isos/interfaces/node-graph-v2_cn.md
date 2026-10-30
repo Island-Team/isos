@@ -40,4 +40,17 @@ IsOS 将已验证的可执行文件、场景路径和 MuJoCo 库路径传给 EOS
 
 管理器按依赖顺序启动直接子进程，等待就绪；停止时逆序向进程组发送 TERM，两秒后发送 KILL。提供者故障时先停止依赖者再恢复。日志位于 `$XDG_DATA_HOME/isos/process-logs/<deployment>/<node>.log`。状态包含已保存/运行中修订、固定软件包、PID、重启次数和最近管理错误。私有 Unix 管理器 API 保留 schema 1 封装，使用 `v2_start`、`v2_restart`、`v2_stop`、`v2_status` 操作。
 
+## 起始图中的 EOS 控制节点
+
+起始图在 `cores/eos/layers/control` 中声明 `manual_0`、`base_velocity_0`、`arm_joint_0` 和 `demo_0`。对应类型为 `eos.control.manual@v1.0`、`eos.control.primitive@v1.0`、`eos.control.skill@v1.0`。它们配置命令来源；运行中的请求与结果仍使用独立的有类型数据。每个控制节点都引用 EOS 调度器的规范路径。手动和原语节点还引用目标硬件节点；技能节点引用组成它的原语。这些引用不构成直接执行器路径；现有调度器输出仍是硬件唯一的命令输入。
+
+| 设置 | Rust 类型 | 单位 | 用途与校验 |
+| --- | --- | --- | --- |
+| 手动 `target` | `String` | 规范节点路径 | 必填底盘或机械臂目标；须为已准入硬件节点并出现在 `references` 中。 |
+| 原语 `target` | `String` | 规范节点路径 | 必填硬件目标；须为已准入底盘或机械臂节点并出现在 `references` 中。 |
+| 原语 `movement_type` | `String` 枚举 | 运动模式 | 底盘须为 `body_velocity`，机械臂须为 `joint_positions`；目标必须支持该模式。 |
+| 技能 `steps` | `Vec<String>` | 有序规范节点路径 | 必填有序原语引用；每个路径须出现在 `references` 中，且解析为已注册原语节点。 |
+
+手动和原语节点必须从调度器接收 `status: Status` 输入，并从目标硬件接收 `base_observation: BaseObservation` 或 `manipulator_observation: ManipulatorObservation` 输入；技能节点必须从调度器接收 `status: Status`。手动和原语节点提供 `request: ControlRequest` 与 `outcome: CommandOutcome` 输出端口；技能节点提供 `outcome: SkillOutcome`。节点 ID 默认由最终类型名和序号组成，例如 `manual_0` 或 `demo_0`；它是图身份，不是运动数据结构。
+
 另见[后端软件包设计](../design/backend-v2_cn.md)和[本地 API](local-api_cn.md)。

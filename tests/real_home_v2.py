@@ -166,6 +166,31 @@ def main():
             assert arm_result["result"]["status"] != "Rejected"
             print("Real base and manipulator dispatch:", base_result["result"]["status"],
                   arm_result["result"]["status"], flush=True)
+            manual = "cores/eos/layers/control/groups/manual/nodes/manual_0"
+            primitive = "cores/eos/layers/control/groups/primitive/nodes/arm_joint_0"
+            skill = "cores/eos/layers/control/groups/skill/nodes/demo_0"
+            manual_request = {"op": "manual", "node_path": manual, "command_id": "real-manual-1",
+                              "deadline_monotonic_ns": now + 5_000_000_000,
+                              "movement": {"type": "body_velocity", "x_m_s": 0.05,
+                                           "y_m_s": 0.0, "yaw_rad_s": 0.0, "valid_for_ms": 100}}
+            assert eos(bridge_port, manual_request)["result"]["status"] != "Rejected"
+            primitive_request = {"op": "primitive", "node_path": primitive,
+                                 "command_id": "real-primitive-1",
+                                 "deadline_monotonic_ns": now + 5_000_000_000,
+                                 "movement": {"type": "joint_positions",
+                                              "joint_names": [f"joint{i}" for i in range(1, 7)],
+                                              "joint_positions_rad": [0.0] * 6}}
+            assert eos(bridge_port, primitive_request)["result"]["status"] != "Rejected"
+            execution = eos(bridge_port, {"op": "skill_execute", "node_path": skill,
+                                          "execution_id": "real-skill-1",
+                                          "steps": [{"movement": manual_request["movement"]},
+                                                    {"movement": primitive_request["movement"]}]})
+            assert execution["execution"]["status"] in ("queued", "running", "failed", "completed")
+            assert await_condition(lambda: (result if (result := eos(bridge_port, {
+                "op": "skill_result", "execution_id": "real-skill-1"}))["execution"]["status"]
+                in ("failed", "completed") else None))["execution"]["status"] == "failed"
+            assert eos(bridge_port, {"op": "manual_stop", "node_path": manual})["ok"]
+            print("Real manual and primitive control, skill uncertain-outcome stop: PASS", flush=True)
             assert eos(bridge_port, {"op": "stop", "node_path": base})["ok"]
             assert eos(bridge_port, {"op": "stop", "node_path": arm})["ok"]
             nested_asset = linked_bundle / "assets/menagerie/robotiq_2f85/2f85.xml"
