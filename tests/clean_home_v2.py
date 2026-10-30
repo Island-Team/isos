@@ -61,6 +61,7 @@ def free_port():
 
 
 def main():
+    build_stage = os.environ.get("ISOS_TEST_BUILD_STAGE") == "1"
     for binary in [ISOS, EOS_BIN / "aether-profile", EOS_BIN / "aether-runtime",
                    EOS_BIN / "aether-http-bridge", EOS_BIN / "aether-config-server"]:
         if not binary.is_file():
@@ -108,6 +109,15 @@ def main():
         env = dict(os.environ, ISOS_HOME=str(home), MUJOCO_ROOT=str(library.parent),
                    ISOS_HTTP_PORT=str(isos_port), ISOSUI_PORT=str(ui_port), ISOSUI_REPO_PATH=str(ui_repo),
                    ISOS_AETHER_BIN_DIR=str(EOS_BIN))
+        if build_stage:
+            built = subprocess.run([str(ISOS), "build", "eos"], env=env, text=True,
+                                   capture_output=True, timeout=300)
+            print("$ isos build eos\n" + built.stdout.strip(), flush=True)
+            if built.stderr:
+                print(built.stderr.strip(), flush=True)
+            if built.returncode:
+                raise RuntimeError(f"isos build eos exited {built.returncode}")
+            assert (home / "data/builds/eos/current.json").is_file()
         run("pkg", "link", "island/mujoco-sim", "2.0.0", str(bundle), "--manifest", str(manifest), env=env)
         init_log = (root / "init.log").open("w+")
         init_process = subprocess.Popen([str(ISOS), "init"], env=env,
@@ -171,13 +181,13 @@ def main():
         assert run("pkg", "remove", "island/mujoco-sim", "2.0.0", env=env, expect=False).returncode != 0
         saved_hash = hashlib.sha256(graph_path.read_bytes()).hexdigest()
         try:
-            def isos_api(path, method="GET", data=None):
+            def isos_api(path, method="GET", data=None, timeout=4):
                 payload = None if data is None else json.dumps(data).encode()
                 request = Request(f"http://127.0.0.1:{isos_port}/api/isos/v2/{path}",
                                   data=payload, method=method,
                                   headers={"Origin": f"http://127.0.0.1:{isos_port}",
                                            "Content-Type": "application/json"})
-                with urlopen(request, timeout=4) as response:
+                with urlopen(request, timeout=timeout) as response:
                     envelope = json.load(response)
                 if not envelope["ok"]:
                     raise RuntimeError(envelope)
@@ -191,6 +201,16 @@ def main():
             else:
                 raise RuntimeError("IsOS HTTP API did not appear")
             assert document["revision"] == saved_hash
+            if build_stage:
+                built = isos_api("build-binaries", "POST", {"schema_version": 2, "target": "eos", "install_deps": False}, timeout=300)
+                receipt = built["receipt"]
+                assert receipt["component"] == "eos" and len(receipt["binaries"]) == 5
+                assert isos_api("build-binaries")["selected"]["sha256"] == receipt["sha256"]
+                assert built["suggested_graph"]["revision"] == saved_hash
+                for node, binary in [("eos", "aether-runtime"), ("bridge", "aether-http-bridge"), ("config", "aether-config-server")]:
+                    command = graph["cores"]["isos"]["layers"]["process"]["groups"]["component"]["nodes"][node]["settings"]["command"]
+                    assert command[0] == receipt["binaries"][binary]
+                print("BUILD CLI/API staged exact same EOS binary set: PASS", flush=True)
             for _ in range(200):
                 try:
                     with urlopen(f"http://127.0.0.1:{ui_port}/en/isos", timeout=2) as response:
@@ -320,7 +340,7 @@ def main():
             except HTTPError as error:
                 assert error.code == 422
                 failure = json.load(error)
-                assert "capabilities" in failure["error"] and "isos build eos" in failure["error"]
+                assert ("capabilities" in failure["error"] and "isos build eos" in failure["error"]) or "staged Rust v2 build" in failure["error"]
             assert isos_api("process-status")["state"] == "stopped"
             graph_path.write_bytes(original_graph)
             print("FAILURE stale EOS binary returned API 422 without degraded startup: PASS")

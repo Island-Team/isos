@@ -177,7 +177,14 @@ impl LogStore {
         let mut file =
             File::open(&path).with_context(|| format!("log source {source} is unavailable"))?;
         let meta = file.metadata()?;
-        let identity = format!("{:x}-{:x}", meta.dev(), meta.ino());
+        // Inodes can be reused during rapid rotation. Birth time is stable
+        // while a file is appended and changes when a replacement is created.
+        let birth_ns = meta
+            .created()
+            .ok()
+            .and_then(|created| created.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |duration| duration.as_nanos());
+        let identity = format!("{:x}-{:x}-{birth_ns:x}", meta.dev(), meta.ino());
         let mut offset = 0_u64;
         let mut rotated = false;
         if let Some(cursor) = cursor {
