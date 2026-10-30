@@ -22,6 +22,7 @@ pub struct LogStore {
     legacy: PathBuf,
     max_bytes: u64,
     backups: u8,
+    level: u8,
     lock: Arc<Mutex<()>>,
 }
 
@@ -31,6 +32,17 @@ fn source_valid(source: &str) -> bool {
         && source
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+pub fn level_rank(level: &str) -> Option<u8> {
+    match level {
+        "trace" => Some(0),
+        "debug" => Some(1),
+        "info" => Some(2),
+        "warn" => Some(3),
+        "error" => Some(4),
+        _ => None,
+    }
 }
 
 fn private_dir(path: &Path) -> Result<()> {
@@ -52,6 +64,9 @@ impl LogStore {
             .map(|v| v.parse())
             .transpose()?
             .unwrap_or(DEFAULT_BACKUPS);
+        let level = std::env::var("ISOS_LOG_LEVEL").unwrap_or_else(|_| "info".into());
+        let level = level_rank(&level)
+            .context("ISOS_LOG_LEVEL must be trace, debug, info, warn, or error")?;
         ensure!(
             (65_536..=100_000_000).contains(&max_bytes),
             "ISOS_LOG_MAX_BYTES must be 65536..100000000"
@@ -79,6 +94,7 @@ impl LogStore {
             legacy,
             max_bytes,
             backups,
+            level,
             lock: Arc::new(Mutex::new(())),
         })
     }
@@ -121,6 +137,10 @@ impl LogStore {
     }
 
     pub fn append(&self, source: &str, level: &str, message: &str) -> Result<()> {
+        let rank = level_rank(level).context("invalid log level")?;
+        if rank < self.level {
+            return Ok(());
+        }
         let _guard = self.lock.lock().unwrap();
         let path = self.path(source)?;
         let message = if message.len() > 8192 {
@@ -136,6 +156,10 @@ impl LogStore {
     }
 
     pub fn append_child(&self, source: &str, level: &str, message: &str) -> Result<()> {
+        let rank = level_rank(level).context("invalid log level")?;
+        if rank < self.level {
+            return Ok(());
+        }
         self.append(source, level, message)?;
         let _guard = self.lock.lock().unwrap();
         let path = self.legacy.join(format!("{source}.log"));
@@ -279,5 +303,23 @@ mod tests {
             fs::read_to_string(store.legacy.join("config.log")).unwrap(),
             "failure\n"
         );
+    }
+
+    #[test]
+    fn severity_threshold_filters_child_and_legacy_files() {
+        let (_temp, mut store) = store();
+        store.level = level_rank("warn").unwrap();
+        store.append_child("eos", "info", "routine stdout").unwrap();
+        store
+            .append_child("eos", "error", "important stderr")
+            .unwrap();
+        let lines = store.read("eos", None, 10).unwrap();
+        assert_eq!(lines["lines"].as_array().unwrap().len(), 1);
+        assert_eq!(lines["lines"][0]["message"], "important stderr");
+        assert_eq!(
+            fs::read_to_string(store.legacy.join("eos.log")).unwrap(),
+            "important stderr\n"
+        );
+        assert!(store.append("isos", "verbose", "unknown").is_err());
     }
 }

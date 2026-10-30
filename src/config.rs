@@ -60,6 +60,7 @@ struct DeploymentConfig {
 struct LoggingConfig {
     max_bytes: Option<u64>,
     backups: Option<u8>,
+    level: Option<String>,
 }
 
 fn config_values(source: &str) -> Result<BTreeMap<&'static str, String>> {
@@ -99,7 +100,24 @@ fn config_values(source: &str) -> Result<BTreeMap<&'static str, String>> {
         ensure!((1..=10).contains(&backups), "logging.backups must be 1..10");
         values.insert("ISOS_LOG_BACKUPS", backups.to_string());
     }
+    if let Some(level) = config.logging.level {
+        ensure!(
+            crate::log_store::level_rank(&level).is_some(),
+            "logging.level must be trace, debug, info, warn, or error"
+        );
+        values.insert("ISOS_LOG_LEVEL", level);
+    }
     Ok(values)
+}
+
+fn config_without_env_overrides(
+    values: BTreeMap<&'static str, String>,
+    has_env: impl Fn(&str) -> bool,
+) -> BTreeMap<&'static str, String> {
+    values
+        .into_iter()
+        .filter(|(key, _)| !has_env(key))
+        .collect()
 }
 
 pub fn load_runtime_config() -> Result<()> {
@@ -120,12 +138,12 @@ pub fn load_runtime_config() -> Result<()> {
         }
         Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
     };
-    for (key, value) in config_values(&source)? {
-        if std::env::var_os(key).is_none() {
-            // This runs once before CLI parsing, threads, or child processes exist.
-            unsafe {
-                std::env::set_var(key, value);
-            }
+    for (key, value) in config_without_env_overrides(config_values(&source)?, |key| {
+        std::env::var_os(key).is_some()
+    }) {
+        // This runs once before CLI parsing, threads, or child processes exist.
+        unsafe {
+            std::env::set_var(key, value);
         }
     }
     Ok(())
@@ -461,13 +479,18 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
     #[test]
     fn config_toml_maps_settings_and_rejects_invalid_values() {
-        let values = config_values("[server]\nhttp_port=16000\n[paths]\nui_repo='/tmp/ui'\n[logging]\nmax_bytes=1048576\nbackups=3\n").unwrap();
+        let values = config_values("[server]\nhttp_port=16000\n[paths]\nui_repo='/tmp/ui'\n[logging]\nlevel='warn'\nmax_bytes=1048576\nbackups=3\n").unwrap();
         assert_eq!(values["ISOS_HTTP_PORT"], "16000");
         assert_eq!(values["ISOSUI_REPO_PATH"], "/tmp/ui");
         assert_eq!(values["ISOS_LOG_BACKUPS"], "3");
+        assert_eq!(values["ISOS_LOG_LEVEL"], "warn");
+        let selected = config_without_env_overrides(values, |key| key == "ISOS_LOG_LEVEL");
+        assert!(!selected.contains_key("ISOS_LOG_LEVEL"));
+        assert_eq!(selected["ISOS_HTTP_PORT"], "16000");
         assert!(config_values("[server]\nhttp_port=80\n").is_err());
         assert!(config_values("[paths]\nui_repo='relative'\n").is_err());
         assert!(config_values("[unknown]\nvalue=1\n").is_err());
+        assert!(config_values("[logging]\nlevel='verbose'\n").is_err());
     }
     #[test]
     fn generates_readable_stack() {

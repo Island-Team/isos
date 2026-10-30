@@ -13,5 +13,6 @@ mujoco_root = "/absolute/path/to/mujoco"
 name = "default"
 
 [logging]
+level = "info" # trace, debug, info, warn, error; environment: ISOS_LOG_LEVEL
 max_bytes = 1048576
 backups = 3

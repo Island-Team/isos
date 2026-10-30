@@ -348,7 +348,7 @@ mod tests {
             "node_contributions":{"node_types":[
                 {"id":"eos.process.mujoco@v1.0","core":"eos","layer":"process","group":"mujoco","kind":"software","lifecycle":"process","capabilities":[],"settings":[],"inputs":[],"outputs":[]},
                 {"id":"eos.hardware.mujoco_camera@v1.0","core":"eos","layer":"hardware","group":"mujoco","kind":"camera","lifecycle":"adapter","capabilities":[],"settings":[],"inputs":[],"outputs":[]}
-            ],"safety_adapters":[],"data_types":[{"id":"test.vision.frame@v1.0","media_type":"application/json","codec":"json_v1","schema":{"type":"object"},"max_payload_bytes":65536}],"node_sets":[{
+            ],"safety_adapters":[],"data_types":[{"id":"test.vision.frame@v1.0","version":"1.0","purpose":"Test camera preview","media_type":"application/json","codec":"json_v1","schema":{"type":"object"},"max_payload_bytes":65536}],"node_sets":[{
                 "id":"hardware","parameters":{"socket":{"type":"string"}},
                 "nodes":[
                     {"ref":"simulator","core":"eos","layer":"process","group":"mujoco","profile":{"id":"simulator","node_type":"eos.process.mujoco@v1.0","settings":{"socket":"${socket}"}}},

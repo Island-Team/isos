@@ -27,6 +27,8 @@ API 只绑定 `127.0.0.1`，不提供前端文件。IsosUI 通过地址和端口
 
 日志 `source` 可为 `isos`、`packages`、`graph`、`ui`、`eos`、`egia`、`mujoco`、`bridge`、`config` 或通过校验的子进程 ID。`limit` 范围为 1–200，默认为 100。每行包含 RFC 3339 UTC 字符串 `timestamp`、字符串 `level`（子进程标准输出为 `info`，错误输出为 `error`）、字符串 `source` 和字符串 `message`。即使当前文件已读完，`next_cursor` 仍为字符串，后续可用它继续轮询。日志目录权限为 `0700`、普通文件为 `0600`；达到 `[logging].max_bytes`（默认 1 MiB）后轮转，保留 `[logging].backups`（默认 3）份。旧进程端点读取镜像原始文本行。
 
+`[logging].level` 按 `trace < debug < info < warn < error` 过滤低于阈值的文件记录，默认为 `info`。子进程标准输出为 `info`，标准错误为 `error`；选 `warn` 或 `error` 时，分类文件及旧日志文件均省略标准输出但保留错误。终端状态和命令错误不受影响。
+
 应用图包含 MuJoCo 软件包时，IsOS 会把部署日志目录传给 EOS 运行时。只有 EOS 写入和轮转 `mujoco.log`，并遵守相同的 JSON 行与权限契约；IsOS 通过此 API 读取。
 
 ### 本地运行配置
@@ -43,3 +45,4 @@ IsOS 会读取存在的 `~/.config/isos/config.toml`（或 `ISOS_HOME/config/con
 | `deployment.name` | slug 字符串 | 默认图与日志命名空间；需通过部署名校验 | `ISOS_DEPLOYMENT` |
 | `logging.max_bytes` | 整数，字节 | 轮转阈值 65,536–100,000,000；默认 1,048,576 | `ISOS_LOG_MAX_BYTES` |
 | `logging.backups` | 整数，份数 | 轮转副本 1–10；默认 3 | `ISOS_LOG_BACKUPS` |
+| `logging.level` | 枚举字符串 | 文件最低级别：`trace`、`debug`、`info`、`warn` 或 `error`；默认 `info` | `ISOS_LOG_LEVEL` |

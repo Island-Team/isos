@@ -51,6 +51,8 @@ pub struct NodeContributions {
 #[serde(deny_unknown_fields)]
 pub struct DataType {
     pub id: String,
+    pub version: String,
+    pub purpose: String,
     pub media_type: String,
     pub codec: String,
     pub schema: Value,
@@ -154,6 +156,23 @@ fn valid_slug(s: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
+fn valid_data_type_identity(data_type: &DataType) -> bool {
+    let valid_version = data_type
+        .version
+        .split_once('.')
+        .is_some_and(|(major, minor)| {
+            !major.is_empty()
+                && !minor.is_empty()
+                && major.bytes().all(|b| b.is_ascii_digit())
+                && minor.bytes().all(|b| b.is_ascii_digit())
+        });
+    valid_version
+        && data_type.id.ends_with(&format!("@v{}", data_type.version))
+        && data_type.id.split_once("@v").is_some_and(|(prefix, _)| {
+            prefix.contains('.') && !prefix.starts_with('.') && !prefix.ends_with('.')
+        })
+}
+
 fn numeric_version(s: &str) -> Option<Vec<u32>> {
     let values: Option<Vec<u32>> = s.split('.').map(|v| v.parse().ok()).collect();
     values.filter(|v| !v.is_empty())
@@ -227,8 +246,13 @@ impl Release {
             let mut data_ids = std::collections::BTreeSet::new();
             for data_type in &contributions.data_types {
                 ensure!(
-                    data_type.id.contains("@v") && data_ids.insert(&data_type.id),
+                    valid_data_type_identity(data_type) && data_ids.insert(&data_type.id),
                     "invalid or duplicate data type {}",
+                    data_type.id
+                );
+                ensure!(
+                    !data_type.purpose.trim().is_empty(),
+                    "{}: purpose is required",
                     data_type.id
                 );
                 ensure!(
@@ -510,6 +534,22 @@ pub fn verify_file(asset: &Asset, path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn custom_data_idl_requires_explicit_version_and_purpose() {
+        let valid = serde_json::json!({"id":"vendor.camera.frame@v1.0","version":"1.0","purpose":"Camera preview","media_type":"application/json","codec":"json_v1","schema":{"type":"object"},"max_payload_bytes":65536});
+        let descriptor: DataType = serde_json::from_value(valid.clone()).unwrap();
+        assert!(valid_data_type_identity(&descriptor));
+        let mut mismatched = descriptor.clone();
+        mismatched.version = "1.1".into();
+        assert!(!valid_data_type_identity(&mismatched));
+        let mut missing_version = valid.clone();
+        missing_version.as_object_mut().unwrap().remove("version");
+        assert!(serde_json::from_value::<DataType>(missing_version).is_err());
+        let mut missing_purpose = valid;
+        missing_purpose.as_object_mut().unwrap().remove("purpose");
+        assert!(serde_json::from_value::<DataType>(missing_purpose).is_err());
+    }
 
     #[test]
     fn accepts_catalog_activation_compatibility_fields() {
