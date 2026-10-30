@@ -20,6 +20,7 @@ isos serve
 `isos serve` hosts IsosUI at `http://127.0.0.1:16001/en/isos` and the API at `http://127.0.0.1:16000/api/isos/v2`. `ISOSUI_PORT` and `ISOS_HTTP_PORT` change the loopback ports. Product mode serves only the selected verified static UI and does not need npm or source checkouts. Ctrl+C or `isos stop` stops the UI, API, deployment, explicitly started services, and manager. `isos deployment stop` stops the graph only.
 
 An optional systemd user unit runs that same product command: after `isos init --mode product` and selecting verified builds, run `tools/user-service.sh install`. Run `tools/user-service.sh remove` to disable it. CLI commands and shell completion work without the unit.
+Product mode requires an exact selected IsOS executable. With the manager stopped, run `isos build isos` and `isos version select isos <staged-commit>` before `isos serve`.
 
 In the second terminal:
 

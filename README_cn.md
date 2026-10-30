@@ -20,6 +20,7 @@ isos serve
 `isos serve` 在 `http://127.0.0.1:16001/en/isos` 提供 IsosUI，在 `http://127.0.0.1:16000/api/isos/v2` 提供 API。`ISOSUI_PORT` 与 `ISOS_HTTP_PORT` 可修改环回端口。产品模式只使用经校验的固定静态 UI，不需要 npm 或源码目录。Ctrl+C 或 `isos stop` 会停止 UI、API、部署、显式启动的服务及管理器；`isos deployment stop` 只停止图部署。
 
 可选的 systemd 用户单元运行相同的产品模式命令：在 `isos init --mode product` 并选择经验证的构建后，运行 `tools/user-service.sh install`；运行 `tools/user-service.sh remove` 可禁用。CLI 与 shell 补全不依赖此单元。
+产品模式要求精确选择的 IsOS 可执行文件。管理器停止时，先执行 `isos build isos` 和 `isos version select isos <staged-commit>`，再执行 `isos serve`。
 
 在第二个终端执行：
 

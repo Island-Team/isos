@@ -1307,6 +1307,7 @@ impl Drop for Frontend {
 }
 
 fn serve_foreground(paths: config::Paths, name: String, ui_live: bool) -> Result<()> {
+    v2_build::verify_active_isos(&paths)?;
     ensure!(
         !ui_live || paths.mode()? == "dev",
         "--ui-live is available only in dev mode"

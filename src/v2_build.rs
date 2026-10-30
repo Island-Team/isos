@@ -28,6 +28,8 @@ pub struct IsosReceipt {
     pub source_commit: String,
     pub source_dirty: bool,
     pub source_fingerprint: String,
+    #[serde(default)]
+    pub source_root: Option<PathBuf>,
     pub executable: PathBuf,
     pub sha256: String,
 }
@@ -97,6 +99,7 @@ pub fn build_isos(paths: &Paths) -> Result<IsosReceipt> {
         source_commit: commit,
         source_dirty: dirty,
         source_fingerprint: fingerprint,
+        source_root: Some(root),
         executable,
         sha256,
     };
@@ -168,6 +171,38 @@ pub fn install_isos(paths: &Paths, selector: &str) -> Result<IsosReceipt> {
         &serde_json::to_vec_pretty(&receipt)?,
     )?;
     Ok(receipt)
+}
+
+pub fn verify_active_isos(paths: &Paths) -> Result<()> {
+    let pin = paths.config.join("pins/isos.json");
+    if !pin.exists() {
+        ensure!(
+            paths.mode()? != "product",
+            "product mode requires a selected IsOS build; run `isos build isos`, then `isos version select isos <commit>` while the manager is stopped"
+        );
+        return Ok(());
+    }
+    let receipt: IsosReceipt = serde_json::from_slice(&fs::read(pin)?)?;
+    verify_isos(&receipt)?;
+    ensure!(
+        digest(&std::env::current_exe()?)? == receipt.sha256,
+        "this IsOS executable differs from the selected build; run `isos version select isos <commit>` while the manager is stopped"
+    );
+    if paths.mode()? == "product" {
+        ensure!(
+            !receipt.source_dirty && !receipt.source_fingerprint.is_empty(),
+            "product mode requires a clean, fingerprinted IsOS receipt"
+        );
+    } else if let Some(root) = &receipt.source_root
+        && root.is_dir()
+    {
+        let (commit, _, fingerprint) = source_identity(root)?;
+        ensure!(
+            commit == receipt.source_commit && fingerprint == receipt.source_fingerprint,
+            "IsOS source changed since selected build; run `isos build isos`, then `isos version select isos <commit>`"
+        );
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -681,6 +716,7 @@ mod tests {
             source_commit: "a".repeat(40),
             source_dirty: false,
             source_fingerprint: "b".repeat(64),
+            source_root: None,
             executable: executable.clone(),
             sha256: digest(&executable).unwrap(),
         };
