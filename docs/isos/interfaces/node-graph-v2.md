@@ -16,13 +16,14 @@ Path: `cores/isos/layers/process/groups/backend/nodes/<id>`. Type: `isos.process
 | `version` | `String` | package version | Required exact installed or linked version, initially `2.0.0`. |
 | `scene` | `String` | scene ID | Required ID from the descriptor; selects one XML scene. |
 | `socket` | `PathBuf` | Unix path | Required owner-only socket under IsOS runtime, absolute and at most 107 bytes. EOS adapters must use this path. |
-| `env` | `BTreeMap<String,String>` | environment | Optional runtime values, including `MUJOCO_ROOT`; keys are ASCII alphanumeric or `_`, values exclude NUL. |
+| `env` | `BTreeMap<String,String>` | environment | Optional runtime values passed only to the simulator child. `MUJOCO_ROOT` locates the library; `MUJOCO_GUI=1` requests the simulator's visible window on a graphical host. Keys are ASCII alphanumeric or `_`, values exclude NUL. |
 | `start_timeout_ms` | `u64` | ms | Readiness deadline, default 30000, range 1–120000. |
 | `restart` | `Restart` | policy | `never`, `on_failure`, or `always`; default `never`. |
 | `max_restarts` | `u32` | attempts | Automatic restart cap, default 0, maximum 10. |
 | `depends_on` | `Vec<String>` | canonical node paths | Process prerequisites, unique and acyclic. |
 
 The backend descriptor's `entrypoint`, `scenes`, `devices`, `protocol`, and MuJoCo runtime requirement are verified at apply and run. IsOS checks referenced scene assets and includes their bytes in the link fingerprint. Each EOS hardware adapter must name the backend in `references`, set `adapter.settings.backend` to its canonical path, match `socket_path` to the backend socket, and match `device_id`/`simulator_node` to the package device for its camera/base/manipulator group.
+IsOS launches the descriptor entrypoint directly and prepends the verified MuJoCo library directory to that child's `LD_LIBRARY_PATH`, preserving any existing search path. This environment change is scoped to the simulator process.
 
 ## Component process node
 

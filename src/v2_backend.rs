@@ -95,6 +95,53 @@ fn scene_asset_hash(root: &Path, scene: &Path, digest: &mut Sha256) -> Result<()
     Ok(())
 }
 
+fn bundle_asset_hash(root: &Path, digest: &mut Sha256) -> Result<()> {
+    const MAX_FILES: usize = 4096;
+    const MAX_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
+    let assets = root.join("assets");
+    let mut pending = vec![assets];
+    let mut files = Vec::new();
+    while let Some(directory) = pending.pop() {
+        if !directory.exists() {
+            continue;
+        }
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            ensure!(
+                !kind.is_symlink(),
+                "bundle assets must not contain symlinks"
+            );
+            if kind.is_dir() {
+                pending.push(entry.path());
+            } else {
+                ensure!(kind.is_file(), "bundle assets must be regular files");
+                files.push(entry.path());
+                ensure!(files.len() <= MAX_FILES, "bundle has too many asset files");
+            }
+        }
+    }
+    files.sort();
+    let mut total = 0_u64;
+    for path in files {
+        let relative = path.strip_prefix(root)?;
+        let size = fs::metadata(&path)?.len();
+        ensure!(
+            size <= 64 * 1024 * 1024,
+            "bundle asset is too large: {}",
+            relative.display()
+        );
+        total = total
+            .checked_add(size)
+            .context("bundle asset size overflow")?;
+        ensure!(total <= MAX_TOTAL_BYTES, "bundle assets exceed 512 MiB");
+        digest.update(relative.as_os_str().as_encoded_bytes());
+        digest.update(size.to_le_bytes());
+        digest.update(fs::read(&path)?);
+    }
+    Ok(())
+}
+
 fn relative_file(root: &Path, relative: &str, executable: bool) -> Result<PathBuf> {
     ensure!(
         !relative.is_empty()
@@ -196,16 +243,36 @@ pub fn resolve(
     let library_root = PathBuf::from(&mujoco_root)
         .canonicalize()
         .context("MUJOCO_ROOT is missing")?;
-    relative_file(&library_root, &descriptor.runtime.library, false)?;
+    let library = relative_file(&library_root, &descriptor.runtime.library, false)?;
     let mut environment = env.clone();
     environment.insert(
         "MUJOCO_ROOT".into(),
         library_root.to_string_lossy().into_owned(),
     );
+    let mut loader_paths = vec![
+        library
+            .parent()
+            .context("MuJoCo library has no parent directory")?
+            .to_path_buf(),
+    ];
+    if let Some(existing) = env
+        .get("LD_LIBRARY_PATH")
+        .cloned()
+        .or_else(|| std::env::var("LD_LIBRARY_PATH").ok())
+    {
+        loader_paths.extend(std::env::split_paths(&existing));
+    }
+    environment.insert(
+        "LD_LIBRARY_PATH".into(),
+        std::env::join_paths(loader_paths)?
+            .to_string_lossy()
+            .into_owned(),
+    );
     let mut digest = Sha256::new();
     digest.update(&descriptor_bytes);
     digest.update(fs::read(&executable)?);
     scene_asset_hash(&root, &scene, &mut digest)?;
+    bundle_asset_hash(&root, &mut digest)?;
     Ok(ResolvedBackend {
         descriptor,
         executable,
@@ -296,10 +363,28 @@ mod tests {
         let env = BTreeMap::from([("MUJOCO_ROOT".into(), mj.to_string_lossy().into_owned())]);
         let first = resolve(&paths, "island/mujoco-sim", "2.0.0", "default", &env).unwrap();
         assert_eq!(first.descriptor.devices["camera"], "cam-0");
+        assert!(first.environment["LD_LIBRARY_PATH"].starts_with(mj.join("lib").to_str().unwrap()));
         assert!(resolve(&paths, "island/mujoco-sim", "2.0.0", "unknown", &env).is_err());
         fs::write(bundle.join("assets/mesh.stl"), "mesh-b").unwrap();
         let second = resolve(&paths, "island/mujoco-sim", "2.0.0", "default", &env).unwrap();
         assert_ne!(first.fingerprint, second.fingerprint);
+        fs::create_dir(bundle.join("assets/nested")).unwrap();
+        fs::write(
+            bundle.join("assets/nested/child.xml"),
+            "<mesh file=\"part.stl\"/>",
+        )
+        .unwrap();
+        fs::write(bundle.join("assets/nested/part.stl"), "nested-a").unwrap();
+        fs::write(
+            bundle.join("assets/scene.xml"),
+            "<include file=\"nested/child.xml\"/>",
+        )
+        .unwrap();
+        let nested = resolve(&paths, "island/mujoco-sim", "2.0.0", "default", &env).unwrap();
+        fs::write(bundle.join("assets/nested/part.stl"), "nested-b").unwrap();
+        let changed = resolve(&paths, "island/mujoco-sim", "2.0.0", "default", &env).unwrap();
+        assert_ne!(nested.fingerprint, changed.fingerprint);
+        fs::write(bundle.join("assets/scene.xml"), "<mesh file=\"mesh.stl\"/>").unwrap();
         fs::remove_file(bundle.join("assets/mesh.stl")).unwrap();
         assert!(resolve(&paths, "island/mujoco-sim", "2.0.0", "default", &env).is_err());
         fs::remove_file(bundle.join("bin/sim")).unwrap();

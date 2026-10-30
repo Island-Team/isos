@@ -4,7 +4,7 @@ IsOS owns the shared Aether v2 graph, backend packages, local workbench API, and
 
 ## Start a MuJoCo deployment
 
-Build and install IsOS, the IsosUI local bundle (`npm run build:local`), and the Aether Rust executables. Set `ISOSUI_REPO_PATH` to the built IsosUI checkout or `ISOS_WEB_DIST` to its `dist/local` directory; IsOS also reads these from a `.env` file in the command's working directory. Build the MuJoCo simulator and stage a v2 bundle with `tools/build-backend-bundle.py` in its repository. Set `MUJOCO_ROOT` to the installed MuJoCo runtime, then:
+Build and install IsOS, the IsosUI local bundle (`npm run build:local`), and the Aether Rust executables (`aether-profile`, `aether-runtime`, `aether-http-bridge`, `aether-config-server`). Put the Aether binaries beside `isos`, on `PATH`, or set `ISOS_AETHER_BIN_DIR` to their absolute build directory before `isos init`. Set `ISOSUI_REPO_PATH` to the built IsosUI checkout or `ISOS_WEB_DIST` to its `dist/local` directory; IsOS also reads these from a `.env` file in the command's working directory. Build the MuJoCo simulator and stage a v2 bundle with `tools/build-backend-bundle.py` in its repository. Set `MUJOCO_ROOT` to the installed MuJoCo runtime, then:
 
 ```sh
 isos pkg link island/mujoco-sim 2.0.0 /absolute/path/to/bundle

@@ -1,28 +1,12 @@
 //! Create the editable shared graph from the built-in MuJoCo preset.
 
-use crate::{config::Paths, v2_backend};
+use crate::{config::Paths, v2_backend, v2_bins};
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::{
     fs,
     path::{Path, PathBuf},
 };
-
-fn executable(name: &str) -> String {
-    let override_key = format!("ISOS_{}_BIN", name.to_ascii_uppercase().replace('-', "_"));
-    if let Ok(path) = std::env::var(&override_key) {
-        return path;
-    }
-    if let Some(path) = std::env::var_os("PATH") {
-        for dir in std::env::split_paths(&path) {
-            let candidate = dir.join(name);
-            if candidate.is_file() {
-                return candidate.to_string_lossy().into_owned();
-            }
-        }
-    }
-    format!("/usr/bin/{name}")
-}
 
 fn at<'a>(graph: &'a mut Value, pointer: &str) -> Result<&'a mut Value> {
     graph
@@ -66,7 +50,7 @@ pub fn draft(paths: &Paths, name: &str) -> Result<Value> {
         .into_owned();
     let eos = "/cores/isos/layers/process/groups/component/nodes/eos/settings";
     at(&mut graph, &format!("{eos}/command"))?.clone_from(&json!([
-        executable("eosd"),
+        v2_bins::draft_path("aether-runtime"),
         "--profile",
         graph_path,
         "--journal-dir",
@@ -80,7 +64,7 @@ pub fn draft(paths: &Paths, name: &str) -> Result<Value> {
         "/cores/isos/layers/process/groups/component/nodes/bridge/settings/command",
     )?
     .clone_from(&json!([
-        executable("eos-north-http"),
+        v2_bins::draft_path("aether-http-bridge"),
         "--socket",
         eos_socket,
         "--listen",
@@ -91,7 +75,7 @@ pub fn draft(paths: &Paths, name: &str) -> Result<Value> {
         "/cores/isos/layers/process/groups/component/nodes/config/settings/command",
     )?
     .clone_from(&json!([
-        executable("aether-config-server"),
+        v2_bins::draft_path("aether-config-server"),
         "--profile",
         graph_path,
         "--listen",

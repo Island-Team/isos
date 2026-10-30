@@ -16,6 +16,7 @@ import subprocess
 import tempfile
 import time
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError
 
 ROOT = Path(__file__).resolve().parents[1]
 EOS_BIN = Path(os.environ.get("AETHER_BIN_DIR", str(ROOT.parent / "Island-eos/target/debug")))
@@ -93,10 +94,7 @@ def main():
         isos_port = free_port()
         env = dict(os.environ, ISOS_HOME=str(home), MUJOCO_ROOT=str(library.parent),
                    ISOS_HTTP_PORT=str(isos_port), ISOS_WEB_DIST=str(web),
-                   ISOS_AETHER_PROFILE_BIN=str(EOS_BIN / "aether-profile"),
-                   ISOS_EOSD_BIN=str(EOS_BIN / "aether-runtime"),
-                   ISOS_EOS_NORTH_HTTP_BIN=str(EOS_BIN / "aether-http-bridge"),
-                   ISOS_AETHER_CONFIG_SERVER_BIN=str(EOS_BIN / "aether-config-server"))
+                   ISOS_AETHER_BIN_DIR=str(EOS_BIN))
         run("pkg", "link", "island/mujoco-sim", "2.0.0", str(bundle), env=env)
         init_log = (root / "init.log").open("w+")
         init_process = subprocess.Popen([str(ISOS), "init"], env=env,
@@ -113,6 +111,9 @@ def main():
             raise RuntimeError("isos init did not bind its control socket")
         graph_path = home / "config/deployments/default.nodes.json"
         graph = json.loads(graph_path.read_text())
+        backend = graph["cores"]["isos"]["layers"]["process"]["groups"]["backend"]["nodes"]["simulator"]["settings"]
+        gui_report = root / "simulator-env.txt"
+        backend["env"] = {"MUJOCO_GUI": "1", "ISOS_TEST_ENV_REPORT": str(gui_report)}
         bridge_port, config_port = free_port(), free_port()
         bridge = graph["cores"]["isos"]["layers"]["process"]["groups"]["component"]["nodes"]["bridge"]["settings"]
         bridge["command"][-1] = f"127.0.0.1:{bridge_port}"
@@ -161,6 +162,16 @@ def main():
             assert isos_api("backends")["backends"][0]["scenes"] == ["default", "navigation"]
             assert isos_api("setup-status")["ready"]
             assert isos_api("node-graph/validate", "POST", {"schema_version": 2, "graph": document["graph"]})["valid"]
+            try:
+                isos_api("node-graph", "PUT", {"schema_version": 2, "revision": "stale", "graph": document["graph"]})
+            except HTTPError as error:
+                assert error.code == 409
+            else:
+                raise AssertionError("stale graph revision was accepted")
+            applied = isos_api("node-graph", "PUT", {"schema_version": 2, "revision": saved_hash, "graph": document["graph"]})
+            saved_hash = applied["revision"]
+            assert hashlib.sha256(graph_path.read_bytes()).hexdigest() == saved_hash
+            print("ISOS GRAPH UI API validation, revision conflict, and apply: PASS")
             startups = []
             run_log = (root / "run.log").open("w+")
             start = time.perf_counter()
@@ -183,6 +194,7 @@ def main():
             status = json.loads(run("status", "--json", env=env).stdout)
             assert status["state"] == "running" and status["package"]["version"] == "2.0.0"
             assert {p["id"] for p in status["processes"]} == {"simulator", "eos", "bridge", "config"}
+            assert gui_report.read_text() == "1", "backend GUI setting did not reach the simulator"
             assert hashlib.sha256(graph_path.read_bytes()).hexdigest() == saved_hash, "EOS changed applied graph"
             discovered = control({"op": "discover"}, bridge_port)
             assert len(discovered["nodes"]) >= 3

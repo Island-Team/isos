@@ -8,6 +8,7 @@ mod lifecycle;
 mod packages;
 mod release;
 mod v2_backend;
+mod v2_bins;
 mod v2_process;
 mod v2_starter;
 mod versions;

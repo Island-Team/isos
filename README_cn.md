@@ -4,7 +4,7 @@ IsOS 管理共享 Aether v2 图、后端软件包、本地工作台 API 和直�
 
 ## 启动 MuJoCo 部署
 
-构建并安装 IsOS、IsosUI 本地构建（`npm run build:local`）及 Aether Rust 可执行文件。将 `ISOSUI_REPO_PATH` 指向已构建的 IsosUI 仓库，或将 `ISOS_WEB_DIST` 指向其 `dist/local` 目录；IsOS 也会读取命令工作目录下 `.env` 中的这些设置。在 MuJoCo 仓库构建仿真器，并用 `tools/build-backend-bundle.py` 制作 v2 包。把 `MUJOCO_ROOT` 指向已安装的 MuJoCo 运行环境，然后执行：
+构建并安装 IsOS、IsosUI 本地构建（`npm run build:local`）及 Aether Rust 可执行文件（`aether-profile`、`aether-runtime`、`aether-http-bridge`、`aether-config-server`）。将 Aether 可执行文件放在 `isos` 旁边或 `PATH` 中，或者在运行 `isos init` 前把 `ISOS_AETHER_BIN_DIR` 设为其绝对构建目录。将 `ISOSUI_REPO_PATH` 指向已构建的 IsosUI 仓库，或将 `ISOS_WEB_DIST` 指向其 `dist/local` 目录；IsOS 也会读取命令工作目录下 `.env` 中的这些设置。在 MuJoCo 仓库构建仿真器，并用 `tools/build-backend-bundle.py` 制作 v2 包。把 `MUJOCO_ROOT` 指向已安装的 MuJoCo 运行环境，然后执行：
 
 ```sh
 isos pkg link island/mujoco-sim 2.0.0 /absolute/path/to/bundle

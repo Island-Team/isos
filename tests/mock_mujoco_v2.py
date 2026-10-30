@@ -21,6 +21,9 @@ def recv_exact(conn, size):
 
 
 def main():
+    if os.environ.get("ISOS_TEST_ENV_REPORT"):
+        with open(os.environ["ISOS_TEST_ENV_REPORT"], "w", encoding="utf-8") as report:
+            report.write(os.environ.get("MUJOCO_GUI", ""))
     parser = argparse.ArgumentParser()
     for flag in ("socket", "benchmark-socket", "v2-socket", "scene"):
         parser.add_argument("--" + flag, required=True)

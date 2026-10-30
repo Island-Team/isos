@@ -16,13 +16,14 @@
 | `version` | `String` | 软件包版本 | 必填已安装或已链接的精确版本，首个为 `2.0.0`。 |
 | `scene` | `String` | 场景 ID | 必填元数据声明的 ID，选择 XML 场景。 |
 | `socket` | `PathBuf` | Unix 路径 | 必填绝对路径，位于 IsOS 运行目录下、仅所有者可访问，最多 107 字节。EOS 适配器必须使用相同路径。 |
-| `env` | `BTreeMap<String,String>` | 环境变量 | 可选，含 `MUJOCO_ROOT`；键仅允许 ASCII 字母、数字或 `_`，值不得含 NUL。 |
+| `env` | `BTreeMap<String,String>` | 环境变量 | 可选，仅传给仿真器子进程。`MUJOCO_ROOT` 指向库；`MUJOCO_GUI=1` 在有图形环境的主机上请求可见窗口。键仅允许 ASCII 字母、数字或 `_`，值不得含 NUL。 |
 | `start_timeout_ms` | `u64` | 毫秒 | 就绪期限，默认 30000，范围 1–120000。 |
 | `restart` | `Restart` | 策略 | `never`、`on_failure` 或 `always`；默认 `never`。 |
 | `max_restarts` | `u32` | 次数 | 自动重启上限，默认 0，最多 10。 |
 | `depends_on` | `Vec<String>` | 规范节点路径 | 前置进程，不得重复或形成环。 |
 
 应用和运行时校验后端描述文件的 `entrypoint`、`scenes`、`devices`、`protocol` 与 MuJoCo 运行环境。IsOS 检查场景引用的资源，并把其内容纳入链接指纹。每个 EOS 硬件适配器都要在 `references` 中列出后端，令 `adapter.settings.backend` 等于其规范路径、`socket_path` 等于后端套接字，且 `device_id`/`simulator_node` 等于软件包为相机、底盘或机械臂声明的设备 ID。
+IsOS 直接启动描述文件中的可执行文件，并将已验证的 MuJoCo 库目录放在该子进程的 `LD_LIBRARY_PATH` 首位，同时保留原有搜索路径。此环境修改仅作用于仿真器进程。
 
 ## 组件进程节点
 

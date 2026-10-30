@@ -3,7 +3,7 @@
 //! The graph remains the authored source. This module admits only registered
 //! IsOS process nodes and keeps direct child handles in the manager process.
 
-use crate::{config::Paths, v2_backend};
+use crate::{config::Paths, v2_backend, v2_bins};
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -302,7 +302,7 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
                         path: path.clone(),
                         settings: ProcessSettings {
                             command,
-                            cwd: None,
+                            cwd: Some(paths.runtime.clone()),
                             env: resolved.environment.clone(),
                             ready_tcp: None,
                             ready_unix: Some(settings.socket.clone()),
@@ -488,20 +488,11 @@ pub fn validate_value(paths: &Paths, graph: &Value) -> Result<()> {
 /// Full graph admission is delegated to EOS's node-type registry. IsOS then
 /// validates the process projection again before supervising any child.
 pub fn validate_full_graph(path: &Path) -> Result<()> {
-    let program = validator_program();
-    validate_with_program(path, Path::new(&program))
-}
-
-fn validator_program() -> std::ffi::OsString {
-    validator_program_from(std::env::var_os("ISOS_AETHER_PROFILE_BIN"))
-}
-
-fn validator_program_from(override_path: Option<std::ffi::OsString>) -> std::ffi::OsString {
-    override_path.unwrap_or_else(|| "aether-profile".into())
+    validate_with_program(path, &v2_bins::resolve("aether-profile")?)
 }
 
 pub fn catalog() -> Result<Value> {
-    let program = validator_program();
+    let program = v2_bins::resolve("aether-profile")?;
     let output = Command::new(&program)
         .arg("catalog")
         .output()
@@ -1004,15 +995,6 @@ command = ["/bin/sleep", "1"]
         validate_with_program(&graph_path, Path::new("/bin/true")).unwrap();
         assert!(validate_with_program(&graph_path, Path::new("/bin/false")).is_err());
         assert!(validate_with_program(&graph_path, Path::new("/missing/validator")).is_err());
-    }
-
-    #[test]
-    fn validator_uses_aether_binary_and_explicit_override() {
-        assert_eq!(validator_program_from(None), "aether-profile");
-        assert_eq!(
-            validator_program_from(Some("/opt/aether/bin/aether-profile".into())),
-            "/opt/aether/bin/aether-profile"
-        );
     }
 
     #[test]
