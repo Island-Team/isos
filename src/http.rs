@@ -5,7 +5,7 @@ use crate::{
     graph::Deployment,
     lifecycle,
     log_store::LogStore,
-    node_sets, packages, v2_process,
+    node_options, node_sets, packages, v2_build, v2_process,
 };
 use anyhow::{Context, Result};
 use axum::{
@@ -309,6 +309,87 @@ async fn node_types(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResul
     let catalog =
         v2_process::catalog().map_err(|error| err(StatusCode::SERVICE_UNAVAILABLE, error))?;
     ok(catalog)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NodeOptionsRequest {
+    schema_version: u32,
+    graph: Value,
+}
+
+async fn node_options_for_graph(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(request): Json<NodeOptionsRequest>,
+) -> ApiResult {
+    authorized(&app, &headers)?;
+    if request.schema_version != 2 {
+        return Err(err(StatusCode::BAD_REQUEST, "schema_version must be 2"));
+    }
+    let options = node_options::for_graph(&request.graph)
+        .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
+    ok(options)
+}
+
+async fn node_options_current(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
+    authorized(&app, &headers)?;
+    let bytes = fs::read(app.paths.v2_node_graph(&app.deployment))
+        .map_err(|error| err(StatusCode::NOT_FOUND, error))?;
+    let graph: Value = serde_json::from_slice(&bytes)
+        .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
+    let options = node_options::for_graph(&graph)
+        .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
+    ok(options)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BuildBinariesRequest {
+    schema_version: u32,
+    target: String,
+    #[serde(default)]
+    install_deps: bool,
+}
+
+async fn build_binaries(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(request): Json<BuildBinariesRequest>,
+) -> ApiResult {
+    authorized(&app, &headers)?;
+    if request.schema_version != 2 || request.target != "eos" || request.install_deps {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "Rust v2 build requires schema_version 2, target eos, and install_deps false",
+        ));
+    }
+    let paths = app.paths.clone();
+    let receipt = tokio::task::spawn_blocking(move || v2_build::build_eos(&paths))
+        .await
+        .map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR, error))?
+        .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
+    let suggested_graph = fs::read(app.paths.v2_node_graph(&app.deployment))
+        .ok()
+        .and_then(|bytes| {
+            serde_json::from_slice::<Value>(&bytes)
+                .ok()
+                .map(|graph| (bytes, graph))
+        })
+        .and_then(|(bytes, graph)| {
+            v2_build::suggest_graph(&graph, &receipt)
+                .ok()
+                .map(|graph| json!({"revision":revision(&bytes),"graph":graph}))
+        });
+    record(&app, "isos", "Built and staged Rust Aether executables");
+    ok(json!({"receipt":receipt,"suggested_graph":suggested_graph}))
+}
+
+async fn build_binaries_status(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
+    authorized(&app, &headers)?;
+    let selected = v2_build::selected(&app.paths)
+        .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
+    ok(json!({"selected":selected}))
 }
 
 async fn package_node_sets(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
@@ -690,6 +771,18 @@ fn router(app: Arc<App>) -> Router {
             get(node_types).options(preflight),
         )
         .route(
+            "/api/isos/v2/build-binaries",
+            get(build_binaries_status)
+                .post(build_binaries)
+                .options(preflight),
+        )
+        .route(
+            "/api/isos/v2/node-options",
+            get(node_options_current)
+                .post(node_options_for_graph)
+                .options(preflight),
+        )
+        .route(
             "/api/isos/v2/node-sets",
             get(package_node_sets).options(preflight),
         )
@@ -759,6 +852,24 @@ mod tests {
     use super::*;
     use axum::body::to_bytes;
     use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn binary_build_api_rejects_legacy_dependency_mode() {
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/api/isos/v2/build-binaries")
+            .header(header::HOST, "127.0.0.1:16000")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"schema_version":2,"target":"eos","install_deps":true}"#,
+            ))
+            .unwrap();
+        let response = test_router().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 1000).await.unwrap()).unwrap();
+        assert_eq!(body["ok"], false);
+    }
 
     fn test_router() -> Router {
         router(Arc::new(App {

@@ -1,5 +1,6 @@
 //! Resolve the Aether executables used by the IsOS v2 graph.
 
+use crate::{config::Paths, v2_build};
 use anyhow::{Result, ensure};
 use std::{
     env, fs,
@@ -37,6 +38,12 @@ pub fn resolve(name: &str) -> Result<PathBuf> {
             path.display()
         );
         return Ok(path);
+    }
+    if let Ok(paths) = Paths::discover()
+        && let Some(receipt) = v2_build::selected(&paths)?
+        && let Some(path) = receipt.binaries.get(name)
+    {
+        return Ok(path.clone());
     }
     if let Some(dir) = env::var_os("ISOS_AETHER_BIN_DIR") {
         return required_in_dir(name, &PathBuf::from(dir));

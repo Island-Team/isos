@@ -128,11 +128,14 @@ def main():
         values_path = root / "node-values.json"
         values_path.write_text(json.dumps({"scene": "default", "socket": str(home / "run/default-mujoco.sock")}))
         graph = json.loads(run("pkg", "preview-set", "island/mujoco-sim", "2.0.0", "sim-hardware", str(graph_path), "--values", str(values_path), env=env).stdout)["graph"]
-        mujoco_nodes = graph["cores"]["eos"]["layers"]["hardware"]["groups"]["mujoco"]["nodes"]
-        assert len(mujoco_nodes) == 3
-        assert all(node["package"] == {"id": "island/mujoco-sim", "version": "2.0.0"} for node in mujoco_nodes.values())
+        hardware_groups = graph["cores"]["eos"]["layers"]["hardware"]["groups"]
+        mujoco_nodes = {kind: hardware_groups[kind]["nodes"][name] for kind, name in
+                        [("camera", "front"), ("base", "drive"), ("manipulator", "arm")]}
+        assert all(node.get("package") is None for node in mujoco_nodes.values())
+        assert all(node["adapter"]["package"] == {"id": "island/mujoco-sim", "version": "2.0.0"}
+                   for node in mujoco_nodes.values())
         gate = graph["cores"]["eos"]["layers"]["interface"]["groups"]["gate"]["nodes"]["front-preview"]
-        vision = graph["cores"]["isosui"]["layers"]["system"]["groups"]["ui"]["nodes"]["vision"]
+        vision = graph["cores"]["isos"]["layers"]["ui"]["groups"]["panel"]["nodes"]["vision"]
         assert "package" not in gate and "package" not in vision
         backend = graph["cores"]["eos"]["layers"]["process"]["groups"]["mujoco"]["nodes"]["simulator"]["settings"]
         gui_report = root / "simulator-env.txt"
@@ -153,7 +156,7 @@ def main():
         assert run("config", "validate", str(graph_path), env=env, expect=False).returncode != 0
         missing.write_text("<mujoco/>")
         bad_graph = json.loads(graph_path.read_text())
-        bad_graph["cores"]["eos"]["layers"]["hardware"]["groups"]["mujoco"]["nodes"]["drive"]["adapter"]["settings"]["device_id"] = "wrong-base"
+        bad_graph["cores"]["eos"]["layers"]["hardware"]["groups"]["base"]["nodes"]["drive"]["adapter"]["settings"]["device_id"] = "wrong-base"
         bad_path = root / "bad.nodes.json"
         bad_path.write_text(json.dumps(bad_graph))
         assert run("config", "validate", str(bad_path), env=env, expect=False).returncode != 0
@@ -265,9 +268,9 @@ def main():
                 assert json.load(response)["ok"]
             discovered = control({"op": "discover"}, bridge_port)
             assert len(discovered["nodes"]) >= 3
-            camera = "cores/eos/layers/hardware/groups/mujoco/nodes/front"
-            base = "cores/eos/layers/hardware/groups/mujoco/nodes/drive"
-            arm = "cores/eos/layers/hardware/groups/mujoco/nodes/arm"
+            camera = "eos/hardware/camera/front"
+            base = "eos/hardware/base/drive"
+            arm = "eos/hardware/manipulator/arm"
             frame = control({"op": "capture", "node_path": camera}, bridge_port)
             assert frame["frame"]["width_px"] == 1
             assert control({"op": "observe", "node_path": base}, bridge_port)["observation"]["valid"]
@@ -304,6 +307,23 @@ def main():
             print("ISOS RUN Ctrl+C stopped managed children: PASS")
             assert json.loads(run("status", "--json", env=env).stdout)["state"] == "stopped"
             assert isos_api("process-status")["state"] == "stopped"
+            original_graph = graph_path.read_bytes()
+            stale_runtime = root / "stale-aether-runtime"
+            stale_runtime.write_text("#!/bin/sh\necho 'unknown option: --capabilities' >&2\nexit 2\n")
+            stale_runtime.chmod(0o700)
+            stale_graph = json.loads(original_graph)
+            stale_graph["cores"]["isos"]["layers"]["process"]["groups"]["component"]["nodes"]["eos"]["settings"]["command"][0] = str(stale_runtime)
+            graph_path.write_text(json.dumps(stale_graph))
+            try:
+                isos_api("process-control", "POST", {"schema_version": 2, "operation": "run"})
+                raise AssertionError("stale EOS runtime was accepted")
+            except HTTPError as error:
+                assert error.code == 422
+                failure = json.load(error)
+                assert "capabilities" in failure["error"] and "isos build eos" in failure["error"]
+            assert isos_api("process-status")["state"] == "stopped"
+            graph_path.write_bytes(original_graph)
+            print("FAILURE stale EOS binary returned API 422 without degraded startup: PASS")
             api_run = isos_api("process-control", "POST", {"schema_version": 2, "operation": "run", "revision": saved_hash})
             assert api_run["started"][0] == "eos"
             assert isos_api("process-logs/eos?lines=5")["node"] == "eos"

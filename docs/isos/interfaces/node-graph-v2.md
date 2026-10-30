@@ -56,3 +56,9 @@ An authored graph may declare `manual_0`, `base_velocity_0`, `arm_joint_0`, and 
 Manual and primitive nodes require a `status: Status` input from the dispatcher and a typed observation input from their target: `base_observation: BaseObservation` or `manipulator_observation: ManipulatorObservation`. Skill nodes require `status: Status` from the dispatcher. Manual and primitive nodes expose `request: ControlRequest` and `outcome: CommandOutcome` outputs; skill nodes expose `outcome: SkillOutcome`. The node ID is the final type name plus an index by default, such as `manual_0` or `demo_0`; it is a graph identity, not a movement payload.
 
 See [backend package design](../design/backend-v2.md) and [local API](local-api.md).
+
+## Canonical node paths and primitive bindings
+
+A node reference is `<core>/<layer>/<group>/<node>` (four nonempty segments). Graph storage remains nested under `cores`, `layers`, `groups`, and `nodes`. Node-set preview converts old eight-segment references atomically in its returned draft; saving still requires revision checked Apply. The MuJoCo replacement preview removes only the exact legacy backend and camera/base/manipulator instances and rewires existing control references to the corresponding new nodes. It leaves unrelated nodes and controls in place.
+
+`eos.dispatcher.primitive_base@v1.0` and `eos.dispatcher.primitive_manipulator@v1.0` are binding nodes. Their `settings` identify `primitive_name`, `primitive_version`, and `movement_type` (strings). Hardware `inputs.command` is an array of `{node,output}` edges from bindings; each binding output must reach one compatible hardware node. The adapter implementation is selected on the hardware instance through `adapter.type`, independently of its generic hardware node type. The IsOS Vision profile is `isos.ui.vision@v1.0` under `isos/ui/panel`; it is an internal UI node, not a supervised process.

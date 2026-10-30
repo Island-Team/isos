@@ -42,6 +42,8 @@ pub struct NodeContributions {
     #[serde(default)]
     pub safety_adapters: Vec<Value>,
     #[serde(default)]
+    pub adapter_families: Vec<Value>,
+    #[serde(default)]
     pub data_types: Vec<DataType>,
     #[serde(default)]
     pub node_sets: Vec<NodeSet>,
@@ -345,6 +347,38 @@ impl Release {
                     "{id}: safety adapter must support stop"
                 );
             }
+            let mut family_ids = std::collections::BTreeSet::new();
+            for family in &contributions.adapter_families {
+                let id = family
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| anyhow::anyhow!("adapter family requires id"))?;
+                ensure!(
+                    !id.trim().is_empty() && family_ids.insert(id),
+                    "invalid or duplicate adapter family {id}"
+                );
+                ensure!(
+                    family
+                        .get("device_kinds")
+                        .and_then(Value::as_array)
+                        .is_some_and(|kinds| !kinds.is_empty()),
+                    "{id}: device_kinds must be a nonempty array"
+                );
+                ensure!(
+                    family
+                        .get("transport")
+                        .and_then(Value::as_str)
+                        .is_some_and(|value| !value.is_empty()),
+                    "{id}: transport is required"
+                );
+                ensure!(
+                    family
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .is_some_and(|value| !value.trim().is_empty()),
+                    "{id}: description is required"
+                );
+            }
             let mut set_ids = std::collections::BTreeSet::new();
             for set in &contributions.node_sets {
                 ensure!(
@@ -534,6 +568,23 @@ pub fn verify_file(asset: &Asset, path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adapter_family_requires_device_class_and_transport() {
+        let mut release: Release = serde_json::from_value(serde_json::json!({
+            "schema_version":4,"id":"island/test","kind":"backend","version":"2.0.0",
+            "source_commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "assets":[{"os":"linux","arch":"x86_64","url":"https://github.com/Island-Team/test/releases/download/v2.0.0/test.tar.gz","size_bytes":1,"sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}],
+            "node_contributions":{"adapter_families":[{"id":"test-v2","device_kinds":["base"],"transport":"unix_socket","description":"Test base adapter"}]}
+        })).unwrap();
+        release.validate().unwrap();
+        release
+            .node_contributions
+            .as_mut()
+            .unwrap()
+            .adapter_families[0]["device_kinds"] = serde_json::json!([]);
+        assert!(release.validate().is_err());
+    }
 
     #[test]
     fn custom_data_idl_requires_explicit_version_and_purpose() {

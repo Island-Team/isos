@@ -6,11 +6,13 @@ mod http;
 mod isosui;
 mod lifecycle;
 mod log_store;
+mod node_options;
 mod node_sets;
 mod packages;
 mod release;
 mod v2_backend;
 mod v2_bins;
+mod v2_build;
 mod v2_process;
 mod v2_starter;
 mod versions;
@@ -725,11 +727,24 @@ fn api_call(
                 );
             }
             let specs = v2_process::project_with_packages(paths, &source)?;
+            v2_build::preflight_processes(paths, &specs)?;
             if let Some(mut active) = managers.remove(&name) {
                 active.supervisor.stop();
             }
             let mut supervisor = v2_process::Supervisor::new(paths, &name)?;
             let started = supervisor.start(&specs)?;
+            std::thread::sleep(Duration::from_millis(100));
+            let running = supervisor.status();
+            if !running
+                .as_ref()
+                .is_ok_and(|running| running.len() == specs.len())
+            {
+                supervisor.stop();
+                bail!(
+                    "a managed process exited during restart; inspect categorized child logs: {:?}",
+                    running.err()
+                );
+            }
             managers.insert(
                 name,
                 V2Deployment {
@@ -752,6 +767,7 @@ fn api_call(
                 );
             }
             let specs = v2_process::project_with_packages(paths, &source)?;
+            v2_build::preflight_processes(paths, &specs)?;
             let manager = if let Some(active) = managers.get_mut(&name) {
                 ensure!(
                     active.active_revision == revision,
@@ -770,10 +786,19 @@ fn api_call(
                 );
                 &mut managers.get_mut(&name).unwrap().supervisor
             };
-            let started = match manager.start(&specs) {
+            let started = match manager.start(&specs).and_then(|started| {
+                std::thread::sleep(Duration::from_millis(100));
+                let running = manager.status()?;
+                ensure!(
+                    running.len() == specs.len(),
+                    "a managed process exited during startup; inspect categorized child logs"
+                );
+                Ok(started)
+            }) {
                 Ok(started) => started,
                 Err(error) => {
                     if let Some(active) = managers.get_mut(&name) {
+                        active.supervisor.stop();
                         active.last_error = Some(error.to_string());
                     }
                     return Err(error);
@@ -1210,7 +1235,10 @@ fn main_run() -> Result<()> {
             install_deps,
         } => {
             if target == "isosui" {
-                ensure!(!install_deps, "--install-deps applies to EOS only");
+                ensure!(
+                    !install_deps,
+                    "--install-deps is unavailable for the Rust v2 build"
+                );
                 let receipt = isosui::build(&paths)?;
                 println!(
                     "built isosui {} {} sha256:{}",
@@ -1227,11 +1255,22 @@ fn main_run() -> Result<()> {
             } else {
                 vec![target.as_str()]
             } {
-                let receipt = versions::build(&paths, role, install_deps && role == "eos")?;
-                println!(
-                    "built {role} {} {} sha256:{}",
-                    receipt.product_version, receipt.source_commit, receipt.sha256
-                );
+                if role == "eos" {
+                    ensure!(!install_deps, "Rust EOS build does not use --install-deps");
+                    let receipt = v2_build::build_eos(&paths)?;
+                    println!(
+                        "built Rust EOS {} {} at {}",
+                        receipt.product_version,
+                        receipt.source_commit,
+                        receipt.binaries["aether-runtime"].display()
+                    );
+                } else {
+                    let receipt = versions::build(&paths, role, false)?;
+                    println!(
+                        "built {role} {} {} sha256:{}",
+                        receipt.product_version, receipt.source_commit, receipt.sha256
+                    );
+                }
             }
         }
         CommandLine::Version { command } => match command {

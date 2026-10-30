@@ -230,6 +230,7 @@ fn write_node_types(target: &Path, release: &Release) -> Result<()> {
                 "package":{"id":release.id,"version":release.version},
                 "node_types":contributions.node_types,
                 "safety_adapters":contributions.safety_adapters,
+                "adapter_families":contributions.adapter_families,
                 "data_types":contributions.data_types,
             }))?,
         )?;
