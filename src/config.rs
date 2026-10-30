@@ -4,6 +4,7 @@ use crate::{
     packages, release,
 };
 use anyhow::{Context, Result, ensure};
+use serde::Deserialize;
 use serde::Serialize;
 use std::{
     collections::BTreeMap,
@@ -18,6 +19,134 @@ pub struct Paths {
     pub config: PathBuf,
     pub data: PathBuf,
     pub runtime: PathBuf,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeConfig {
+    #[serde(default)]
+    server: ServerConfig,
+    #[serde(default)]
+    paths: RuntimePaths,
+    #[serde(default)]
+    deployment: DeploymentConfig,
+    #[serde(default)]
+    logging: LoggingConfig,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ServerConfig {
+    http_port: Option<u16>,
+    ui_port: Option<u16>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimePaths {
+    ui_repo: Option<PathBuf>,
+    aether_bin_dir: Option<PathBuf>,
+    mujoco_root: Option<PathBuf>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeploymentConfig {
+    name: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LoggingConfig {
+    max_bytes: Option<u64>,
+    backups: Option<u8>,
+    level: Option<String>,
+}
+
+fn config_values(source: &str) -> Result<BTreeMap<&'static str, String>> {
+    let config: RuntimeConfig = toml::from_str(source)?;
+    let mut values = BTreeMap::new();
+    for (port, key) in [
+        (config.server.http_port, "ISOS_HTTP_PORT"),
+        (config.server.ui_port, "ISOSUI_PORT"),
+    ] {
+        if let Some(port) = port {
+            ensure!(port >= 1024, "{key} must be 1024..65535");
+            values.insert(key, port.to_string());
+        }
+    }
+    for (path, key) in [
+        (config.paths.ui_repo, "ISOSUI_REPO_PATH"),
+        (config.paths.aether_bin_dir, "ISOS_AETHER_BIN_DIR"),
+        (config.paths.mujoco_root, "MUJOCO_ROOT"),
+    ] {
+        if let Some(path) = path {
+            ensure!(path.is_absolute(), "{key} path must be absolute");
+            values.insert(key, path.to_string_lossy().into_owned());
+        }
+    }
+    if let Some(name) = config.deployment.name {
+        crate::v2_process::validate_deployment_name(&name)?;
+        values.insert("ISOS_DEPLOYMENT", name);
+    }
+    if let Some(max_bytes) = config.logging.max_bytes {
+        ensure!(
+            (65_536..=100_000_000).contains(&max_bytes),
+            "logging.max_bytes must be 65536..100000000"
+        );
+        values.insert("ISOS_LOG_MAX_BYTES", max_bytes.to_string());
+    }
+    if let Some(backups) = config.logging.backups {
+        ensure!((1..=10).contains(&backups), "logging.backups must be 1..10");
+        values.insert("ISOS_LOG_BACKUPS", backups.to_string());
+    }
+    if let Some(level) = config.logging.level {
+        ensure!(
+            crate::log_store::level_rank(&level).is_some(),
+            "logging.level must be trace, debug, info, warn, or error"
+        );
+        values.insert("ISOS_LOG_LEVEL", level);
+    }
+    Ok(values)
+}
+
+fn config_without_env_overrides(
+    values: BTreeMap<&'static str, String>,
+    has_env: impl Fn(&str) -> bool,
+) -> BTreeMap<&'static str, String> {
+    values
+        .into_iter()
+        .filter(|(key, _)| !has_env(key))
+        .collect()
+}
+
+pub fn load_runtime_config() -> Result<()> {
+    let path = if let Some(path) = std::env::var_os("ISOS_CONFIG") {
+        let path = PathBuf::from(path);
+        ensure!(path.is_absolute(), "ISOS_CONFIG must be an absolute path");
+        path
+    } else {
+        Paths::discover()?.config.join("config.toml")
+    };
+    let source = match fs::read_to_string(&path) {
+        Ok(source) => source,
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                && std::env::var_os("ISOS_CONFIG").is_none() =>
+        {
+            return Ok(());
+        }
+        Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
+    };
+    for (key, value) in config_without_env_overrides(config_values(&source)?, |key| {
+        std::env::var_os(key).is_some()
+    }) {
+        // This runs once before CLI parsing, threads, or child processes exist.
+        unsafe {
+            std::env::set_var(key, value);
+        }
+    }
+    Ok(())
 }
 
 impl Paths {
@@ -348,6 +477,21 @@ pub fn apply(paths: &Paths, graph: &Deployment) -> Result<()> {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+    #[test]
+    fn config_toml_maps_settings_and_rejects_invalid_values() {
+        let values = config_values("[server]\nhttp_port=16000\n[paths]\nui_repo='/tmp/ui'\n[logging]\nlevel='warn'\nmax_bytes=1048576\nbackups=3\n").unwrap();
+        assert_eq!(values["ISOS_HTTP_PORT"], "16000");
+        assert_eq!(values["ISOSUI_REPO_PATH"], "/tmp/ui");
+        assert_eq!(values["ISOS_LOG_BACKUPS"], "3");
+        assert_eq!(values["ISOS_LOG_LEVEL"], "warn");
+        let selected = config_without_env_overrides(values, |key| key == "ISOS_LOG_LEVEL");
+        assert!(!selected.contains_key("ISOS_LOG_LEVEL"));
+        assert_eq!(selected["ISOS_HTTP_PORT"], "16000");
+        assert!(config_values("[server]\nhttp_port=80\n").is_err());
+        assert!(config_values("[paths]\nui_repo='relative'\n").is_err());
+        assert!(config_values("[unknown]\nvalue=1\n").is_err());
+        assert!(config_values("[logging]\nlevel='verbose'\n").is_err());
+    }
     #[test]
     fn generates_readable_stack() {
         let graph: Deployment = serde_json::from_str(r#"{"schema_version":1,"name":"default","nodes":[{"id":"eos","kind":"component","role":"eos","launch":{"command":["/bin/true"],"ready_tcp":"127.0.0.1:16003"},"settings":{"north_http_url":"http://127.0.0.1:16005"}}]}"#).unwrap();

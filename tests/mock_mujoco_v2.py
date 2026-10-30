@@ -38,6 +38,7 @@ def main():
     listener.bind(path)
     os.chmod(path, 0o600)
     listener.listen(16)
+    print("mock mujoco ready", flush=True)
     sequence = 0
     try:
         while True:

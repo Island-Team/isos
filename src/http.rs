@@ -3,7 +3,9 @@ use crate::{
     component,
     config::{self, Paths},
     graph::Deployment,
-    lifecycle, node_sets, packages, v2_process,
+    lifecycle,
+    log_store::LogStore,
+    node_sets, packages, v2_process,
 };
 use anyhow::{Context, Result};
 use axum::{
@@ -62,6 +64,11 @@ fn ok(data: Value) -> ApiResult {
     Ok(Json(
         json!({"schema_version":2,"ok":true,"data":data,"error":null}),
     ))
+}
+fn record(app: &App, source: &str, message: &str) {
+    if let Ok(logs) = LogStore::new(&app.paths, &app.deployment) {
+        let _ = logs.append(source, "info", message);
+    }
 }
 fn authorized(
     _state: &App,
@@ -293,6 +300,7 @@ async fn apply_node_graph(
         .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
     config::atomic_write(&path, &bytes)
         .map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR, error))?;
+    record(&app, "graph", "Applied node graph revision");
     ok(json!({"revision":revision(&bytes),"graph":edit.graph}))
 }
 
@@ -339,6 +347,7 @@ async fn preview_node_set(
     .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
     v2_process::validate_value(&app.paths, &preview["graph"])
         .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
+    record(&app, "graph", "Previewed package node set");
     ok(preview)
 }
 
@@ -397,6 +406,7 @@ async fn package_install(
     .await
     .map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR, error))?
     .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
+    record(&app, "packages", "Installed package from catalog");
     ok(
         json!({"path":installed,"installed":packages::list(&app.paths).map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR,error))?}),
     )
@@ -439,6 +449,7 @@ async fn package_link(
     .await
     .map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR, error))?
     .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
+    record(&app, "packages", "Linked local package");
     ok(
         json!({"path":linked,"installed":packages::list(&app.paths).map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR,error))?}),
     )
@@ -527,6 +538,37 @@ async fn process_logs(
     let source = String::from_utf8_lossy(&bytes);
     let selected: Vec<_> = source.lines().rev().take(lines).collect();
     ok(json!({"node":node,"lines":selected.into_iter().rev().collect::<Vec<_>>()}))
+}
+
+async fn logs(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<std::collections::BTreeMap<String, String>>,
+) -> ApiResult {
+    authorized(&app, &headers)?;
+    let source = query
+        .get("source")
+        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "source is required"))?;
+    let limit = query
+        .get("limit")
+        .map(|value| value.parse::<usize>())
+        .transpose()
+        .map_err(|_| err(StatusCode::BAD_REQUEST, "invalid log limit"))?
+        .unwrap_or(100);
+    let store = LogStore::new(&app.paths, &app.deployment)
+        .map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR, error))?;
+    let data = store
+        .read(source, query.get("cursor").map(String::as_str), limit)
+        .map_err(|error| {
+            let message = error.to_string();
+            let status = if message.contains("unavailable") {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+            err(status, error)
+        })?;
+    ok(data)
 }
 #[derive(Deserialize)]
 struct Edit {
@@ -684,6 +726,7 @@ fn router(app: Arc<App>) -> Router {
             "/api/isos/v2/process-logs/{node}",
             get(process_logs).options(preflight),
         )
+        .route("/api/isos/v2/logs", get(logs).options(preflight))
         .route(
             "/api/isos/v2/node-graph",
             get(node_graph).put(apply_node_graph).options(preflight),
@@ -726,6 +769,47 @@ mod tests {
             },
             deployment: "default".into(),
         }))
+    }
+
+    #[tokio::test]
+    async fn categorized_logs_return_bounded_cursor_envelope() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = Arc::new(App {
+            paths: Paths {
+                config: temp.path().join("config"),
+                data: temp.path().join("data"),
+                runtime: temp.path().join("run"),
+            },
+            deployment: "default".into(),
+        });
+        let store = LogStore::new(&app.paths, "default").unwrap();
+        store.append("isos", "info", "ready").unwrap();
+        for (route, expected) in [
+            ("/api/isos/v2/logs?source=isos&limit=1", StatusCode::OK),
+            (
+                "/api/isos/v2/logs?source=isos&limit=201",
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                "/api/isos/v2/logs?source=..%2Fsecret",
+                StatusCode::BAD_REQUEST,
+            ),
+        ] {
+            let request = Request::builder()
+                .uri(route)
+                .header(header::HOST, "127.0.0.1:16000")
+                .body(Body::empty())
+                .unwrap();
+            let response = router(app.clone()).oneshot(request).await.unwrap();
+            assert_eq!(response.status(), expected);
+            if expected == StatusCode::OK {
+                let bytes = to_bytes(response.into_body(), 1_000_000).await.unwrap();
+                let body: Value = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(body["data"]["lines"][0]["message"], "ready");
+                assert_eq!(body["data"]["lines"][0]["source"], "isos");
+                assert!(body["data"]["next_cursor"].is_string());
+            }
+        }
     }
 
     #[tokio::test]

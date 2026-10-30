@@ -42,7 +42,21 @@ pub struct NodeContributions {
     #[serde(default)]
     pub safety_adapters: Vec<Value>,
     #[serde(default)]
+    pub data_types: Vec<DataType>,
+    #[serde(default)]
     pub node_sets: Vec<NodeSet>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DataType {
+    pub id: String,
+    pub version: String,
+    pub purpose: String,
+    pub media_type: String,
+    pub codec: String,
+    pub schema: Value,
+    pub max_payload_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,6 +156,23 @@ fn valid_slug(s: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
+fn valid_data_type_identity(data_type: &DataType) -> bool {
+    let valid_version = data_type
+        .version
+        .split_once('.')
+        .is_some_and(|(major, minor)| {
+            !major.is_empty()
+                && !minor.is_empty()
+                && major.bytes().all(|b| b.is_ascii_digit())
+                && minor.bytes().all(|b| b.is_ascii_digit())
+        });
+    valid_version
+        && data_type.id.ends_with(&format!("@v{}", data_type.version))
+        && data_type.id.split_once("@v").is_some_and(|(prefix, _)| {
+            prefix.contains('.') && !prefix.starts_with('.') && !prefix.ends_with('.')
+        })
+}
+
 fn numeric_version(s: &str) -> Option<Vec<u32>> {
     let values: Option<Vec<u32>> = s.split('.').map(|v| v.parse().ok()).collect();
     values.filter(|v| !v.is_empty())
@@ -212,6 +243,39 @@ impl Release {
             }
         }
         if let Some(contributions) = &self.node_contributions {
+            let mut data_ids = std::collections::BTreeSet::new();
+            for data_type in &contributions.data_types {
+                ensure!(
+                    valid_data_type_identity(data_type) && data_ids.insert(&data_type.id),
+                    "invalid or duplicate data type {}",
+                    data_type.id
+                );
+                ensure!(
+                    !data_type.purpose.trim().is_empty(),
+                    "{}: purpose is required",
+                    data_type.id
+                );
+                ensure!(
+                    !data_type.media_type.trim().is_empty(),
+                    "{}: media_type is required",
+                    data_type.id
+                );
+                ensure!(
+                    !data_type.codec.trim().is_empty(),
+                    "{}: codec is required",
+                    data_type.id
+                );
+                ensure!(
+                    data_type.schema.is_object(),
+                    "{}: schema must be an object",
+                    data_type.id
+                );
+                ensure!(
+                    (1..=100_000_000).contains(&data_type.max_payload_bytes),
+                    "{}: max_payload_bytes must be 1..100000000",
+                    data_type.id
+                );
+            }
             let mut type_ids = std::collections::BTreeSet::new();
             for node_type in &contributions.node_types {
                 let id = node_type
@@ -237,6 +301,36 @@ impl Release {
                         node_type.get(field).is_some(),
                         "{id}: node type requires {field}"
                     );
+                }
+                for port in ["inputs", "outputs"]
+                    .into_iter()
+                    .flat_map(|key| node_type[key].as_array().into_iter().flatten())
+                {
+                    if let Some(rate) = port.get("expected_rate_hz") {
+                        ensure!(
+                            rate.as_f64()
+                                .is_some_and(|value| value.is_finite() && value > 0.0),
+                            "{id}: expected_rate_hz must be positive"
+                        );
+                    }
+                    if let Some(transport) = port.get("transport").and_then(Value::as_str) {
+                        ensure!(
+                            matches!(
+                                transport,
+                                "in_process" | "unix_socket" | "websocket" | "ros2"
+                            ),
+                            "{id}: invalid port transport"
+                        );
+                    }
+                    if let Some(class) = port.get("data_class").and_then(Value::as_str) {
+                        ensure!(
+                            matches!(
+                                class,
+                                "image" | "observation" | "command" | "event" | "state" | "opaque"
+                            ),
+                            "{id}: invalid port data_class"
+                        );
+                    }
                 }
             }
             let mut adapter_ids = std::collections::BTreeSet::new();
@@ -440,6 +534,22 @@ pub fn verify_file(asset: &Asset, path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn custom_data_idl_requires_explicit_version_and_purpose() {
+        let valid = serde_json::json!({"id":"vendor.camera.frame@v1.0","version":"1.0","purpose":"Camera preview","media_type":"application/json","codec":"json_v1","schema":{"type":"object"},"max_payload_bytes":65536});
+        let descriptor: DataType = serde_json::from_value(valid.clone()).unwrap();
+        assert!(valid_data_type_identity(&descriptor));
+        let mut mismatched = descriptor.clone();
+        mismatched.version = "1.1".into();
+        assert!(!valid_data_type_identity(&mismatched));
+        let mut missing_version = valid.clone();
+        missing_version.as_object_mut().unwrap().remove("version");
+        assert!(serde_json::from_value::<DataType>(missing_version).is_err());
+        let mut missing_purpose = valid;
+        missing_purpose.as_object_mut().unwrap().remove("purpose");
+        assert!(serde_json::from_value::<DataType>(missing_purpose).is_err());
+    }
 
     #[test]
     fn accepts_catalog_activation_compatibility_fields() {

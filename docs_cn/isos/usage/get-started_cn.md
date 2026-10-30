@@ -11,7 +11,7 @@ isos init
 
 保持 `isos init` 在此终端运行。它负责工作台服务和进程管理器；按 Ctrl+C 会停止服务及其子进程。在第二个终端运行 `isos open` 并编辑图。
 
-Home 展示软件包、场景选择、先决条件、保存修订、运行中修订、进程状态和日志。Graph 编辑唯一的 IsOS/EOS/EGIA 共享图。起始图含后端进程、EOS 运行时、HTTP 桥、目录服务、相机、底盘、机械臂、调度器及仅供设计的 EGIA guard。选择场景并检查可执行文件路径，然后 Validate 和 Apply。对应 CLI 命令为：
+Home 展示已安装软件包、先决条件、保存与运行中修订、进程状态和日志。Build graph 编辑共享的 IsOS/EOS/EGIA/IsosUI 图。起始图包含 EOS 运行时、HTTP 桥、目录服务和调度器节点。预览已安装的 `sim-hardware` 节点集合，加入 MuJoCo 后端、相机、底盘、机械臂、相机闸门和 Vision 节点；选择场景并检查预览，然后 Validate 和 Apply。Run 启动已应用的图。对应 CLI 命令为：
 
 ```sh
 isos config validate ~/.config/isos/deployments/default.nodes.json

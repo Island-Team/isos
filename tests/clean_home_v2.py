@@ -128,6 +128,12 @@ def main():
         values_path = root / "node-values.json"
         values_path.write_text(json.dumps({"scene": "default", "socket": str(home / "run/default-mujoco.sock")}))
         graph = json.loads(run("pkg", "preview-set", "island/mujoco-sim", "2.0.0", "sim-hardware", str(graph_path), "--values", str(values_path), env=env).stdout)["graph"]
+        mujoco_nodes = graph["cores"]["eos"]["layers"]["hardware"]["groups"]["mujoco"]["nodes"]
+        assert len(mujoco_nodes) == 3
+        assert all(node["package"] == {"id": "island/mujoco-sim", "version": "2.0.0"} for node in mujoco_nodes.values())
+        gate = graph["cores"]["eos"]["layers"]["interface"]["groups"]["gate"]["nodes"]["front-preview"]
+        vision = graph["cores"]["isosui"]["layers"]["system"]["groups"]["ui"]["nodes"]["vision"]
+        assert "package" not in gate and "package" not in vision
         backend = graph["cores"]["eos"]["layers"]["process"]["groups"]["mujoco"]["nodes"]["simulator"]["settings"]
         gui_report = root / "simulator-env.txt"
         parent_report = root / "simulator-parent.json"
@@ -223,8 +229,9 @@ def main():
                     break
                 if run_process.poll() is not None:
                     run_log.flush()
-                    config_log = home / "data/process-logs/default/config.log"
-                    raise RuntimeError(f"isos run exited {run_process.returncode}: {(root / 'run.log').read_text()}\nconfig log: {config_log.read_text() if config_log.exists() else 'missing'}")
+                    logs_dir = home / "data/process-logs/default"
+                    child_logs = {path.name: path.read_text() for path in logs_dir.glob("*.log")}
+                    raise RuntimeError(f"isos run exited {run_process.returncode}: {(root / 'run.log').read_text()}\nchild logs: {child_logs}")
                 time.sleep(0.05)
             else:
                 raise RuntimeError("isos run did not start")
@@ -288,12 +295,23 @@ def main():
             run("logs", "eos", "--lines", "5", env=env)
             run_process.send_signal(signal.SIGINT)
             assert run_process.wait(timeout=10) == 0
+            run_log.flush()
+            run_output = (root / "run.log").read_text()
+            assert f"Active revision: {saved_hash}" in run_output
+            assert f"IsOS API: http://127.0.0.1:{isos_port}" in run_output
+            assert f"IsosUI: http://127.0.0.1:{ui_port}/en/isos" in run_output
+            assert f"IsOS log: {home / 'data/logs/default/isos.log'}" in run_output
             print("ISOS RUN Ctrl+C stopped managed children: PASS")
             assert json.loads(run("status", "--json", env=env).stdout)["state"] == "stopped"
             assert isos_api("process-status")["state"] == "stopped"
             api_run = isos_api("process-control", "POST", {"schema_version": 2, "operation": "run", "revision": saved_hash})
             assert api_run["started"][0] == "eos"
             assert isos_api("process-logs/eos?lines=5")["node"] == "eos"
+            categorized = isos_api("logs?source=eos&limit=5")
+            assert isinstance(categorized["lines"], list) and isinstance(categorized["next_cursor"], str)
+            assert isos_api("logs?source=ui&limit=5")["lines"]
+            mujoco_lines = isos_api("logs?source=mujoco&limit=5")["lines"]
+            assert any("mock mujoco ready" in line["message"] for line in mujoco_lines)
             assert isos_api("process-control", "POST", {"schema_version": 2, "operation": "stop"})["stopped"][-1] == "eos"
             print("ISOS HTTP Home, graph validation, process control, status, and logs: PASS")
             missing.write_text('<mujoco><mesh file="gone.stl"/></mujoco>')
@@ -328,6 +346,8 @@ def main():
             init_log.close()
             init_output = (root / "init.log").read_text()
             assert f"http://127.0.0.1:{ui_port}/en/isos" in init_output
+            assert f"IsOS API: http://127.0.0.1:{isos_port}" in init_output
+            assert f"IsOS log: {home / 'data/logs/default/isos.log'}" in init_output
             assert "#token=" not in init_output
             assert not (home / "run/ui-token").exists()
             with socket.socket() as probe:

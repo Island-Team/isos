@@ -5,6 +5,7 @@ mod graph;
 mod http;
 mod isosui;
 mod lifecycle;
+mod log_store;
 mod node_sets;
 mod packages;
 mod release;
@@ -14,7 +15,7 @@ mod v2_process;
 mod v2_starter;
 mod versions;
 
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::{Shell, generate};
 use graph::{Deployment, NodeKind};
@@ -984,7 +985,7 @@ fn ui_source() -> Result<PathBuf> {
 struct Frontend(Child);
 
 impl Frontend {
-    fn spawn(source: &Path) -> Result<Self> {
+    fn spawn(source: &Path, logs: log_store::LogStore) -> Result<Self> {
         let port = http::ui_port()?;
         ensure!(
             TcpStream::connect(("127.0.0.1", port)).is_err(),
@@ -997,7 +998,9 @@ impl Frontend {
             .env("ISOSUI_HOST", "127.0.0.1")
             .env("ISOSUI_PORT", port.to_string())
             .env("ISOSUI_API_ORIGIN", http::local_origin())
-            .stdin(Stdio::null());
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         let parent_pid = std::process::id();
         unsafe {
             command.pre_exec(move || {
@@ -1013,7 +1016,14 @@ impl Frontend {
                 Ok(())
             });
         }
-        Ok(Self(command.spawn()?))
+        let mut child = command.spawn()?;
+        if let Some(stdout) = child.stdout.take() {
+            log_store::capture(stdout, logs.clone(), "ui".into(), "info");
+        }
+        if let Some(stderr) = child.stderr.take() {
+            log_store::capture(stderr, logs, "ui".into(), "error");
+        }
+        Ok(Self(child))
     }
 
     fn ready(&mut self, port: u16) -> Result<()> {
@@ -1056,7 +1066,10 @@ fn serve_foreground(paths: config::Paths, name: String) -> Result<()> {
     let source = ui_source()?;
     let port = http::ui_port()?;
     catch_interrupts()?;
-    let mut frontend = Frontend::spawn(&source)?;
+    let logs = log_store::LogStore::new(&paths, &name)?;
+    logs.append("isos", "info", "Starting IsOS workbench")?;
+    let main_log = logs.root().join("isos.log");
+    let mut frontend = Frontend::spawn(&source, logs)?;
     let listener = bind_daemon(&paths)?;
     let api_paths = paths.clone();
     let manager = std::thread::spawn(move || daemon(&api_paths, listener));
@@ -1065,6 +1078,7 @@ fn serve_foreground(paths: config::Paths, name: String) -> Result<()> {
     if result.is_ok() && !INTERRUPTED.load(Ordering::SeqCst) {
         println!("{}", http::ui_url()?);
         println!("IsOS API: {}", http::local_origin());
+        println!("IsOS log: {}", main_log.display());
         println!("IsOS workbench is running; press Ctrl+C to stop it.");
         while !INTERRUPTED.load(Ordering::SeqCst) {
             if let Some(status) = frontend.0.try_wait()? {
@@ -1088,6 +1102,28 @@ fn serve_foreground(paths: config::Paths, name: String) -> Result<()> {
     manager_result?;
     http_result?;
     result
+}
+
+fn print_v2_run_startup(paths: &config::Paths, name: &str, result: &Value) -> Result<()> {
+    println!("{}", serde_json::to_string_pretty(result)?);
+    println!("IsosUI: {}", http::ui_url()?);
+    println!("IsOS API: {}", http::local_origin());
+    println!(
+        "Active revision: {}",
+        result["active_revision"]
+            .as_str()
+            .context("start result lacks active revision")?
+    );
+    println!(
+        "IsOS log: {}",
+        paths
+            .data
+            .join("logs")
+            .join(name)
+            .join("isos.log")
+            .display()
+    );
+    Ok(())
 }
 
 fn wait_for_interrupt(paths: &config::Paths, name: &str) -> Result<()> {
@@ -1157,9 +1193,7 @@ fn v2_call_revision(
 }
 
 fn main_run() -> Result<()> {
-    if std::path::Path::new(".env").is_file() {
-        dotenvy::from_path(".env")?;
-    }
+    config::load_runtime_config()?;
     let cli = Cli::parse();
     if let Some(shell) = cli.generate_completion {
         generate(shell, &mut Cli::command(), "isos", &mut std::io::stdout());
@@ -1246,10 +1280,7 @@ fn main_run() -> Result<()> {
         }
         CommandLine::Run => {
             catch_interrupts()?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&v2_call(&paths, &name, "v2_start")?)?
-            );
+            print_v2_run_startup(&paths, &name, &v2_call(&paths, &name, "v2_start")?)?;
             wait_for_interrupt(&paths, &name)?;
         }
         CommandLine::Serve => {
@@ -1262,10 +1293,7 @@ fn main_run() -> Result<()> {
         },
         CommandLine::Start => {
             catch_interrupts()?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&v2_call(&paths, &name, "v2_start")?)?
-            );
+            print_v2_run_startup(&paths, &name, &v2_call(&paths, &name, "v2_start")?)?;
             wait_for_interrupt(&paths, &name)?;
         }
         CommandLine::Stop => {
@@ -1280,10 +1308,7 @@ fn main_run() -> Result<()> {
         }
         CommandLine::Restart => {
             catch_interrupts()?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&v2_call(&paths, &name, "v2_restart")?)?
-            );
+            print_v2_run_startup(&paths, &name, &v2_call(&paths, &name, "v2_restart")?)?;
             wait_for_interrupt(&paths, &name)?;
         }
         CommandLine::Status { json: _ } => {

@@ -3,19 +3,15 @@
 //! The graph remains the authored source. This module admits only registered
 //! IsOS process nodes and keeps direct child handles in the manager process.
 
-use crate::{config::Paths, packages, v2_backend, v2_bins};
+use crate::{config::Paths, log_store, packages, v2_backend, v2_bins};
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{self, OpenOptions},
+    fs,
     net::{TcpStream, ToSocketAddrs},
-    os::unix::{
-        ffi::OsStrExt,
-        fs::{OpenOptionsExt, PermissionsExt},
-        process::CommandExt,
-    },
+    os::unix::{ffi::OsStrExt, fs::PermissionsExt, process::CommandExt},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     thread,
@@ -547,6 +543,7 @@ pub fn catalog() -> Result<Value> {
         "EOS v2 catalog has no types array"
     );
     let mut contributed = BTreeMap::new();
+    let mut contributed_data = BTreeMap::new();
     for sidecar in packages::node_type_sidecars(&Paths::discover()?)? {
         let value: Value = serde_json::from_slice(&fs::read(sidecar)?)?;
         if let Some(types) = value["node_types"].as_array() {
@@ -556,7 +553,23 @@ pub fn catalog() -> Result<Value> {
                     .context("contributed node type lacks id")?;
                 let mut node_type = node_type.clone();
                 node_type["package"] = value["package"].clone();
-                contributed.insert(id.to_owned(), node_type);
+                ensure!(
+                    contributed.insert(id.to_owned(), node_type).is_none(),
+                    "installed packages contribute duplicate node type {id}; remove one package version"
+                );
+            }
+        }
+        if let Some(data_types) = value["data_types"].as_array() {
+            for data_type in data_types {
+                let id = data_type["id"]
+                    .as_str()
+                    .context("contributed data type lacks id")?;
+                let mut data_type = data_type.clone();
+                data_type["package"] = value["package"].clone();
+                ensure!(
+                    contributed_data.insert(id.to_owned(), data_type).is_none(),
+                    "installed packages contribute duplicate data type {id}; remove one package version"
+                );
             }
         }
     }
@@ -566,9 +579,26 @@ pub fn catalog() -> Result<Value> {
         .filter_map(|value| value["id"].as_str().map(str::to_owned))
         .collect();
     for (id, node_type) in contributed {
-        if !builtin.contains(&id) {
-            types.push(node_type);
-        }
+        ensure!(
+            !builtin.contains(&id),
+            "package node type {id} conflicts with built-in type"
+        );
+        types.push(node_type);
+    }
+    if !catalog["data_types"].is_array() {
+        catalog["data_types"] = serde_json::json!([]);
+    }
+    let data_types = catalog["data_types"].as_array_mut().unwrap();
+    let builtin_data: BTreeSet<_> = data_types
+        .iter()
+        .filter_map(|value| value["id"].as_str().map(str::to_owned))
+        .collect();
+    for (id, data_type) in contributed_data {
+        ensure!(
+            !builtin_data.contains(&id),
+            "package data type {id} conflicts with built-in type"
+        );
+        data_types.push(data_type);
     }
     Ok(catalog)
 }
@@ -611,7 +641,7 @@ pub struct ProcessStatus {
 pub struct Supervisor {
     running: BTreeMap<String, Running>,
     order: Vec<String>,
-    log_dir: PathBuf,
+    logs: log_store::LogStore,
 }
 
 impl Supervisor {
@@ -640,30 +670,27 @@ impl Supervisor {
     }
     pub fn new(paths: &Paths, deployment: &str) -> Result<Self> {
         validate_deployment_name(deployment)?;
-        let log_dir = paths.data.join("process-logs").join(deployment);
-        fs::create_dir_all(&log_dir)?;
-        fs::set_permissions(&log_dir, fs::Permissions::from_mode(0o700))?;
         Ok(Self {
             running: BTreeMap::new(),
             order: Vec::new(),
-            log_dir,
+            logs: log_store::LogStore::new(paths, deployment)?,
         })
     }
 
     fn spawn(&self, spec: &ProcessSpec) -> Result<Child> {
-        let log = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .mode(0o600)
-            .open(self.log_dir.join(format!("{}.log", spec.id)))?;
-        let error_log = log.try_clone()?;
         let mut command = Command::new(&spec.settings.command[0]);
         command.args(&spec.settings.command[1..]);
+        if spec.id == "eos" && spec.package.is_some() {
+            command.arg("--log-dir").arg(self.logs.root());
+        }
         command.envs(&spec.settings.env);
         if let Some(cwd) = &spec.settings.cwd {
             command.current_dir(cwd);
         }
-        command.stdin(Stdio::null()).stdout(log).stderr(error_log);
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         // A dedicated process group lets stop terminate descendants as well.
         let parent_pid = std::process::id();
         unsafe {
@@ -680,9 +707,16 @@ impl Supervisor {
                 Ok(())
             });
         }
-        command
+        let mut child = command
             .spawn()
-            .with_context(|| format!("spawn {}", spec.id))
+            .with_context(|| format!("spawn {}", spec.id))?;
+        if let Some(stdout) = child.stdout.take() {
+            log_store::capture(stdout, self.logs.clone(), spec.id.clone(), "info");
+        }
+        if let Some(stderr) = child.stderr.take() {
+            log_store::capture(stderr, self.logs.clone(), spec.id.clone(), "error");
+        }
+        Ok(child)
     }
 
     fn unix_socket_ready(path: &Path) -> bool {
