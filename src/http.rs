@@ -3,7 +3,7 @@ use crate::{
     component,
     config::{self, Paths},
     graph::Deployment,
-    isosui, lifecycle,
+    isosui, lifecycle, v2_process,
 };
 use anyhow::{Context, Result};
 use axum::{
@@ -42,7 +42,16 @@ struct PinCache {
     directory: Option<PathBuf>,
 }
 
-const LOCAL_ORIGIN: &str = "http://127.0.0.1:16000";
+fn local_port() -> Result<u16> {
+    let port = std::env::var("ISOS_HTTP_PORT")
+        .unwrap_or_else(|_| "16000".into())
+        .parse::<u16>()?;
+    anyhow::ensure!(port >= 1024, "ISOS_HTTP_PORT must be 1024..65535");
+    Ok(port)
+}
+fn local_origin() -> String {
+    format!("http://127.0.0.1:{}", local_port().unwrap_or(16000))
+}
 const HOSTED_ORIGINS: [&str; 2] = ["https://www.os-island.com", "https://os-island.com"];
 const HOSTED_EDITOR: &str = "https://www.os-island.com/en/isos";
 
@@ -85,7 +94,7 @@ fn authorized(
     Ok(())
 }
 fn allowed_origin(origin: &str) -> bool {
-    origin == LOCAL_ORIGIN || HOSTED_ORIGINS.contains(&origin)
+    origin == local_origin() || HOSTED_ORIGINS.contains(&origin)
 }
 
 async fn cors(request: Request<Body>, next: Next) -> Response {
@@ -94,7 +103,7 @@ async fn cors(request: Request<Body>, next: Next) -> Response {
         .get(header::HOST)
         .and_then(|h| h.to_str().ok())
         .unwrap_or("");
-    if host != "127.0.0.1:16000" {
+    if host != format!("127.0.0.1:{}", local_port().unwrap_or(16000)) {
         return err(StatusCode::FORBIDDEN, "invalid Host").into_response();
     }
     let origin = headers
@@ -214,6 +223,202 @@ async fn graph(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
     let graph: Value =
         serde_json::from_slice(&bytes).map_err(|e| err(StatusCode::UNPROCESSABLE_ENTITY, e))?;
     ok(json!({"revision":revision(&bytes),"graph":graph}))
+}
+
+async fn node_graph(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
+    authorized(&app, &headers)?;
+    v2_process::validate_deployment_name(&app.deployment)
+        .map_err(|error| err(StatusCode::BAD_REQUEST, error))?;
+    let bytes = match fs::read(app.paths.v2_node_graph(&app.deployment)) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return ok(json!({
+                "revision":"",
+                "graph":{"version":"2.0.0","robot":{"id":"robot","name":"Robot"},"cores":{}}
+            }));
+        }
+        Err(error) => return Err(err(StatusCode::INTERNAL_SERVER_ERROR, error)),
+    };
+    let graph: Value = serde_json::from_slice(&bytes)
+        .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
+    ok(json!({"revision":revision(&bytes),"graph":graph}))
+}
+
+#[derive(Deserialize)]
+struct NodeGraphEdit {
+    schema_version: u32,
+    graph: Value,
+    #[serde(default)]
+    revision: Option<String>,
+}
+
+async fn validate_node_graph(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(edit): Json<NodeGraphEdit>,
+) -> ApiResult {
+    authorized(&app, &headers)?;
+    if edit.schema_version != 2 {
+        return Err(err(StatusCode::BAD_REQUEST, "API schema_version must be 2"));
+    }
+    let diagnostics: Vec<Value> = v2_process::validate_value(&app.paths, &edit.graph)
+        .err()
+        .map(|error| json!({"path":"/","code":"invalid_graph","message":error.to_string()}))
+        .into_iter()
+        .collect();
+    ok(json!({"valid":diagnostics.is_empty(),"diagnostics":diagnostics}))
+}
+
+async fn apply_node_graph(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(edit): Json<NodeGraphEdit>,
+) -> ApiResult {
+    authorized(&app, &headers)?;
+    v2_process::validate_deployment_name(&app.deployment)
+        .map_err(|error| err(StatusCode::BAD_REQUEST, error))?;
+    if edit.schema_version != 2 {
+        return Err(err(StatusCode::BAD_REQUEST, "API schema_version must be 2"));
+    }
+    v2_process::validate_value(&app.paths, &edit.graph)
+        .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
+    let _lock = lifecycle::Lock::take(&app.paths)
+        .map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR, error))?;
+    let path = app.paths.v2_node_graph(&app.deployment);
+    let previous = fs::read(&path).ok();
+    if let Some(bytes) = &previous {
+        if edit.revision.as_deref() != Some(revision(bytes).as_str()) {
+            return Err(err(
+                StatusCode::CONFLICT,
+                "node graph revision changed; reload before applying",
+            ));
+        }
+    } else if edit
+        .revision
+        .as_deref()
+        .is_some_and(|revision| !revision.is_empty())
+    {
+        return Err(err(
+            StatusCode::CONFLICT,
+            "node graph was removed; reload before applying",
+        ));
+    }
+    let bytes = serde_json::to_vec_pretty(&edit.graph)
+        .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
+    config::atomic_write(&path, &bytes)
+        .map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR, error))?;
+    ok(json!({"revision":revision(&bytes),"graph":edit.graph}))
+}
+
+async fn node_types(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
+    authorized(&app, &headers)?;
+    let catalog =
+        v2_process::catalog().map_err(|error| err(StatusCode::SERVICE_UNAVAILABLE, error))?;
+    ok(catalog)
+}
+
+async fn process_status(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
+    authorized(&app, &headers)?;
+    let status = crate::v2_call(&app.paths, &app.deployment, "v2_status")
+        .map_err(|error| err(StatusCode::SERVICE_UNAVAILABLE, error))?;
+    ok(status)
+}
+async fn backends(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
+    authorized(&app, &headers)?;
+    ok(json!({"backends":crate::v2_backend::installed(&app.paths)}))
+}
+
+async fn setup_status(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
+    authorized(&app, &headers)?;
+    let graph_path = app.paths.v2_node_graph(&app.deployment);
+    let revision = fs::read(&graph_path).ok().map(|bytes| revision(&bytes));
+    let backends = crate::v2_backend::installed(&app.paths);
+    let mut issues: Vec<String> = Vec::new();
+    if backends.is_empty() {
+        issues.push("MuJoCo backend package is not installed or linked".into());
+    }
+    for backend in &backends {
+        if let Some(messages) = backend.get("issues").and_then(Value::as_array) {
+            issues.extend(messages.iter().filter_map(Value::as_str).map(str::to_owned));
+        }
+    }
+    match fs::read(&graph_path) {
+        Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
+            Ok(graph) => {
+                if let Err(error) = v2_process::validate_value(&app.paths, &graph) {
+                    issues.push(error.to_string());
+                }
+            }
+            Err(error) => issues.push(error.to_string()),
+        },
+        Err(error) => issues.push(format!("graph is missing: {error}")),
+    }
+    let process = crate::v2_call(&app.paths, &app.deployment, "v2_status").ok();
+    if process.is_none() {
+        issues.push("IsOS process manager is not running".into());
+    }
+    ok(
+        json!({"ready":issues.is_empty(),"issues":issues,"graph_revision":revision,"backends":backends,"process":process,"graph_path":graph_path}),
+    )
+}
+
+#[derive(Deserialize)]
+struct ProcessControl {
+    schema_version: u32,
+    operation: String,
+    #[serde(default)]
+    revision: Option<String>,
+}
+
+async fn process_control(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(control): Json<ProcessControl>,
+) -> ApiResult {
+    authorized(&app, &headers)?;
+    if control.schema_version != 2 {
+        return Err(err(StatusCode::BAD_REQUEST, "API schema_version must be 2"));
+    }
+    let op = match control.operation.as_str() {
+        "run" | "start" => "v2_start",
+        "stop" => "v2_stop",
+        "restart" => "v2_restart",
+        _ => {
+            return Err(err(
+                StatusCode::BAD_REQUEST,
+                "operation must be run, start, stop, or restart",
+            ));
+        }
+    };
+    let result = crate::v2_call_revision(&app.paths, &app.deployment, op, control.revision)
+        .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
+    ok(result)
+}
+
+async fn process_logs(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    axum::extract::Path(node): axum::extract::Path<String>,
+    axum::extract::Query(query): axum::extract::Query<std::collections::BTreeMap<String, String>>,
+) -> ApiResult {
+    authorized(&app, &headers)?;
+    crate::v2_process::validate_deployment_name(&node)
+        .map_err(|error| err(StatusCode::BAD_REQUEST, error))?;
+    let lines = query
+        .get("lines")
+        .and_then(|n| n.parse::<usize>().ok())
+        .unwrap_or(100)
+        .min(1000);
+    let path = app
+        .paths
+        .data
+        .join("process-logs")
+        .join(&app.deployment)
+        .join(format!("{node}.log"));
+    let bytes = fs::read(path).map_err(|error| err(StatusCode::NOT_FOUND, error))?;
+    let source = String::from_utf8_lossy(&bytes);
+    let selected: Vec<_> = source.lines().rev().take(lines).collect();
+    ok(json!({"node":node,"lines":selected.into_iter().rev().collect::<Vec<_>>()}))
 }
 #[derive(Deserialize)]
 struct Edit {
@@ -384,7 +589,7 @@ pub fn open_url(paths: &Paths) -> Result<String> {
         .is_some_and(|p| p.join("index.html").is_file())
         || isosui::pinned_dir(paths)?.is_some();
     let base = if local {
-        "http://127.0.0.1:16000/en/isos"
+        return Ok(format!("{}/en/isos", local_origin()));
     } else {
         HOSTED_EDITOR
     };
@@ -407,17 +612,52 @@ pub fn serve(paths: Paths, deployment: String) -> Result<()> {
         .enable_all()
         .build()?;
     runtime.block_on(async {
-        let address: SocketAddr = "127.0.0.1:16000".parse()?;
+        let address: SocketAddr = format!("127.0.0.1:{}", local_port()?).parse()?;
         let listener = tokio::net::TcpListener::bind(address)
             .await
             .context("bind IsOS loopback API")?;
-        axum::serve(listener, router).await?;
+        axum::serve(listener, router)
+            .with_graceful_shutdown(async {
+                while !crate::INTERRUPTED.load(std::sync::atomic::Ordering::SeqCst) {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+            })
+            .await?;
         Ok(())
     })
 }
 fn router(app: Arc<App>) -> Router {
     let api = Router::new()
         .route("/api/isos/v2/version", get(version).options(preflight))
+        .route(
+            "/api/isos/v2/node-types",
+            get(node_types).options(preflight),
+        )
+        .route(
+            "/api/isos/v2/process-status",
+            get(process_status).options(preflight),
+        )
+        .route("/api/isos/v2/backends", get(backends).options(preflight))
+        .route(
+            "/api/isos/v2/setup-status",
+            get(setup_status).options(preflight),
+        )
+        .route(
+            "/api/isos/v2/process-control",
+            post(process_control).options(preflight),
+        )
+        .route(
+            "/api/isos/v2/process-logs/{node}",
+            get(process_logs).options(preflight),
+        )
+        .route(
+            "/api/isos/v2/node-graph",
+            get(node_graph).put(apply_node_graph).options(preflight),
+        )
+        .route(
+            "/api/isos/v2/node-graph/validate",
+            post(validate_node_graph).options(preflight),
+        )
         .route(
             "/api/isos/v2/graph",
             get(graph).put(apply).options(preflight),
@@ -447,6 +687,7 @@ async fn static_file_root(State(app): State<Arc<App>>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::to_bytes;
     use tower::ServiceExt;
 
     fn test_router() -> Router {
@@ -461,6 +702,68 @@ mod tests {
             web: None,
             pin_cache: Mutex::new(PinCache::default()),
         }))
+    }
+
+    #[tokio::test]
+    async fn first_node_graph_read_returns_editable_v2_draft() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = Arc::new(App {
+            paths: Paths {
+                config: temp.path().join("config"),
+                data: temp.path().join("data"),
+                runtime: temp.path().join("run"),
+            },
+            deployment: "default".into(),
+            token: "test-secret".into(),
+            web: None,
+            pin_cache: Mutex::new(PinCache::default()),
+        });
+        let request = Request::builder()
+            .uri("/api/isos/v2/node-graph")
+            .header(header::HOST, "127.0.0.1:16000")
+            .header(header::ORIGIN, "https://www.os-island.com")
+            .body(Body::empty())
+            .unwrap();
+        let response = router(app).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), 1_000_000).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["data"]["revision"], "");
+        assert_eq!(body["data"]["graph"]["version"], "2.0.0");
+    }
+
+    #[tokio::test]
+    async fn home_reports_missing_package_and_graph() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = Arc::new(App {
+            paths: Paths {
+                config: temp.path().join("config"),
+                data: temp.path().join("data"),
+                runtime: temp.path().join("run"),
+            },
+            deployment: "default".into(),
+            token: "test-secret".into(),
+            web: None,
+            pin_cache: Mutex::new(PinCache::default()),
+        });
+        for route in ["/api/isos/v2/backends", "/api/isos/v2/setup-status"] {
+            let request = Request::builder()
+                .uri(route)
+                .header(header::HOST, "127.0.0.1:16000")
+                .header(header::ORIGIN, "https://www.os-island.com")
+                .body(Body::empty())
+                .unwrap();
+            let response = router(app.clone()).oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = to_bytes(response.into_body(), 1_000_000).await.unwrap();
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            if route.ends_with("backends") {
+                assert_eq!(body["data"]["backends"], json!([]));
+            } else {
+                assert_eq!(body["data"]["ready"], false);
+                assert!(body["data"]["issues"].as_array().unwrap().len() >= 2);
+            }
+        }
     }
 
     #[tokio::test]

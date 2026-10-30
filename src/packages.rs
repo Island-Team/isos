@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs,
     io::{Read, Write},
+    os::unix::net::UnixStream,
     path::{Component, Path, PathBuf},
     process::Command,
 };
@@ -271,6 +272,32 @@ pub fn remove(paths: &Paths, id: &str, version: &str) -> Result<()> {
         .flatten()
         .flatten()
     {
+        if deployment
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".nodes.json")
+        {
+            let graph: serde_json::Value = serde_json::from_slice(&fs::read(deployment.path())?)?;
+            if graph
+                .pointer("/cores/isos/layers/process/groups/backend/nodes")
+                .and_then(serde_json::Value::as_object)
+                .is_some_and(|nodes| {
+                    nodes.values().any(|node| {
+                        node.pointer("/settings/package")
+                            .and_then(serde_json::Value::as_str)
+                            == Some(id)
+                            && node
+                                .pointer("/settings/version")
+                                .and_then(serde_json::Value::as_str)
+                                == Some(version)
+                    })
+                })
+            {
+                anyhow::bail!(
+                    "package is referenced by an applied v2 graph; remove that reference first"
+                );
+            }
+        }
         if let Ok(graph) = config::load(&deployment.path()) {
             ensure!(
                 !graph.nodes.iter().any(|n| n
@@ -298,6 +325,17 @@ pub fn remove(paths: &Paths, id: &str, version: &str) -> Result<()> {
                 .as_ref()
                 .is_some_and(|package| package.id == id && package.version == version)),
             "package is referenced by an active deployment; stop it before removal"
+        );
+    }
+    if UnixStream::connect(paths.socket()).is_ok() {
+        let active = crate::v2_call(paths, "default", "v2_active_packages")?;
+        ensure!(
+            !active["packages"]
+                .as_array()
+                .is_some_and(|packages| packages
+                    .iter()
+                    .any(|package| package["id"] == id && package["version"] == version)),
+            "package is referenced by an active v2 deployment; stop it before removal"
         );
     }
     fs::remove_dir_all(path)?;

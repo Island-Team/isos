@@ -1,6 +1,6 @@
 [package]
 name = "isos"
-version = "0.1.0"
+version = "2.0.0"
 edition = "2024"
 license = "Apache-2.0"
 description = "Local manager for Island EOS and EGIA deployments"
@@ -19,8 +19,8 @@ tar = "0.4"
 flate2 = "1"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 axum = "0.8"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }
+tempfile = "3"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
-tempfile = "3"

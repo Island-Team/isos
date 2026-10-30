@@ -1,32 +1,24 @@
-# Start an IsOS deployment
+# Get started with IsOS and MuJoCo v2
 
 [中文](../../../docs_cn/isos/usage/get-started_cn.md)
 
-On Linux with a user systemd session and Rust 1.98 or newer, build and install the IsOS CLI and local API server. The editor source is maintained in the public IsosUI repository; the standard IsOS installation does not include UI files.
+Install IsOS and the Aether Rust binaries. Build the MuJoCo C++ simulator, set `MUJOCO_ROOT`, and stage a bundle with the MuJoCo repository's `tools/build-backend-bundle.py`. Link the exact bundle version, then initialize a graph:
 
-    ./build.sh
-    ./install.sh
-    isos init
-    isos open
+```sh
+isos pkg link island/mujoco-sim 2.0.0 /absolute/path/to/bundle
+isos init
+```
 
-`isos open` uses the hosted editor by default. For an offline editor, install Node.js and npm, set `ISOSUI_REPO_PATH` to a clean IsosUI checkout, then build and pin that commit. `isos version check` reports the IsosUI pin separately from EOS and EGIA. A missing pin uses the hosted editor; a damaged pin reports an error.
+Leave `isos init` running in this terminal. It owns the workbench server and process manager; Ctrl+C stops both and their children. In a second terminal, run `isos open` and edit the graph.
 
-    isos build isosui
-    isos version pin isosui <commit>
+Home shows the package, scene choices, prerequisites, saved revision, active revision, process status, and logs. Graph edits the one shared IsOS/EOS/EGIA graph. The starter graph has a backend process, EOS runtime, HTTP bridge, catalog, camera, base, manipulator, dispatcher, and a design-only EGIA guard. Select the scene and inspect executable paths, then Validate and Apply. CLI equivalents are:
 
-For local source builds, set `EOS_REPO_PATH` and `EGIA_REPO_PATH` to the committed checkout paths. The checkout wrapper reads `.env` if present. IsOS builds explicit candidates and never installs EOS system dependencies unless `--install-deps` is passed.
+```sh
+isos config validate ~/.config/isos/deployments/default.nodes.json
+isos config apply ~/.config/isos/deployments/default.nodes.json
+isos run
+```
 
-    isos build eos
-    isos build egia
-    isos version pin eos <exact-commit>
-    isos version pin egia <exact-commit>
-    isos version check
+`run`, `start`, and `restart` remain attached to the terminal. Ctrl+C requests a clean stop. Use another terminal for `status`, `logs`, or `stop` while the deployment is running.
 
-Use the editor to enable EOS, its logical UDS endpoint, and EGIA. Validate and Apply are separate; a stale editor revision gets a conflict. The configuration server remains usable while both runtimes are stopped.
-
-    isos run
-    isos status
-    isos logs egia
-    isos stop
-
-`run` starts enabled graph nodes in dependency order and checks the pinned build digests and EOS/EGIA contracts. EGIA connects directly to EOS's private UDS. Stopping reverses graph order. To change an active deployment, apply the graph and restart explicitly. The first-party demo EOS binding can start without a simulator, but demo primitives remain unavailable until a simulator service is running.
+Run rechecks the exact package and graph and starts MuJoCo before EOS. Stop reverses dependency order. Installing a package or changing an editor draft does not alter running processes; apply and restart to activate a new revision. A local link is revalidated on every apply/run. See [package commands](packages.md) and [graph fields](../interfaces/node-graph-v2.md).

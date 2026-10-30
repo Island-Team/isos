@@ -7,6 +7,9 @@ mod isosui;
 mod lifecycle;
 mod packages;
 mod release;
+mod v2_backend;
+mod v2_process;
+mod v2_starter;
 mod versions;
 
 use anyhow::{Result, bail, ensure};
@@ -16,8 +19,9 @@ use graph::{Deployment, NodeKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
+    collections::BTreeMap,
     fs,
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read, Write},
     net::{TcpStream, ToSocketAddrs},
     os::unix::{
         fs::PermissionsExt,
@@ -25,15 +29,38 @@ use std::{
     },
     path::PathBuf,
     process::Command,
+    sync::atomic::{AtomicBool, Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+
+static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn interrupt_handler(_: libc::c_int) {
+    INTERRUPTED.store(true, Ordering::SeqCst);
+}
+
+fn catch_interrupts() -> Result<()> {
+    INTERRUPTED.store(false, Ordering::SeqCst);
+    unsafe {
+        let handler = interrupt_handler as *const () as libc::sighandler_t;
+        ensure!(
+            libc::signal(libc::SIGINT, handler) != libc::SIG_ERR,
+            "install SIGINT handler"
+        );
+        ensure!(
+            libc::signal(libc::SIGTERM, handler) != libc::SIG_ERR,
+            "install SIGTERM handler"
+        );
+    }
+    Ok(())
+}
 
 #[derive(Parser)]
 #[command(
     name = "isos",
     version,
     about = "Manage Island EOS and EGIA as one local deployment",
-    after_help = "FIRST USE\n  1. Run `isos init`, then `isos open` to configure the graph.\n  2. Run `isos build eos` and `isos build egia` from configured source paths.\n  3. Run `isos version pin eos <commit>` and `isos version pin egia <commit>`.\n  4. Enable the nodes in the editor, Validate, Apply, then `isos run`.\n\nACCOUNT\n  Sign in:  isos auth login\n  Check:    isos auth whoami\n  Sign out: isos auth logout\n  Login is required for Island-port package submissions.\n\nMORE\n  Run `isos <command> --help` or read the IsOS quick start."
+    after_help = "FIRST USE\n  1. Install or link island/mujoco-sim 2.0.0, then run `isos init`.\n  2. Open the IsosUI Home and Graph pages; choose a scene, Validate, and Apply.\n  3. Run `isos run`, inspect `isos status`, and stop with `isos stop`.\n\nMORE\n  Run `isos <command> --help` or read the IsOS quick start."
 )]
 struct Cli {
     #[arg(long = "generate-completion", hide = true)]
@@ -87,13 +114,13 @@ enum CommandLine {
         #[arg(long)]
         json: bool,
     },
-    /// Read recent user-systemd logs for a deployment node.
+    /// Read recent direct-child logs for a deployment node.
     Logs {
         node: String,
         #[arg(long, default_value_t = 100)]
         lines: u32,
     },
-    /// Check local configuration, graph validity, and systemd prerequisites.
+    /// Check the shared graph, package, binaries, and manager readiness.
     Doctor,
     /// Start, attach to, or stop the EOS component and its dependencies.
     Eos {
@@ -133,6 +160,20 @@ enum CommandLine {
     },
     /// Serve the owner-only manager API on a Unix socket.
     Daemon,
+    /// Manage the shared v2 node graph and its IsOS-owned direct children.
+    V2 {
+        #[command(subcommand)]
+        command: V2Command,
+    },
+}
+
+#[derive(Subcommand)]
+enum V2Command {
+    Validate { file: PathBuf },
+    Apply { file: PathBuf },
+    Run,
+    Stop,
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -180,8 +221,6 @@ enum ConfigCommand {
     Apply {
         file: PathBuf,
     },
-    /// Back up a v1 graph and convert its EOS and EGIA nodes to v2 profiles.
-    Migrate,
     Show,
 }
 
@@ -350,146 +389,37 @@ fn component(paths: &config::Paths, name: &str, role: &str, cmd: ComponentComman
     Ok(())
 }
 
-fn example(name: &str, paths: &config::Paths) -> Deployment {
-    serde_json::from_value(json!({"schema_version":2,"name":name,
-      "nodes":[
-        {"id":"eos","kind":"component","role":"eos","enabled":false,
-         "profile":{"id":"eos.native","version":"1.0.0"},
-         "settings":{"north_http_url":"http://127.0.0.1:16201"}},
-        {"id":"eos-uds","kind":"endpoint","enabled":false,"owned":false,
-         "profile":{"id":"eos.uds","version":"1.0.0"},
-         "settings":{"socket_path":paths.runtime.join(format!("{name}-eos.sock"))}},
-        {"id":"eos-north-http","kind":"service","enabled":false,
-         "settings":{"sidecar_of":"eos"}},
-        {"id":"egia","kind":"component","role":"egia","enabled":false,
-         "profile":{"id":"egia.agent","version":"1.0.0"}}
-      ],"edges":[{"from":"egia","to":"eos-uds","kind":"depends_on","input":"eos","output":"grpc"},
-                 {"from":"eos-uds","to":"eos","kind":"depends_on"},
-                 {"from":"eos-north-http","to":"eos","kind":"depends_on"}]}))
-    .unwrap()
-}
-
 fn config_command(paths: &config::Paths, name: &str, cmd: ConfigCommand) -> Result<()> {
     match cmd {
         ConfigCommand::Init { output } => {
-            let path = output.unwrap_or_else(|| paths.graph(name));
-            ensure!(!path.exists(), "{} already exists", path.display());
-            let mut bytes = serde_json::to_vec_pretty(&example(name, paths))?;
-            bytes.push(b'\n');
-            config::atomic_write(&path, &bytes)?;
-            println!("created {}", path.display());
-            println!(
-                "Edit launch commands and enable EOS/EGIA, then run isos config apply {}",
-                path.display()
-            );
+            let default = v2_starter::init(paths, name)?;
+            if let Some(output) = output {
+                ensure!(!output.exists(), "{} already exists", output.display());
+                config::atomic_write(&output, &fs::read(default)?)?;
+                println!("created {}", output.display());
+            } else {
+                println!("editable graph: {}", default.display());
+            }
         }
         ConfigCommand::Validate { file } => {
-            let graph = config::load(&file)?;
-            component::validate_profiles(&graph)?;
-            println!(
-                "valid deployment {}: {} nodes, {} edges",
-                graph.name,
-                graph.nodes.len(),
-                graph.edges.len()
-            );
+            v2_process::validate_full_graph(&file)?;
+            let specs = v2_process::project_with_packages(paths, &fs::read_to_string(&file)?)?;
+            println!("valid v2 graph: {} IsOS processes", specs.len());
         }
         ConfigCommand::Apply { file } => {
-            let graph = config::load(&file)?;
-            ensure!(
-                graph.name == name,
-                "graph name {} differs from --deployment {name}",
-                graph.name
-            );
-            let changed_running = lifecycle::read_active(paths, name)?.is_some();
+            v2_process::validate_full_graph(&file)?;
+            let source = fs::read_to_string(&file)?;
+            let specs = v2_process::project_with_packages(paths, &source)?;
+            let normalized = v2_process::normalize_source(&source)?;
             let _lock = lifecycle::Lock::take(paths)?;
-            config::apply(paths, &graph)?;
-            println!("applied {} to {}", graph.name, paths.graph(name).display());
-            if changed_running {
-                println!(
-                    "running nodes still use their active snapshot; run isos restart to use the new graph"
-                );
-            }
-        }
-        ConfigCommand::Migrate => {
-            let path = paths.graph(name);
-            let bytes = fs::read(&path)?;
-            let mut graph: Deployment = serde_json::from_slice(&bytes)?;
-            ensure!(graph.schema_version == 1, "graph is already v2");
-            graph.validate()?;
-            for node in &mut graph.nodes {
-                if let Some(role) = node.role.as_deref() {
-                    node.profile = Some(graph::ProfileRef {
-                        id: if role == "eos" {
-                            "eos.native"
-                        } else {
-                            "egia.agent"
-                        }
-                        .into(),
-                        version: "1.0.0".into(),
-                    });
-                }
-            }
-            if let (Some(eos), Some(egia)) = (
-                graph
-                    .nodes
-                    .iter()
-                    .find(|n| n.role.as_deref() == Some("eos")),
-                graph
-                    .nodes
-                    .iter()
-                    .find(|n| n.role.as_deref() == Some("egia")),
-            ) {
-                let eos_id = eos.id.clone();
-                let egia_id = egia.id.clone();
-                let uds_id = "eos-uds".to_owned();
-                ensure!(
-                    !graph.nodes.iter().any(|n| n.id == uds_id),
-                    "cannot map existing eos-uds node"
-                );
-                let mut endpoint: graph::Node = serde_json::from_value(
-                    json!({"id":uds_id,"kind":"endpoint","enabled":eos.enabled,"owned":false,"profile":{"id":"eos.uds","version":"1.0.0"}}),
-                )?;
-                endpoint.settings.insert(
-                    "socket_path".into(),
-                    json!(paths.runtime.join(format!("{name}-eos.sock"))),
-                );
-                graph.nodes.push(endpoint);
-                graph
-                    .edges
-                    .retain(|e| !(e.from == egia_id && e.to == eos_id));
-                graph.edges.push(graph::Edge {
-                    from: egia_id,
-                    to: uds_id.clone(),
-                    kind: graph::EdgeKind::DependsOn,
-                    input: Some("eos".into()),
-                    output: Some("grpc".into()),
-                });
-                graph.edges.push(graph::Edge {
-                    from: uds_id,
-                    to: eos_id,
-                    kind: graph::EdgeKind::DependsOn,
-                    input: None,
-                    output: None,
-                });
-            }
-            graph.schema_version = 2;
-            graph.validate()?;
-            let backup = path.with_extension(format!(
-                "json.v1.{}.bak",
-                SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()
-            ));
-            config::atomic_write(&backup, &bytes)?;
-            let mut output = serde_json::to_vec_pretty(&graph)?;
-            output.push(b'\n');
-            config::atomic_write(&path, &output)?;
-            println!("migrated {} (backup {})", path.display(), backup.display());
+            config::atomic_write(
+                &paths.v2_node_graph(name),
+                &serde_json::to_vec_pretty(&normalized)?,
+            )?;
+            println!("applied v2 graph: {} IsOS processes", specs.len());
         }
         ConfigCommand::Show => {
-            println!(
-                "{}",
-                fs::read_to_string(paths.graph(name))
-                    .map_err(|_| anyhow::anyhow!("no applied deployment; run isos config init"))?
-            );
+            println!("{}", fs::read_to_string(paths.v2_node_graph(name))?);
         }
     }
     Ok(())
@@ -672,7 +602,7 @@ fn library(paths: &config::Paths, name: &str, kind: &str, command: LibraryComman
     Ok(())
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct ApiRequest {
     schema_version: u32,
     op: String,
@@ -682,8 +612,10 @@ struct ApiRequest {
     role: Option<String>,
     #[serde(default)]
     graph: Option<Deployment>,
+    #[serde(default)]
+    revision: Option<String>,
 }
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 struct ApiResponse {
     schema_version: u32,
     ok: bool,
@@ -691,7 +623,18 @@ struct ApiResponse {
     error: Option<String>,
 }
 
-fn api_call(paths: &config::Paths, request: ApiRequest) -> Result<Value> {
+struct V2Deployment {
+    active_revision: String,
+    supervisor: v2_process::Supervisor,
+    last_error: Option<String>,
+}
+type V2Supervisors = BTreeMap<String, V2Deployment>;
+
+fn api_call(
+    paths: &config::Paths,
+    managers: &mut V2Supervisors,
+    request: ApiRequest,
+) -> Result<Value> {
     ensure!(request.schema_version == 1, "API schema_version must be 1");
     ensure!(
         request
@@ -701,7 +644,129 @@ fn api_call(paths: &config::Paths, request: ApiRequest) -> Result<Value> {
         "role must be eos or egia"
     );
     let name = config::deployment_name(request.deployment);
+    if request.op.starts_with("v2_") {
+        v2_process::validate_deployment_name(&name)?;
+    }
     match request.op.as_str() {
+        "v2_active_packages" => {
+            let packages: Vec<_> = managers
+                .values()
+                .flat_map(|active| active.supervisor.active_packages())
+                .collect();
+            Ok(json!({"packages":packages}))
+        }
+        "v2_restart" => {
+            let path = paths.v2_node_graph(&name);
+            v2_process::validate_full_graph(&path)?;
+            let source = fs::read_to_string(&path)?;
+            let revision = v2_starter::revision(&path)?;
+            if let Some(expected) = request.revision.as_deref() {
+                ensure!(
+                    expected == revision,
+                    "saved graph revision changed; reload before restart"
+                );
+            }
+            let specs = v2_process::project_with_packages(paths, &source)?;
+            if let Some(mut active) = managers.remove(&name) {
+                active.supervisor.stop();
+            }
+            let mut supervisor = v2_process::Supervisor::new(paths, &name)?;
+            let started = supervisor.start(&specs)?;
+            managers.insert(
+                name,
+                V2Deployment {
+                    active_revision: revision.clone(),
+                    supervisor,
+                    last_error: None,
+                },
+            );
+            Ok(json!({"started":started,"active_revision":revision}))
+        }
+        "v2_start" => {
+            let path = paths.v2_node_graph(&name);
+            v2_process::validate_full_graph(&path)?;
+            let source = fs::read_to_string(&path)?;
+            let revision = v2_starter::revision(&path)?;
+            if let Some(expected) = request.revision.as_deref() {
+                ensure!(
+                    expected == revision,
+                    "saved graph revision changed; reload before run"
+                );
+            }
+            let specs = v2_process::project_with_packages(paths, &source)?;
+            let manager = if let Some(active) = managers.get_mut(&name) {
+                ensure!(
+                    active.active_revision == revision,
+                    "v2 graph changed while running; stop before restart"
+                );
+                active.supervisor.verify_specs(&specs)?;
+                &mut active.supervisor
+            } else {
+                managers.insert(
+                    name.clone(),
+                    V2Deployment {
+                        active_revision: revision.clone(),
+                        supervisor: v2_process::Supervisor::new(paths, &name)?,
+                        last_error: None,
+                    },
+                );
+                &mut managers.get_mut(&name).unwrap().supervisor
+            };
+            let started = match manager.start(&specs) {
+                Ok(started) => started,
+                Err(error) => {
+                    if let Some(active) = managers.get_mut(&name) {
+                        active.last_error = Some(error.to_string());
+                    }
+                    return Err(error);
+                }
+            };
+            if let Some(active) = managers.get_mut(&name) {
+                active.last_error = None;
+            }
+            Ok(json!({"started":started,"active_revision":revision}))
+        }
+        "v2_stop" => {
+            let stopped = managers
+                .remove(&name)
+                .map_or_else(Vec::new, |mut active| active.supervisor.stop());
+            Ok(json!({"stopped": stopped}))
+        }
+        "v2_status" => {
+            let saved_revision = v2_starter::revision(&paths.v2_node_graph(&name)).ok();
+            let pinned_package = fs::read(paths.v2_node_graph(&name)).ok()
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                .and_then(|graph| graph.pointer("/cores/isos/layers/process/groups/backend/nodes").and_then(Value::as_object).and_then(|nodes| nodes.values().next()).and_then(|node| node.get("settings")).cloned())
+                .map(|settings| json!({"id":settings.get("package"),"version":settings.get("version"),"scene":settings.get("scene")}));
+            let active = managers.get_mut(&name);
+            let processes = if let Some(active) = active {
+                match active.supervisor.status() {
+                    Ok(processes) => processes,
+                    Err(error) => {
+                        active.last_error = Some(error.to_string());
+                        active.supervisor.status_snapshot()
+                    }
+                }
+            } else {
+                Vec::new()
+            };
+            let active = managers.get(&name);
+            let active_revision = active.map(|a| a.active_revision.clone());
+            let supervisor_failed = active.is_some_and(|a| a.last_error.is_some());
+            let last_error = active.and_then(|a| a.last_error.clone()).or_else(|| {
+                fs::read_to_string(paths.runtime.join(format!("{name}.last-error"))).ok()
+            });
+            let state = if active.is_none() {
+                "stopped"
+            } else if supervisor_failed {
+                "degraded"
+            } else {
+                "running"
+            };
+            Ok(
+                json!({"schema_version":"2.0.0","saved_revision":saved_revision,"active_revision":active_revision,"state":state,"last_error":last_error,"package":pinned_package,"processes":processes}),
+            )
+        }
         "status" => Ok(serde_json::to_value(lifecycle::status(
             paths,
             &name,
@@ -726,14 +791,50 @@ fn api_call(paths: &config::Paths, request: ApiRequest) -> Result<Value> {
     }
 }
 
-fn handle_client(paths: &config::Paths, mut stream: UnixStream) -> Result<()> {
+fn handle_client(
+    paths: &config::Paths,
+    managers: &mut V2Supervisors,
+    mut stream: UnixStream,
+) -> Result<()> {
+    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
     let mut line = String::new();
-    BufReader::new(stream.try_clone()?).read_line(&mut line)?;
+    BufReader::new(stream.try_clone()?)
+        .take(2_000_001)
+        .read_line(&mut line)?;
     ensure!(line.len() <= 2_000_000, "API request exceeds 2 MB");
-    let response = match serde_json::from_str::<ApiRequest>(&line)
+    let request = serde_json::from_str::<ApiRequest>(&line);
+    let failed_deployment = request
+        .as_ref()
+        .ok()
+        .filter(|request| {
+            request.op.starts_with("v2_")
+                && !matches!(request.op.as_str(), "v2_status" | "v2_active_packages")
+        })
+        .map(|request| config::deployment_name(request.deployment.clone()));
+    let clear_error = request
+        .as_ref()
+        .ok()
+        .is_some_and(|request| matches!(request.op.as_str(), "v2_start" | "v2_restart"));
+    let outcome = request
         .map_err(anyhow::Error::from)
-        .and_then(|request| api_call(paths, request))
+        .and_then(|request| api_call(paths, managers, request));
+    if let Some(name) =
+        failed_deployment.filter(|name| v2_process::validate_deployment_name(name).is_ok())
     {
+        let path = paths.runtime.join(format!("{name}.last-error"));
+        match &outcome {
+            Err(error) => {
+                let message: String = error.to_string().chars().take(4096).collect();
+                let _ = config::atomic_write(&path, message.as_bytes());
+            }
+            Ok(_) if clear_error => {
+                let _ = fs::remove_file(path);
+            }
+            _ => {}
+        }
+    }
+    let response = match outcome {
         Ok(data) => ApiResponse {
             schema_version: 1,
             ok: true,
@@ -752,7 +853,7 @@ fn handle_client(paths: &config::Paths, mut stream: UnixStream) -> Result<()> {
     Ok(())
 }
 
-fn daemon(paths: &config::Paths) -> Result<()> {
+fn bind_daemon(paths: &config::Paths) -> Result<UnixListener> {
     paths.prepare()?;
     let path = paths.socket();
     if path.exists() {
@@ -764,18 +865,106 @@ fn daemon(paths: &config::Paths) -> Result<()> {
     }
     let listener = UnixListener::bind(&path)?;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
-    println!("IsOS API listening on {}", path.display());
-    for client in listener.incoming() {
-        match client {
-            Ok(client) => {
-                if let Err(error) = handle_client(paths, client) {
+    listener.set_nonblocking(true)?;
+    Ok(listener)
+}
+
+fn daemon(paths: &config::Paths, listener: UnixListener) -> Result<()> {
+    let mut managers = V2Supervisors::new();
+    println!("IsOS API listening on {}", paths.socket().display());
+    while !INTERRUPTED.load(Ordering::SeqCst) {
+        for active in managers.values_mut() {
+            if let Err(error) = active.supervisor.poll() {
+                active.last_error = Some(error.to_string());
+                eprintln!("v2 process supervisor: {error:#}");
+            }
+        }
+        match listener.accept() {
+            Ok((client, _)) => {
+                if let Err(error) = handle_client(paths, &mut managers, client) {
                     eprintln!("API client: {error}");
                 }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(50));
             }
             Err(error) => eprintln!("API accept: {error}"),
         }
     }
+    for active in managers.values_mut() {
+        active.supervisor.stop();
+    }
+    fs::remove_file(paths.socket())?;
     Ok(())
+}
+
+fn serve_foreground(paths: config::Paths, name: String) -> Result<()> {
+    let url = http::open_url(&paths)?;
+    catch_interrupts()?;
+    let listener = bind_daemon(&paths)?;
+    let api_paths = paths.clone();
+    let manager = std::thread::spawn(move || daemon(&api_paths, listener));
+    println!("{url}");
+    println!("IsOS workbench is running; press Ctrl+C to stop it.");
+    let http_result = http::serve(paths, name);
+    INTERRUPTED.store(true, Ordering::SeqCst);
+    let manager_result = manager
+        .join()
+        .map_err(|_| anyhow::anyhow!("IsOS manager thread panicked"))?;
+    manager_result?;
+    http_result
+}
+
+fn wait_for_interrupt(paths: &config::Paths, name: &str) -> Result<()> {
+    println!("Deployment is running; press Ctrl+C to stop it.");
+    loop {
+        if INTERRUPTED.load(Ordering::SeqCst) {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&v2_call(paths, name, "v2_stop")?)?
+            );
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        let status = v2_call(paths, name, "v2_status")?;
+        if status["state"] == "stopped" {
+            return Ok(());
+        }
+    }
+}
+
+fn v2_call(paths: &config::Paths, name: &str, op: &str) -> Result<Value> {
+    v2_call_revision(paths, name, op, None)
+}
+
+fn v2_call_revision(
+    paths: &config::Paths,
+    name: &str,
+    op: &str,
+    revision: Option<String>,
+) -> Result<Value> {
+    let mut stream = UnixStream::connect(paths.socket()).map_err(|error| {
+        anyhow::anyhow!("IsOS manager is not running; run `isos init` first: {error}")
+    })?;
+    let request = ApiRequest {
+        schema_version: 1,
+        op: op.to_owned(),
+        deployment: Some(name.to_owned()),
+        role: None,
+        graph: None,
+        revision,
+    };
+    serde_json::to_writer(&mut stream, &request)?;
+    stream.write_all(b"\n")?;
+    let mut line = String::new();
+    BufReader::new(stream).read_line(&mut line)?;
+    let response: ApiResponse = serde_json::from_str(&line)?;
+    ensure!(
+        response.ok,
+        "{}",
+        response.error.unwrap_or_else(|| "manager error".into())
+    );
+    Ok(response.data)
 }
 
 fn main_run() -> Result<()> {
@@ -849,65 +1038,14 @@ fn main_run() -> Result<()> {
             if !own_pin.exists() {
                 config::atomic_write(&own_pin, env!("CARGO_PKG_VERSION").as_bytes())?;
             }
-            if !paths.graph(&name).exists() {
-                let mut bytes = serde_json::to_vec_pretty(&example(&name, &paths))?;
-                bytes.push(b'\n');
-                config::atomic_write(&paths.graph(&name), &bytes)?;
-                println!("created {}", paths.graph(&name).display());
-            }
-            match config::load_selected(&paths, &name) {
-                Ok(graph) => match component::validate_profiles(&graph) {
-                    Ok(()) => println!(
-                        "graph and component interfaces valid: {} nodes",
-                        graph.nodes.len()
-                    ),
-                    Err(error) => eprintln!("component interfaces need repair: {error}"),
-                },
-                Err(error) => eprintln!("graph needs repair: {error}"),
-            }
-            if UnixStream::connect(paths.socket()).is_err() {
-                let executable = std::env::current_exe()?;
-                let mut command = Command::new("systemd-run");
-                command.args([
-                    "--user",
-                    "--collect",
-                    "--unit=isos-server",
-                    "--property=Restart=on-failure",
-                ]);
-                for key in [
-                    "ISOS_HOME",
-                    "ISOS_WEB_DIST",
-                    "EOS_REPO_PATH",
-                    "EGIA_REPO_PATH",
-                    "ISOS_EOS_CONFIG_BIN",
-                    "ISOS_EGIA_CONFIG_BIN",
-                ] {
-                    if let Ok(value) = std::env::var(key) {
-                        command.arg(format!("--setenv={key}={value}"));
-                    }
-                }
-                let output = command
-                    .arg("--")
-                    .arg(executable)
-                    .arg("--deployment")
-                    .arg(&name)
-                    .arg("serve")
-                    .output()?;
-                ensure!(
-                    output.status.success(),
-                    "start IsOS server: {}",
-                    String::from_utf8_lossy(&output.stderr)
+            let graph_path = v2_starter::init(&paths, &name)?;
+            println!("editable graph: {}", graph_path.display());
+            if v2_backend::installed(&paths).is_empty() {
+                println!(
+                    "MuJoCo package missing: install or link island/mujoco-sim 2.0.0, then validate and apply the graph"
                 );
-                let deadline = std::time::Instant::now() + Duration::from_secs(5);
-                while UnixStream::connect(paths.socket()).is_err() {
-                    ensure!(
-                        std::time::Instant::now() < deadline,
-                        "IsOS server did not bind its control socket"
-                    );
-                    std::thread::sleep(Duration::from_millis(100));
-                }
             }
-            println!("{}", http::open_url(&paths)?);
+            serve_foreground(paths, name)?;
         }
         CommandLine::Open => {
             let url = http::open_url(&paths)?;
@@ -915,21 +1053,15 @@ fn main_run() -> Result<()> {
             let _ = Command::new("xdg-open").arg(url).spawn();
         }
         CommandLine::Run => {
-            lifecycle::ensure_config_exists(&paths.graph(&name))?;
-            let graph = config::load_selected(&paths, &name)?;
-            versions::check(&paths, Some(&graph))?;
-            for id in lifecycle::start(&paths, &name, None)? {
-                println!("started {id}");
-            }
+            catch_interrupts()?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&v2_call(&paths, &name, "v2_start")?)?
+            );
+            wait_for_interrupt(&paths, &name)?;
         }
         CommandLine::Serve => {
-            let api_paths = paths.clone();
-            std::thread::spawn(move || {
-                if let Err(error) = daemon(&api_paths) {
-                    eprintln!("IsOS control socket: {error:#}");
-                }
-            });
-            http::serve(paths, name)?;
+            serve_foreground(paths, name)?;
         }
         CommandLine::Auth { command } => match command {
             AuthCommand::Login => auth::login(&paths)?,
@@ -937,47 +1069,62 @@ fn main_run() -> Result<()> {
             AuthCommand::Whoami => auth::status(&paths)?,
         },
         CommandLine::Start => {
-            lifecycle::ensure_config_exists(&paths.graph(&name))?;
-            let graph = config::load_selected(&paths, &name)?;
-            versions::check(&paths, Some(&graph))?;
-            for id in lifecycle::start(&paths, &name, None)? {
-                println!("started {id}");
-            }
+            catch_interrupts()?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&v2_call(&paths, &name, "v2_start")?)?
+            );
+            wait_for_interrupt(&paths, &name)?;
         }
         CommandLine::Stop => {
-            for id in lifecycle::stop(&paths, &name, None)? {
-                println!("stopped {id}");
-            }
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&v2_call(&paths, &name, "v2_stop")?)?
+            );
         }
         CommandLine::Restart => {
-            lifecycle::stop(&paths, &name, None)?;
-            for id in lifecycle::start(&paths, &name, None)? {
-                println!("started {id}");
+            catch_interrupts()?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&v2_call(&paths, &name, "v2_restart")?)?
+            );
+            wait_for_interrupt(&paths, &name)?;
+        }
+        CommandLine::Status { json: _ } => {
+            let status = v2_call(&paths, &name, "v2_status")?;
+            println!("{}", serde_json::to_string_pretty(&status)?);
+        }
+        CommandLine::Logs { node, lines } => {
+            v2_process::validate_deployment_name(&node)?;
+            let log = paths
+                .data
+                .join("process-logs")
+                .join(&name)
+                .join(format!("{node}.log"));
+            let source = fs::read_to_string(log)?;
+            let selected: Vec<_> = source.lines().rev().take(lines as usize).collect();
+            for line in selected.into_iter().rev() {
+                println!("{line}");
             }
         }
-        CommandLine::Status { json } => {
-            print_status(&lifecycle::status(&paths, &name, None)?, json)?
-        }
-        CommandLine::Logs { node, lines } => println!("{}", lifecycle::logs(&name, &node, lines)?),
         CommandLine::Doctor => {
             println!("IsOS {}", env!("CARGO_PKG_VERSION"));
-            println!("config: {}", paths.graph(&name).display());
+            println!("graph: {}", paths.v2_node_graph(&name).display());
             println!("data: {}", paths.data.display());
             println!("runtime: {}", paths.runtime.display());
-            match config::load_selected(&paths, &name) {
-                Ok(graph) => println!("graph: valid ({} nodes)", graph.nodes.len()),
-                Err(error) => println!("graph: {error}"),
+            let graph = paths.v2_node_graph(&name);
+            match v2_process::validate_full_graph(&graph).and_then(|_| {
+                v2_process::project_with_packages(&paths, &fs::read_to_string(&graph)?)
+            }) {
+                Ok(specs) => println!("graph and package: ready ({} processes)", specs.len()),
+                Err(error) => println!("graph and package: {error}"),
             }
-            let output = Command::new("systemctl")
-                .arg("--user")
-                .arg("is-system-running")
-                .output();
             println!(
-                "user systemd: {}",
-                if output.is_ok_and(|o| o.status.success()) {
-                    "available"
+                "manager: {}",
+                if UnixStream::connect(paths.socket()).is_ok() {
+                    "running"
                 } else {
-                    "unavailable"
+                    "stopped"
                 }
             );
         }
@@ -988,7 +1135,46 @@ fn main_run() -> Result<()> {
         CommandLine::Skills { command } => library(&paths, &name, "skills", command)?,
         CommandLine::Services { command } => library(&paths, &name, "services", command)?,
         CommandLine::Backends { command } => library(&paths, &name, "backends", command)?,
-        CommandLine::Daemon => daemon(&paths)?,
+        CommandLine::Daemon => {
+            catch_interrupts()?;
+            let listener = bind_daemon(&paths)?;
+            daemon(&paths, listener)?;
+        }
+        CommandLine::V2 { command } => {
+            v2_process::validate_deployment_name(&name)?;
+            match command {
+                V2Command::Validate { file } => {
+                    v2_process::validate_full_graph(&file)?;
+                    let specs =
+                        v2_process::project_with_packages(&paths, &fs::read_to_string(&file)?)?;
+                    println!("valid v2 node graph: {} IsOS process nodes", specs.len());
+                }
+                V2Command::Apply { file } => {
+                    v2_process::validate_full_graph(&file)?;
+                    let source = fs::read_to_string(&file)?;
+                    let specs = v2_process::project_with_packages(&paths, &source)?;
+                    let normalized = v2_process::normalize_source(&source)?;
+                    paths.prepare()?;
+                    config::atomic_write(
+                        &paths.v2_node_graph(&name),
+                        &serde_json::to_vec_pretty(&normalized)?,
+                    )?;
+                    println!("applied v2 node graph: {} IsOS process nodes", specs.len());
+                }
+                V2Command::Run => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&v2_call(&paths, &name, "v2_start")?)?
+                ),
+                V2Command::Stop => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&v2_call(&paths, &name, "v2_stop")?)?
+                ),
+                V2Command::Status => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&v2_call(&paths, &name, "v2_status")?)?
+                ),
+            }
+        }
     }
     Ok(())
 }

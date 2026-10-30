@@ -1,38 +1,33 @@
 # IsOS
 
-IsOS 是 Island EOS 和 EGIA 的本地部署管理器，负责配置图、软件包、版本选择和进程生命周期。EOS 与 EGIA 的配置接口可独立调用，无须启动其运行时。
+IsOS 管理共享 Aether v2 图、后端软件包、本地工作台 API 和直接子进程生命周期。MuJoCo 是首个后端包。EOS 只读取图，并作为有类型的套接字客户端连接 MuJoCo。EGIA common 节点目前用于图设计，不启动 EGIA 进程。
 
-## 安装与入门
+## 启动 MuJoCo 部署
 
-需要 Linux、systemd 用户会话和 Rust 1.98 或更新版本。本地开发时，将 `.example.env` 复制为 `.env`，配置 EOS 和 EGIA 源码路径。只有构建可选的本地编辑器时才需要设置 `ISOSUI_REPO_PATH`。
+构建并安装 IsOS 和 Aether Rust 可执行文件。在 MuJoCo 仓库构建仿真器，并用 `tools/build-backend-bundle.py` 制作 v2 包。把 `MUJOCO_ROOT` 指向已安装的 MuJoCo 运行环境，然后执行：
 
-    ./build.sh
-    ./install.sh
-    isos init
-    isos open
-    isos build eos
-    isos build egia
-    isos version pin eos <精确提交或版本>
-    isos version pin egia <精确提交或版本>
-    isos version check
+```sh
+isos pkg link island/mujoco-sim 2.0.0 /absolute/path/to/bundle
+isos init
+```
 
-安装程序将 `isos` 放在 Cargo 的 bin 目录。如果该目录不在 `PATH` 中，但 `~/.local/bin` 在 `PATH` 中，安装程序会在那里创建链接。否则，将安装目录的 bin 路径（通常是 `~/.cargo/bin`）加入 `PATH`，然后重新打开 shell。
+`isos init` 会在当前终端保持工作台和进程管理器运行。请保持此终端开启，在第二个终端编辑图并执行部署命令。按 Ctrl+C 会停止服务和受管理的子进程。
 
-IsOS 安装包只包含 CLI 和本地 API 服务。未固定本地构建时，`isos open` 打开 `https://www.os-island.com/en/isos` 上的 IsosUI 编辑器。若要离线使用，请安装 Node.js 和 npm，把 `ISOSUI_REPO_PATH` 指向已提交的 [IsosUI](https://github.com/Island-Team/IsosUI) 源码，然后执行 `isos build isosui` 和 `isos version pin isosui <提交>`。IsOS 将校验过的页面存放在 XDG 数据目录，并从 `127.0.0.1:16000` 提供服务。UI 固定版本独立于 EOS/EGIA 部署图。
+在第二个终端执行：
 
-`init` 创建默认禁用的 v2 配置图，启动 `127.0.0.1:16000` 上的 IsOS 本地服务。编辑器无需令牌即可连接此端口。页面只编辑配置，使用明确的“校验”和“应用”按钮。选择版本后启用 `eos`、`eos-uds` 和 `egia` 节点。`eos.uds` 是 EOS 进程上的逻辑端点，不是第二个 EOS 服务。IsOS 可在 EOS、EGIA 停止时渲染并编辑配置。EOS 自带演示绑定；其中的动作需要仿真服务才能就绪。
+```sh
+isos open
+isos config validate ~/.config/isos/deployments/default.nodes.json
+isos config apply ~/.config/isos/deployments/default.nodes.json
+isos run
+```
 
-    isos config validate ~/.config/isos/deployments/default.json
-    isos run
-    isos status
-    isos stop
+`isos run`（以及 `start`、`restart`）会保持前台运行。按 Ctrl+C 会按依赖逆序停止部署。运行期间可在第三个终端执行 `isos status --json`、`isos logs simulator` 或 `isos stop`。
 
-`run` 校验已选构建的摘要和 EOS/EGIA 协议版本，按 EOS、UDS、EGIA 顺序启动。`stop` 以相反顺序关闭。运行中的部署保留启动时的配置图快照，更新后需明确重启。`isos config migrate` 会备份 v1 图，再转换为 v2；无法映射的字段会被拒绝。`start` 是 `run` 的兼容别名，`packages` 是 `pkg` 的兼容别名。
+`isos init` 仅在图不存在时创建可编辑图，并启动本地工作台服务。Home 展示软件包准备情况和修订；Graph 编辑唯一的 `2.0.0` IsOS/EOS/EGIA 图，当前节点类型版本为 `v1.0`。Validate 与 Apply 保存修订；Run 会重新校验固定版本的软件包、图、场景、可执行文件、资源和 MuJoCo 依赖。仅安装或链接不会改变运行中部署。工作台有单独的 EOS 和 EGIA 页面；EGIA 运行控制留待后续实现。
 
-`isos pkg upload <manifest> <asset>` 校验 v4 清单和文件，上传到已有 Git 标签对应的 GitHub Release 草稿，然后提交 Island Port 审核。提交审核与正式发布是不同状态。
+默认路径为 `~/.config/isos/deployments/<name>.nodes.json`、`~/.local/share/isos/packages/` 和 `$XDG_RUNTIME_DIR/isos/`。设置 `ISOS_HOME` 可创建隔离测试目录，其中有 `config/`、`data/` 和 `run/`。仅所有者可访问的控制套接字位于运行目录；浏览器 API 监听 `127.0.0.1:16000`。本地 IsosUI 可独立固定版本，也可由 `isos open` 使用托管编辑器。
 
-详细说明见 [文档目录](docs_cn/README_cn.md)。
+归档包可先执行 `isos pkg verify <manifest> <asset>`，再用 `isos pkg install --manifest <manifest> --asset <asset> --allow-unapproved` 安装本地候选包。发布后可用 `isos pkg install island/mujoco-sim --version 2.0.0` 安装已批准的软件包。已应用图仍引用软件包时，`isos pkg remove` 会拒绝删除。
 
-## Tab 自动补全
-
-`./install.sh` 会安装 Bash、Zsh 和 Fish 的补全脚本，并在现有 Bash 或 Zsh 启动文件（或登录 shell 的启动文件）中加入加载代码；Fish 会从标准补全目录自动读取脚本。重新打开 shell 后，Tab 可补全 IsOS 命令、子命令和选项。
+参见[后端设计](docs_cn/isos/design/backend-v2_cn.md)、[图接口](docs_cn/isos/interfaces/node-graph-v2_cn.md)、[本地 API](docs_cn/isos/interfaces/local-api_cn.md)以及[英文 README](README.md)。开发检查为 `cargo fmt --check`、`cargo clippy --all-targets -- -D warnings` 和 `cargo test`；集成输出保存到 `logs/test/<run-id>/`。

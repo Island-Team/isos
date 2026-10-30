@@ -1,32 +1,24 @@
-# 启动 IsOS 部署
+# IsOS 与 MuJoCo v2 入门
 
 [English](../../../docs/isos/usage/get-started.md)
 
-在具有 systemd 用户会话和 Rust 1.98 或更新版本的 Linux 上，构建并安装 IsOS CLI 和本地 API 服务。编辑器源码由公开的 IsosUI 仓库维护；标准 IsOS 安装包不含 UI 文件。
+安装 IsOS 和 Aether Rust 可执行文件。构建 MuJoCo C++ 仿真器、设置 `MUJOCO_ROOT`，并用 MuJoCo 仓库的 `tools/build-backend-bundle.py` 制作包。链接精确版本后初始化图：
 
-    ./build.sh
-    ./install.sh
-    isos init
-    isos open
+```sh
+isos pkg link island/mujoco-sim 2.0.0 /absolute/path/to/bundle
+isos init
+```
 
-`isos open` 默认打开托管编辑器。若要离线使用，请安装 Node.js 和 npm，把 `ISOSUI_REPO_PATH` 指向没有未提交修改的 IsosUI 仓库，然后构建并固定该提交。`isos version check` 单独报告 IsosUI 状态。没有固定版本时使用托管编辑器；固定版本损坏时报告错误。
+保持 `isos init` 在此终端运行。它负责工作台服务和进程管理器；按 Ctrl+C 会停止服务及其子进程。在第二个终端运行 `isos open` 并编辑图。
 
-    isos build isosui
-    isos version pin isosui <提交>
+Home 展示软件包、场景选择、先决条件、保存修订、运行中修订、进程状态和日志。Graph 编辑唯一的 IsOS/EOS/EGIA 共享图。起始图含后端进程、EOS 运行时、HTTP 桥、目录服务、相机、底盘、机械臂、调度器及仅供设计的 EGIA guard。选择场景并检查可执行文件路径，然后 Validate 和 Apply。对应 CLI 命令为：
 
-从源码构建时，将 `EOS_REPO_PATH` 和 `EGIA_REPO_PATH` 指向已提交的仓库。仓库命令包装器会读取 `.env`。IsOS 创建明确的本地构建候选；除非传入 `--install-deps`，EOS 构建不会安装系统依赖。
+```sh
+isos config validate ~/.config/isos/deployments/default.nodes.json
+isos config apply ~/.config/isos/deployments/default.nodes.json
+isos run
+```
 
-    isos build eos
-    isos build egia
-    isos version pin eos <精确提交>
-    isos version pin egia <精确提交>
-    isos version check
+`run`、`start` 和 `restart` 会保持前台运行。按 Ctrl+C 会请求正常停止部署。部署运行时，可在另一终端执行 `status`、`logs` 或 `stop`。
 
-在编辑器中启用 EOS、逻辑 UDS 端点和 EGIA。校验与应用是独立操作；过期的编辑版本会返回冲突。两个运行时停止时仍可编辑配置。
-
-    isos run
-    isos status
-    isos logs egia
-    isos stop
-
-`run` 按依赖顺序启动节点，检查已选构建摘要及 EOS/EGIA 协议。EGIA 直接连接 EOS 的私有 UDS。停止时按反向顺序关闭。更新运行中部署时，先应用配置图，再明确重启。EOS 自带演示绑定无需仿真服务即可启动，但演示动作需仿真服务运行后才可使用。
+Run 重新校验精确软件包版本和图，先于 EOS 启动 MuJoCo；Stop 按依赖逆序停止。安装包或修改编辑器草稿不改变运行中进程；须应用并重启以激活新修订。本地链接在每次应用和运行时重新校验。参见[软件包命令](packages_cn.md)与[图字段](../interfaces/node-graph-v2_cn.md)。

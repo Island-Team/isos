@@ -56,6 +56,11 @@ impl Paths {
     pub fn graph(&self, name: &str) -> PathBuf {
         self.config.join("deployments").join(format!("{name}.json"))
     }
+    pub fn v2_node_graph(&self, name: &str) -> PathBuf {
+        self.config
+            .join("deployments")
+            .join(format!("{name}.nodes.json"))
+    }
     pub fn generated(&self, name: &str) -> PathBuf {
         self.data.join("generated").join(name)
     }

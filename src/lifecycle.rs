@@ -13,7 +13,6 @@ use std::{
     fs,
     net::{TcpStream, ToSocketAddrs},
     os::fd::AsRawFd,
-    path::Path,
     process::Command,
     thread,
     time::{Duration, Instant},
@@ -443,29 +442,6 @@ pub fn status(paths: &Paths, name: &str, role: Option<&str>) -> Result<Status> {
         running,
         nodes,
     })
-}
-
-pub fn logs(name: &str, node: &str, lines: u32) -> Result<String> {
-    ensure!(lines <= 1000, "lines must be at most 1000");
-    run(
-        "journalctl",
-        &[
-            "--user".into(),
-            "--no-pager".into(),
-            format!("--lines={lines}"),
-            "--unit".into(),
-            unit(name, node),
-        ],
-    )
-}
-
-pub fn ensure_config_exists(path: &Path) -> Result<()> {
-    ensure!(
-        path.is_file(),
-        "no deployment at {}; run `isos config init` then `isos config apply <file>`",
-        path.display()
-    );
-    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

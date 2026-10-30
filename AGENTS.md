@@ -1,15 +1,11 @@
-# Coding-agent orientation
+# IsOS development guide
 
-Read README.md and docs/isos/README.md before changing IsOS. Follow
-docs/isos/conventions.md and the owning interface contract for the code you
-touch. Preserve the versioned JSON and HTTP/Unix API fields, and update the
-English and Chinese docs together when behavior changes.
+Read `README.md`, `docs/isos/README.md`, and `docs/isos/conventions.md` before changing IsOS. Keep English and Chinese documentation aligned. Run `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test` before committing. Use Conventional Commits and save integration output in ignored `logs/test/<run-id>/`.
 
-Keep process state under XDG runtime/data locations, never in the source
-checkout. Run cargo fmt --check, cargo clippy --all-targets -- -D warnings,
-and cargo test before handoff. Use Conventional Commits.
+The shared graph at `config/deployments/<name>.nodes.json` is the v2 source of truth. `aether-profile validate --file` admits its node types, ports, and placement. IsOS then resolves package-backed process nodes and projects direct children. The MuJoCo package is an external executable bundle; IsOS selects the pinned scene and owns its process and socket. EOS reads the graph and connects as a client. Never make EOS install packages, mutate the graph, or launch MuJoCo.
 
-IsOS owns the CLI, loopback API, and local UI build/pin integration. IsosUI owns
-the public editor source and static build. Do not copy editor source into this
-repository or add UI assets to the standard IsOS release. A local IsosUI build
-is optional and pinned independently of the EOS/EGIA deployment graph.
+`isos init` and `isos serve` keep the workbench and manager in the foreground. `isos run`, `start`, and `restart` stay attached until Ctrl+C, which stops the deployment. Preserve this lifecycle and test both signal paths with a clean home.
+
+`isos.process.backend@v1.0` and `isos.process.component@v1.0` are IsOS-owned types. Keep the package descriptor (`backend-v2.json`) separate from node configuration and the release manifest. Preflight executable, scene references, MuJoCo library, sockets, device IDs, dependency order, and link fingerprint before launching. Stop dependents before providers. The Rust IsOS CLI, owner-only API, and direct-child manager are the v2 main chain. The old systemd component code remains a side chain until its remaining callers are removed.
+
+IsosUI owns frontend source and static builds. Do not copy it into this repository. The UI applies revisions through the same IsOS node-graph API used by the CLI. Graph layout is visual state; node settings and typed ports are runtime state.
