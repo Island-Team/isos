@@ -308,18 +308,7 @@ pub fn node_type_sidecars_for_graph(
                         for group in groups.values() {
                             if let Some(nodes) = group["nodes"].as_object() {
                                 for node in nodes.values() {
-                                    let package = node.get("package");
-                                    let id = package
-                                        .and_then(|v| v.get("id"))
-                                        .and_then(serde_json::Value::as_str)
-                                        .or_else(|| node["settings"]["package"].as_str());
-                                    let version = package
-                                        .and_then(|v| v.get("version"))
-                                        .and_then(serde_json::Value::as_str)
-                                        .or_else(|| node["settings"]["version"].as_str());
-                                    if let (Some(id), Some(version)) = (id, version) {
-                                        pins.insert((id.to_owned(), version.to_owned()));
-                                    }
+                                    pins.extend(node_package_pins(node));
                                 }
                             }
                         }
@@ -336,6 +325,36 @@ pub fn node_type_sidecars_for_graph(
         }
     }
     Ok(sidecars)
+}
+
+fn node_package_pins(node: &serde_json::Value) -> Vec<(String, String)> {
+    let mut pins = Vec::new();
+    for package in [&node["package"], &node["adapter"]["package"]] {
+        if let (Some(id), Some(version)) = (package["id"].as_str(), package["version"].as_str()) {
+            pins.push((id.to_owned(), version.to_owned()));
+        }
+    }
+    if let (Some(id), Some(version)) = (
+        node["settings"]["package"].as_str(),
+        node["settings"]["version"].as_str(),
+    ) {
+        pins.push((id.to_owned(), version.to_owned()));
+    }
+    pins
+}
+
+#[cfg(test)]
+mod pin_tests {
+    use super::*;
+
+    #[test]
+    fn adapter_only_package_pin_selects_sidecar_and_blocks_removal() {
+        let node = serde_json::json!({"node_type":"eos.hardware.base@v1.0","adapter":{"type":"vendor-base","package":{"id":"vendor/devices","version":"2.0.0"}}});
+        assert_eq!(
+            node_package_pins(&node),
+            vec![("vendor/devices".into(), "2.0.0".into())]
+        );
+    }
 }
 
 pub fn list(paths: &Paths) -> Result<Vec<Receipt>> {
@@ -387,10 +406,11 @@ pub fn remove(paths: &Paths, id: &str, version: &str) -> Result<()> {
                                     groups.values().any(|group| {
                                         group["nodes"].as_object().is_some_and(|nodes| {
                                             nodes.values().any(|node| {
-                                                (node["package"]["id"] == id
-                                                    && node["package"]["version"] == version)
-                                                    || (node["settings"]["package"] == id
-                                                        && node["settings"]["version"] == version)
+                                                node_package_pins(node).iter().any(
+                                                    |(pin_id, pin_version)| {
+                                                        pin_id == id && pin_version == version
+                                                    },
+                                                )
                                             })
                                         })
                                     })
