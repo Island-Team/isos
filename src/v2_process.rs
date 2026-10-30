@@ -790,7 +790,7 @@ impl Supervisor {
             log_store::capture(stdout, self.logs.clone(), spec.id.clone(), "info");
         }
         if let Some(stderr) = child.stderr.take() {
-            log_store::capture(stderr, self.logs.clone(), spec.id.clone(), "error");
+            log_store::capture(stderr, self.logs.clone(), spec.id.clone(), "warn");
         }
         Ok(child)
     }

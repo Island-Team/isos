@@ -6,10 +6,12 @@ mod http;
 mod isosui;
 mod lifecycle;
 mod log_store;
+mod manager_log;
 mod node_options;
 mod node_sets;
 mod packages;
 mod release;
+mod services;
 mod v2_backend;
 mod v2_bins;
 mod v2_build;
@@ -23,6 +25,7 @@ use clap_complete::{Shell, generate};
 use graph::{Deployment, NodeKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     fs,
@@ -66,7 +69,7 @@ fn catch_interrupts() -> Result<()> {
     name = "isos",
     version,
     about = "Manage Island EOS and EGIA as one local deployment",
-    after_help = "FIRST USE\n  1. Install or link island/mujoco-sim 2.0.0, then run `isos init`.\n  2. Open the IsosUI Home and Graph pages; choose a scene, Validate, and Apply.\n  3. Run `isos run`, inspect `isos status`, and stop with `isos stop`.\n\nMORE\n  Run `isos <command> --help` or read the IsOS quick start."
+    after_help = "FIRST USE\n  1. Run `isos init --mode dev` once, then build and select IsOS, EOS, and IsosUI.\n  2. Run `isos serve` and use the Graph page to Validate and Apply.\n  3. Run `isos run`, inspect `isos status`, and stop with `isos stop`.\n\nMORE\n  Run `isos <command> --help` or read the IsOS quick start."
 )]
 struct Cli {
     #[arg(long = "generate-completion", hide = true)]
@@ -84,9 +87,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum CommandLine {
-    /// Build EOS, EGIA, or IsosUI from configured source checkouts.
+    /// Build IsOS, EOS, EGIA, or IsosUI from configured source checkouts.
     Build {
-        #[arg(value_parser = ["eos", "egia", "all", "isosui"])]
+        #[arg(value_parser = ["isos", "eos", "egia", "all", "isosui"])]
         target: String,
         #[arg(long)]
         install_deps: bool,
@@ -96,14 +99,20 @@ enum CommandLine {
         #[command(subcommand)]
         command: VersionCommand,
     },
-    /// Initialize the deployment and start the local configuration service.
-    Init,
+    /// Initialize the deployment without starting processes.
+    Init {
+        #[arg(long, value_parser = ["dev", "product"])]
+        mode: Option<String>,
+    },
     /// Open the local configuration page.
     Open,
     /// Run the deployment graph.
     Run,
     /// Serve the local configuration UI, API, and owner-only control socket.
-    Serve,
+    Serve {
+        #[arg(long)]
+        ui_live: bool,
+    },
     /// Manage the local Island-port account session.
     Auth {
         #[command(subcommand)]
@@ -113,6 +122,11 @@ enum CommandLine {
     Start,
     /// Stop the active deployment and its IsOS-owned processes.
     Stop,
+    /// Control only the applied deployment.
+    Deployment {
+        #[command(subcommand)]
+        command: DeploymentCommand,
+    },
     /// Stop and start the active deployment using its saved graph.
     Restart,
     /// Show deployment and per-node process status; optionally emit JSON.
@@ -157,7 +171,7 @@ enum CommandLine {
     /// Inspect service nodes and manage installed service packages.
     Services {
         #[command(subcommand)]
-        command: LibraryCommand,
+        command: ServiceCommand,
     },
     /// Inspect backend nodes and manage hardware or simulator packages.
     Backends {
@@ -183,6 +197,46 @@ enum V2Command {
 }
 
 #[derive(Subcommand)]
+enum DeploymentCommand {
+    Stop,
+    Status,
+}
+
+#[derive(Subcommand)]
+enum ServiceCommand {
+    List,
+    Validate,
+    Start {
+        id: String,
+    },
+    Stop {
+        id: String,
+    },
+    Restart {
+        id: String,
+    },
+    Status {
+        id: Option<String>,
+    },
+    Logs {
+        id: String,
+        #[arg(long, default_value_t = 100)]
+        lines: usize,
+    },
+    Adapter {
+        #[arg(value_parser = ["models"])]
+        provider: String,
+        repo: PathBuf,
+        alias: String,
+    },
+    Install(InstallArgs),
+    Remove {
+        id: String,
+        version: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum AuthCommand {
     /// Sign in with the IslandOS GitHub OAuth app.
     Login,
@@ -195,8 +249,9 @@ enum AuthCommand {
 #[derive(Subcommand)]
 enum VersionCommand {
     Check,
+    #[command(name = "select", alias = "pin")]
     Pin {
-        #[arg(value_parser = ["eos", "egia", "isosui"])]
+        #[arg(value_parser = ["isos", "eos", "egia", "isosui"])]
         component: String,
         version: String,
     },
@@ -662,6 +717,67 @@ fn library(paths: &config::Paths, name: &str, kind: &str, command: LibraryComman
     Ok(())
 }
 
+fn services_command(paths: &config::Paths, name: &str, command: ServiceCommand) -> Result<()> {
+    let result = match command {
+        ServiceCommand::List => {
+            json!({"services":services::load_specs(paths)?.into_keys().collect::<Vec<_>>()})
+        }
+        ServiceCommand::Validate => json!({"services":services::validate_all(paths)?}),
+        ServiceCommand::Start { id } => {
+            service_call(paths, name, "services_start", Some(id), None)?
+        }
+        ServiceCommand::Stop { id } => {
+            if UnixStream::connect(paths.socket()).is_err() {
+                json!({"stopped":[]})
+            } else {
+                service_call(paths, name, "services_stop", Some(id), None)?
+            }
+        }
+        ServiceCommand::Restart { id } => {
+            service_call(paths, name, "services_restart", Some(id), None)?
+        }
+        ServiceCommand::Status { id } => {
+            let status = if UnixStream::connect(paths.socket()).is_ok() {
+                service_call(paths, name, "services_status", None, None)?
+            } else {
+                json!({"services":[]})
+            };
+            if let Some(id) = id {
+                let entries = status["services"]
+                    .as_array()
+                    .context("invalid services status")?;
+                json!({"services":entries.iter().filter(|entry| entry["id"] == id).collect::<Vec<_>>()})
+            } else {
+                status
+            }
+        }
+        ServiceCommand::Logs { id, lines } => {
+            service_call(paths, name, "services_logs", Some(id), Some(lines))?
+        }
+        ServiceCommand::Adapter {
+            provider,
+            repo,
+            alias,
+        } => {
+            let command = services::island_models_adapter(&repo, &alias)?;
+            json!({"provider":provider,"alias":alias,"managed_command":command})
+        }
+        ServiceCommand::Install(args) => {
+            return library(paths, name, "services", LibraryCommand::Install(args));
+        }
+        ServiceCommand::Remove { id, version } => {
+            return library(
+                paths,
+                name,
+                "services",
+                LibraryCommand::Remove { id, version },
+            );
+        }
+    };
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
+}
+
 #[derive(Deserialize, Serialize)]
 struct ApiRequest {
     schema_version: u32,
@@ -674,6 +790,12 @@ struct ApiRequest {
     graph: Option<Deployment>,
     #[serde(default)]
     revision: Option<String>,
+    #[serde(default)]
+    service_id: Option<String>,
+    #[serde(default)]
+    cursor: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
 }
 #[derive(Deserialize, Serialize)]
 struct ApiResponse {
@@ -690,9 +812,35 @@ struct V2Deployment {
 }
 type V2Supervisors = BTreeMap<String, V2Deployment>;
 
+fn manager_identity(paths: &config::Paths) -> Result<Value> {
+    let executable = std::env::current_exe()?;
+    let stat = fs::read_to_string("/proc/self/stat")?;
+    let fields = stat
+        .rsplit_once(") ")
+        .context("read process start identity")?
+        .1;
+    let start_ticks = fields
+        .split_whitespace()
+        .nth(19)
+        .context("process start identity is incomplete")?;
+    Ok(json!({
+        "pid": std::process::id(),
+        "start_ticks": start_ticks,
+        "mode": paths.mode()?,
+        "executable": executable,
+        "executable_sha256": hex::encode(Sha256::digest(fs::read(executable)?)),
+        "isos_version": env!("CARGO_PKG_VERSION"),
+        "api_schema_version": 2,
+        "service_contract_version": "2.0.0",
+        "api_origin": http::local_origin(),
+        "ui_url": http::ui_url()?,
+    }))
+}
+
 fn api_call(
     paths: &config::Paths,
     managers: &mut V2Supervisors,
+    service_manager: &mut services::ServiceManager,
     request: ApiRequest,
 ) -> Result<Value> {
     ensure!(request.schema_version == 1, "API schema_version must be 1");
@@ -708,6 +856,41 @@ fn api_call(
         v2_process::validate_deployment_name(&name)?;
     }
     match request.op.as_str() {
+        "manager_identity" => manager_identity(paths),
+        "manager_shutdown" => {
+            tracing::info!(
+                event_code = "manager_shutdown",
+                "IsOS manager shutdown requested"
+            );
+            let mut stopped = Vec::new();
+            for active in managers.values_mut() {
+                stopped.extend(active.supervisor.stop());
+            }
+            managers.clear();
+            let services = service_manager.stop_all();
+            INTERRUPTED.store(true, Ordering::SeqCst);
+            Ok(json!({"stopped":stopped,"services":services,"manager":"stopping"}))
+        }
+        "services_list" => Ok(json!({"services":service_manager.list()?})),
+        "services_validate" => Ok(json!({"services":service_manager.validate()?})),
+        "services_status" => Ok(json!({"services":service_manager.status()?})),
+        "services_start" => Ok(json!({"started":service_manager.start(
+            request.service_id.as_deref().context("service_id is required")?
+        )?})),
+        "services_stop" => Ok(json!({"stopped":service_manager.stop(
+            request.service_id.as_deref().context("service_id is required")?
+        )?})),
+        "services_restart" => Ok(json!({"started":service_manager.restart(
+            request.service_id.as_deref().context("service_id is required")?
+        )?})),
+        "services_logs" => service_manager.logs(
+            request
+                .service_id
+                .as_deref()
+                .context("service_id is required")?,
+            request.cursor.as_deref(),
+            request.limit.unwrap_or(100),
+        ),
         "v2_active_packages" => {
             let packages: Vec<_> = managers
                 .values()
@@ -886,6 +1069,7 @@ fn api_call(
 fn handle_client(
     paths: &config::Paths,
     managers: &mut V2Supervisors,
+    service_manager: &mut services::ServiceManager,
     mut stream: UnixStream,
 ) -> Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(2)))?;
@@ -894,6 +1078,9 @@ fn handle_client(
     BufReader::new(stream.try_clone()?)
         .take(2_000_001)
         .read_line(&mut line)?;
+    if line.is_empty() {
+        return Ok(());
+    }
     ensure!(line.len() <= 2_000_000, "API request exceeds 2 MB");
     let request = serde_json::from_str::<ApiRequest>(&line);
     let failed_deployment = request
@@ -910,7 +1097,13 @@ fn handle_client(
         .is_some_and(|request| matches!(request.op.as_str(), "v2_start" | "v2_restart"));
     let outcome = request
         .map_err(anyhow::Error::from)
-        .and_then(|request| api_call(paths, managers, request));
+        .and_then(|request| api_call(paths, managers, service_manager, request));
+    if let Err(error) = &outcome {
+        tracing::warn!(
+            event_code = "manager_request_failed",
+            "manager request failed: {error:#}"
+        );
+    }
     if let Some(name) =
         failed_deployment.filter(|name| v2_process::validate_deployment_name(name).is_ok())
     {
@@ -961,31 +1154,57 @@ fn bind_daemon(paths: &config::Paths) -> Result<UnixListener> {
     Ok(listener)
 }
 
-fn daemon(paths: &config::Paths, listener: UnixListener) -> Result<()> {
+fn daemon(paths: &config::Paths, deployment: &str, listener: UnixListener) -> Result<()> {
     let mut managers = V2Supervisors::new();
+    let mut service_manager = services::ServiceManager::new(paths, deployment)?;
     println!("IsOS API listening on {}", paths.socket().display());
     while !INTERRUPTED.load(Ordering::SeqCst) {
         for active in managers.values_mut() {
             if let Err(error) = active.supervisor.poll() {
                 active.last_error = Some(error.to_string());
+                tracing::error!(
+                    event_code = "deployment_supervisor_failed",
+                    "v2 process supervisor: {error:#}"
+                );
                 eprintln!("v2 process supervisor: {error:#}");
             }
         }
+        if let Err(error) = service_manager.poll() {
+            tracing::error!(
+                event_code = "service_supervisor_failed",
+                "service supervisor: {error:#}"
+            );
+            eprintln!("service supervisor: {error:#}");
+        }
         match listener.accept() {
             Ok((client, _)) => {
-                if let Err(error) = handle_client(paths, &mut managers, client) {
+                if let Err(error) =
+                    handle_client(paths, &mut managers, &mut service_manager, client)
+                {
+                    tracing::warn!(
+                        event_code = "manager_client_failed",
+                        "API client: {error:#}"
+                    );
                     eprintln!("API client: {error}");
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(Duration::from_millis(50));
             }
-            Err(error) => eprintln!("API accept: {error}"),
+            Err(error) => {
+                tracing::error!(
+                    event_code = "manager_accept_failed",
+                    "API accept: {error:#}"
+                );
+                eprintln!("API accept: {error}");
+            }
         }
     }
     for active in managers.values_mut() {
         active.supervisor.stop();
     }
+    service_manager.stop_all();
+    tracing::info!(event_code = "manager_stopped", "IsOS manager stopped");
     fs::remove_file(paths.socket())?;
     Ok(())
 }
@@ -1046,7 +1265,7 @@ impl Frontend {
             log_store::capture(stdout, logs.clone(), "ui".into(), "info");
         }
         if let Some(stderr) = child.stderr.take() {
-            log_store::capture(stderr, logs, "ui".into(), "error");
+            log_store::capture(stderr, logs, "ui".into(), "warn");
         }
         Ok(Self(child))
     }
@@ -1087,27 +1306,74 @@ impl Drop for Frontend {
     }
 }
 
-fn serve_foreground(paths: config::Paths, name: String) -> Result<()> {
-    let source = ui_source()?;
+fn serve_foreground(paths: config::Paths, name: String, ui_live: bool) -> Result<()> {
+    ensure!(
+        !ui_live || paths.mode()? == "dev",
+        "--ui-live is available only in dev mode"
+    );
+    if UnixStream::connect(paths.socket()).is_ok() {
+        let identity = v2_call(&paths, &name, "manager_identity")?;
+        bail!("IsOS manager is already running: {identity}");
+    }
     let port = http::ui_port()?;
+    for (label, port) in [("IsOS API", http::local_port()?), ("IsosUI", port)] {
+        ensure!(
+            TcpStream::connect(("127.0.0.1", port)).is_err(),
+            "{label} port 127.0.0.1:{port} belongs to another listener; stop that listener or configure a different port"
+        );
+    }
     catch_interrupts()?;
     let logs = log_store::LogStore::new(&paths, &name)?;
+    manager_log::install(logs.clone())?;
     logs.append("isos", "info", "Starting IsOS workbench")?;
     let main_log = logs.root().join("isos.log");
-    let mut frontend = Frontend::spawn(&source, logs)?;
+    let mut frontend = if ui_live {
+        Some(Frontend::spawn(&ui_source()?, logs.clone())?)
+    } else {
+        None
+    };
+    let static_ui = if ui_live {
+        None
+    } else {
+        let directory = isosui::selected_bundle(&paths)?;
+        Some(std::thread::spawn(move || http::serve_ui(directory)))
+    };
     let listener = bind_daemon(&paths)?;
     let api_paths = paths.clone();
-    let manager = std::thread::spawn(move || daemon(&api_paths, listener));
+    let manager_name = name.clone();
+    let manager = std::thread::spawn(move || daemon(&api_paths, &manager_name, listener));
     let http_server = std::thread::spawn(move || http::serve(paths, name));
-    let mut result = frontend.ready(port);
+    let mut result = if let Some(frontend) = frontend.as_mut() {
+        frontend.ready(port)
+    } else {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                break Ok(());
+            }
+            if static_ui.as_ref().is_some_and(|ui| ui.is_finished()) {
+                break Err(anyhow::anyhow!("IsosUI static server exited before ready"));
+            }
+            if Instant::now() >= deadline {
+                break Err(anyhow::anyhow!("IsosUI static server did not become ready"));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
     if result.is_ok() && !INTERRUPTED.load(Ordering::SeqCst) {
         println!("{}", http::ui_url()?);
         println!("IsOS API: {}", http::local_origin());
         println!("IsOS log: {}", main_log.display());
         println!("IsOS workbench is running; press Ctrl+C to stop it.");
         while !INTERRUPTED.load(Ordering::SeqCst) {
-            if let Some(status) = frontend.0.try_wait()? {
+            if let Some(frontend) = frontend.as_mut()
+                && let Some(status) = frontend.0.try_wait()?
+            {
                 result = Err(anyhow::anyhow!("IsosUI npm server exited: {status}"));
+                break;
+            }
+            if static_ui.as_ref().is_some_and(|ui| ui.is_finished()) {
+                result = Err(anyhow::anyhow!("IsosUI static server exited"));
                 break;
             }
             if http_server.is_finished() || manager.is_finished() {
@@ -1118,6 +1384,10 @@ fn serve_foreground(paths: config::Paths, name: String) -> Result<()> {
     }
     INTERRUPTED.store(true, Ordering::SeqCst);
     drop(frontend);
+    if let Some(ui) = static_ui {
+        ui.join()
+            .map_err(|_| anyhow::anyhow!("IsosUI server thread panicked"))??;
+    }
     let http_result = http_server
         .join()
         .map_err(|_| anyhow::anyhow!("IsOS HTTP thread panicked"))?;
@@ -1126,6 +1396,12 @@ fn serve_foreground(paths: config::Paths, name: String) -> Result<()> {
         .map_err(|_| anyhow::anyhow!("IsOS manager thread panicked"))?;
     manager_result?;
     http_result?;
+    if let Err(error) = &result {
+        tracing::error!(
+            event_code = "workbench_failed",
+            "IsOS workbench failed: {error:#}"
+        );
+    }
     result
 }
 
@@ -1193,9 +1469,12 @@ fn v2_call_revision(
     op: &str,
     revision: Option<String>,
 ) -> Result<Value> {
-    let mut stream = UnixStream::connect(paths.socket()).map_err(|error| {
-        anyhow::anyhow!("IsOS manager is not running; run `isos init` first: {error}")
-    })?;
+    if matches!(
+        op,
+        "v2_start" | "v2_restart" | "services_start" | "services_restart"
+    ) {
+        check_manager_binary(paths, name)?;
+    }
     let request = ApiRequest {
         schema_version: 1,
         op: op.to_owned(),
@@ -1203,7 +1482,17 @@ fn v2_call_revision(
         role: None,
         graph: None,
         revision,
+        service_id: None,
+        cursor: None,
+        limit: None,
     };
+    manager_request(paths, request)
+}
+
+fn manager_request(paths: &config::Paths, request: ApiRequest) -> Result<Value> {
+    let mut stream = UnixStream::connect(paths.socket()).map_err(|error| {
+        anyhow::anyhow!("IsOS manager is not running; run `isos serve` first: {error}")
+    })?;
     serde_json::to_writer(&mut stream, &request)?;
     stream.write_all(b"\n")?;
     let mut line = String::new();
@@ -1215,6 +1504,42 @@ fn v2_call_revision(
         response.error.unwrap_or_else(|| "manager error".into())
     );
     Ok(response.data)
+}
+
+fn check_manager_binary(paths: &config::Paths, name: &str) -> Result<()> {
+    let active = v2_call(paths, name, "manager_identity")?;
+    let own = hex::encode(Sha256::digest(fs::read(std::env::current_exe()?)?));
+    ensure!(
+        active["executable_sha256"] == own,
+        "running IsOS manager uses a different binary; run `isos stop`, then `isos serve` with this version"
+    );
+    Ok(())
+}
+
+fn service_call(
+    paths: &config::Paths,
+    name: &str,
+    op: &str,
+    id: Option<String>,
+    limit: Option<usize>,
+) -> Result<Value> {
+    if matches!(op, "services_start" | "services_restart") {
+        check_manager_binary(paths, name)?;
+    }
+    manager_request(
+        paths,
+        ApiRequest {
+            schema_version: 1,
+            op: op.to_owned(),
+            deployment: Some(name.to_owned()),
+            role: None,
+            graph: None,
+            revision: None,
+            service_id: id,
+            cursor: None,
+            limit,
+        },
+    )
 }
 
 fn main_run() -> Result<()> {
@@ -1234,6 +1559,22 @@ fn main_run() -> Result<()> {
             target,
             install_deps,
         } => {
+            if target == "isos" || target == "all" {
+                ensure!(
+                    !install_deps,
+                    "--install-deps is unavailable for the Rust v2 build"
+                );
+                let receipt = v2_build::build_isos(&paths)?;
+                println!(
+                    "built IsOS {} {} at {}",
+                    receipt.product_version,
+                    receipt.source_commit,
+                    receipt.executable.display()
+                );
+                if target == "isos" {
+                    return Ok(());
+                }
+            }
             if target == "isosui" {
                 ensure!(
                     !install_deps,
@@ -1248,10 +1589,10 @@ fn main_run() -> Result<()> {
             }
             ensure!(
                 matches!(target.as_str(), "eos" | "egia" | "all"),
-                "build target must be eos, egia, all, or isosui"
+                "build target must be isos, eos, egia, all, or isosui"
             );
             for role in if target == "all" {
-                vec!["eos", "egia"]
+                vec!["eos"]
             } else {
                 vec![target.as_str()]
             } {
@@ -1272,16 +1613,48 @@ fn main_run() -> Result<()> {
                     );
                 }
             }
+            if target == "all" {
+                let receipt = isosui::build(&paths)?;
+                println!(
+                    "built IsosUI {} {} sha256:{}",
+                    receipt.manifest.version, receipt.manifest.source_commit, receipt.sha256
+                );
+            }
         }
         CommandLine::Version { command } => match command {
             VersionCommand::Check => {
-                let graph = config::load_selected(&paths, &name).ok();
+                let active = if UnixStream::connect(paths.socket()).is_ok() {
+                    Some(json!({
+                        "manager": v2_call(&paths, &name, "manager_identity")?,
+                        "deployment": v2_call(&paths, &name, "v2_status")?,
+                        "services": service_call(&paths, &name, "services_status", None, None)?,
+                    }))
+                } else {
+                    None
+                };
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&versions::check(&paths, graph.as_ref())?)?
+                    serde_json::to_string_pretty(&versions::check_v2(&paths, &name, active)?)?
                 );
             }
             VersionCommand::Pin { component, version } => {
+                if component == "isos" {
+                    let receipt = v2_build::install_isos(&paths, &version)?;
+                    println!(
+                        "installed IsOS {} ({})",
+                        receipt.product_version, receipt.source_commit
+                    );
+                    return Ok(());
+                }
+                if component == "eos" {
+                    let revision = v2_starter::revision(&paths.v2_node_graph(&name))?;
+                    let receipt = v2_build::select_eos(&paths, &name, &version, &revision)?;
+                    println!(
+                        "selected EOS {} ({})",
+                        receipt.product_version, receipt.source_commit
+                    );
+                    return Ok(());
+                }
                 if component == "isosui" {
                     let receipt = isosui::pin(&paths, &version)?;
                     println!(
@@ -1297,8 +1670,13 @@ fn main_run() -> Result<()> {
                 );
             }
         },
-        CommandLine::Init => {
+        CommandLine::Init { mode } => {
             paths.prepare()?;
+            if let Some(mode) = mode {
+                paths.set_mode(&mode)?;
+            } else if !paths.config.join("mode").exists() {
+                paths.set_mode("dev")?;
+            }
             let own_pin = paths.config.join("isos-version");
             if !own_pin.exists() {
                 config::atomic_write(&own_pin, env!("CARGO_PKG_VERSION").as_bytes())?;
@@ -1310,7 +1688,6 @@ fn main_run() -> Result<()> {
                     "MuJoCo package missing: install or link island/mujoco-sim 2.0.0, then validate and apply the graph"
                 );
             }
-            serve_foreground(paths, name)?;
         }
         CommandLine::Open => {
             let url = http::ui_url()?;
@@ -1322,8 +1699,8 @@ fn main_run() -> Result<()> {
             print_v2_run_startup(&paths, &name, &v2_call(&paths, &name, "v2_start")?)?;
             wait_for_interrupt(&paths, &name)?;
         }
-        CommandLine::Serve => {
-            serve_foreground(paths, name)?;
+        CommandLine::Serve { ui_live } => {
+            serve_foreground(paths, name, ui_live)?;
         }
         CommandLine::Auth { command } => match command {
             AuthCommand::Login => auth::login(&paths)?,
@@ -1337,21 +1714,48 @@ fn main_run() -> Result<()> {
         }
         CommandLine::Stop => {
             let legacy_stopped = stop_legacy_server()?;
-            match v2_call(&paths, &name, "v2_stop") {
+            match v2_call(&paths, &name, "manager_shutdown") {
                 Ok(result) => println!("{}", serde_json::to_string_pretty(&result)?),
                 Err(_) if legacy_stopped => {
                     println!("{}", json!({"stopped":["isos-server.service"]}))
                 }
+                Err(_) if UnixStream::connect(paths.socket()).is_err() => {
+                    println!("{}", json!({"stopped":[],"manager":"stopped"}))
+                }
                 Err(error) => return Err(error),
             }
         }
+        CommandLine::Deployment { command } => match command {
+            DeploymentCommand::Stop => println!(
+                "{}",
+                serde_json::to_string_pretty(&v2_call(&paths, &name, "v2_stop")?)?
+            ),
+            DeploymentCommand::Status => println!(
+                "{}",
+                serde_json::to_string_pretty(&v2_call(&paths, &name, "v2_status")?)?
+            ),
+        },
         CommandLine::Restart => {
             catch_interrupts()?;
             print_v2_run_startup(&paths, &name, &v2_call(&paths, &name, "v2_restart")?)?;
             wait_for_interrupt(&paths, &name)?;
         }
         CommandLine::Status { json: _ } => {
-            let status = v2_call(&paths, &name, "v2_status")?;
+            let mut status = if UnixStream::connect(paths.socket()).is_ok() {
+                v2_call(&paths, &name, "v2_status")?
+            } else {
+                json!({"schema_version":"2.0.0","state":"stopped","active_revision":null,"processes":[]})
+            };
+            status["manager"] = if UnixStream::connect(paths.socket()).is_ok() {
+                v2_call(&paths, &name, "manager_identity")?
+            } else {
+                json!({"state":"stopped"})
+            };
+            status["services"] = if UnixStream::connect(paths.socket()).is_ok() {
+                service_call(&paths, &name, "services_status", None, None)?["services"].clone()
+            } else {
+                json!([])
+            };
             println!("{}", serde_json::to_string_pretty(&status)?);
         }
         CommandLine::Logs { node, lines } => {
@@ -1393,12 +1797,13 @@ fn main_run() -> Result<()> {
         CommandLine::Config { command } => config_command(&paths, &name, command)?,
         CommandLine::Packages { command } => package_command(&paths, command)?,
         CommandLine::Skills { command } => library(&paths, &name, "skills", command)?,
-        CommandLine::Services { command } => library(&paths, &name, "services", command)?,
+        CommandLine::Services { command } => services_command(&paths, &name, command)?,
         CommandLine::Backends { command } => library(&paths, &name, "backends", command)?,
         CommandLine::Daemon => {
             catch_interrupts()?;
+            manager_log::install(log_store::LogStore::new(&paths, &name)?)?;
             let listener = bind_daemon(&paths)?;
-            daemon(&paths, listener)?;
+            daemon(&paths, &name, listener)?;
         }
         CommandLine::V2 { command } => {
             v2_process::validate_deployment_name(&name)?;

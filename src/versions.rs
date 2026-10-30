@@ -407,3 +407,102 @@ pub fn check(paths: &Paths, graph: Option<&Deployment>) -> Result<Value> {
         serde_json::json!({"isos":env!("CARGO_PKG_VERSION"),"components":components,"isosui":isosui::check(paths)?}),
     )
 }
+
+/// The v2 node graph is the deployment authority. Legacy component pins above
+/// describe the retired C++ graph and must never gate Rust v2 admission.
+pub fn check_v2(paths: &Paths, name: &str, active: Option<Value>) -> Result<Value> {
+    crate::v2_process::validate_deployment_name(name)?;
+    let graph_path = paths.v2_node_graph(name);
+    let graph = fs::read(&graph_path).ok();
+    let graph_value: Option<Value> = graph
+        .as_ref()
+        .map(|bytes| serde_json::from_slice(bytes))
+        .transpose()?;
+    let graph_version = graph_value
+        .as_ref()
+        .and_then(|g| g.get("version"))
+        .and_then(Value::as_str);
+    if let Some(version) = graph_version {
+        ensure!(version == "2.0.0", "unsupported graph version {version}");
+    }
+    let selected_eos = crate::v2_build::selected(paths)?;
+    let selected_ui = isosui::selected_receipt(paths)?;
+    if paths.mode()? == "product" {
+        ensure!(
+            selected_eos.is_some(),
+            "product mode requires selected EOS build"
+        );
+        ensure!(
+            selected_ui.is_some(),
+            "product mode requires selected IsosUI build"
+        );
+    }
+    let eos_match = selected_eos.as_ref().map(|receipt| {
+        let Some(graph) = graph_value.as_ref() else {
+            return false;
+        };
+        [
+            ("eos", "aether-runtime"),
+            ("bridge", "aether-http-bridge"),
+            ("config", "aether-config-server"),
+        ]
+        .into_iter()
+        .all(|(node, binary)| {
+            let pointer = format!(
+                "/cores/isos/layers/process/groups/component/nodes/{node}/settings/command/0"
+            );
+            graph
+                .pointer(&pointer)
+                .and_then(Value::as_str)
+                .and_then(|path| Path::new(path).canonicalize().ok())
+                == receipt
+                    .binaries
+                    .get(binary)
+                    .and_then(|path| path.canonicalize().ok())
+        })
+    });
+    let packages = crate::packages::list(paths)?;
+    let own_executable = std::env::current_exe()?.canonicalize()?;
+    let own_digest = sha(&own_executable)?;
+    let own_pin = paths.config.join("pins/isos.json");
+    let selected_isos: Option<crate::v2_build::IsosReceipt> = if own_pin.exists() {
+        let receipt = serde_json::from_slice(&fs::read(own_pin)?)?;
+        crate::v2_build::verify_isos(&receipt)?;
+        Some(receipt)
+    } else {
+        None
+    };
+    let own_match = selected_isos
+        .as_ref()
+        .map(|receipt| receipt.sha256 == own_digest);
+    Ok(serde_json::json!({
+        "mode": paths.mode()?,
+        "configured": {"isos_version": env!("CARGO_PKG_VERSION"), "isos_executable": own_executable, "isos_sha256": own_digest, "graph_version": graph_version, "api_schema_version": 2, "node_type_version": "1.0", "service_contract_version": crate::services::CONTRACT_VERSION},
+        "selected": {"isos": {"receipt": selected_isos, "executable": own_executable, "sha256": own_digest}, "eos": selected_eos, "isosui": selected_ui},
+        "active": active,
+        "match": {"isos_executable": own_match, "eos_graph": eos_match},
+        "graph": {"path": graph_path, "revision": graph.map(|bytes| hex::encode(Sha256::digest(bytes)))},
+        "packages": packages,
+    }))
+}
+
+#[cfg(test)]
+mod v2_tests {
+    use super::*;
+
+    #[test]
+    fn check_v2_reports_unselected_dev_state_without_legacy_graph() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        paths.prepare().unwrap();
+        paths.set_mode("dev").unwrap();
+        let report = check_v2(&paths, "default", None).unwrap();
+        assert_eq!(report["configured"]["api_schema_version"], 2);
+        assert_eq!(report["selected"]["eos"], Value::Null);
+        assert_eq!(report["match"]["eos_graph"], Value::Null);
+    }
+}

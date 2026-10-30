@@ -109,29 +109,36 @@ def main():
         env = dict(os.environ, ISOS_HOME=str(home), MUJOCO_ROOT=str(library.parent),
                    ISOS_HTTP_PORT=str(isos_port), ISOSUI_PORT=str(ui_port), ISOSUI_REPO_PATH=str(ui_repo),
                    ISOS_AETHER_BIN_DIR=str(EOS_BIN))
-        if build_stage:
-            built = subprocess.run([str(ISOS), "build", "eos"], env=env, text=True,
-                                   capture_output=True, timeout=300)
-            print("$ isos build eos\n" + built.stdout.strip(), flush=True)
-            if built.stderr:
-                print(built.stderr.strip(), flush=True)
-            if built.returncode:
-                raise RuntimeError(f"isos build eos exited {built.returncode}")
-            assert (home / "data/builds/eos/current.json").is_file()
         run("pkg", "link", "island/mujoco-sim", "2.0.0", str(bundle), "--manifest", str(manifest), env=env)
-        init_log = (root / "init.log").open("w+")
-        init_process = subprocess.Popen([str(ISOS), "init"], env=env,
-                                        stdout=init_log, stderr=subprocess.STDOUT, text=True)
+        run("init", "--mode", "dev", env=env)
+        graph_path = home / "config/deployments/default.nodes.json"
+        initial_graph = graph_path.read_bytes()
+        run("init", "--mode", "dev", env=env)
+        assert graph_path.read_bytes() == initial_graph
+        built = subprocess.run([str(ISOS), "build", "eos"], env=env, text=True,
+                               capture_output=True, timeout=300)
+        print("$ isos build eos\n" + built.stdout.strip(), flush=True)
+        if built.stderr:
+            print(built.stderr.strip(), flush=True)
+        if built.returncode:
+            raise RuntimeError(f"isos build eos exited {built.returncode}")
+        receipts = list((home / "data/builds/eos").glob("*/receipt.json"))
+        assert len(receipts) == 1, receipts
+        staged = json.loads(receipts[0].read_text())
+        run("version", "select", "eos", staged["source_commit"], env=env)
+        serve_log = (root / "serve.log").open("w+")
+        serve_process = subprocess.Popen([str(ISOS), "serve", "--ui-live"], env=env,
+                                         stdout=serve_log, stderr=subprocess.STDOUT, text=True)
         run_process = None
         shutdown_pids = []
         for _ in range(100):
             if (home / "run/manager.sock").exists():
                 break
-            if init_process.poll() is not None:
-                raise RuntimeError(f"isos init exited {init_process.returncode}")
+            if serve_process.poll() is not None:
+                raise RuntimeError(f"isos serve exited {serve_process.returncode}")
             time.sleep(0.05)
         else:
-            raise RuntimeError("isos init did not bind its control socket")
+            raise RuntimeError("isos serve did not bind its control socket")
         graph_path = home / "config/deployments/default.nodes.json"
         graph = json.loads(graph_path.read_text())
         assert "hardware" not in graph["cores"]["eos"]["layers"]
@@ -181,7 +188,7 @@ def main():
         assert run("pkg", "remove", "island/mujoco-sim", "2.0.0", env=env, expect=False).returncode != 0
         saved_hash = hashlib.sha256(graph_path.read_bytes()).hexdigest()
         try:
-            def isos_api(path, method="GET", data=None, timeout=4):
+            def isos_api(path, method="GET", data=None, timeout=30):
                 payload = None if data is None else json.dumps(data).encode()
                 request = Request(f"http://127.0.0.1:{isos_port}/api/isos/v2/{path}",
                                   data=payload, method=method,
@@ -217,8 +224,8 @@ def main():
                         assert b"<html" in response.read().lower()
                     break
                 except OSError:
-                    if init_process.poll() is not None:
-                        raise RuntimeError("IsOS init exited before npm frontend was ready")
+                    if serve_process.poll() is not None:
+                        raise RuntimeError("IsOS serve exited before npm frontend was ready")
                     time.sleep(0.05)
             else:
                 raise RuntimeError("npm frontend did not become ready")
@@ -261,7 +268,10 @@ def main():
             startups.append((time.perf_counter() - start) * 1000)
             for _ in range(4):
                 start = time.perf_counter()
-                result = isos_api("process-control", "POST", {"schema_version": 2, "operation": "restart"})
+                try:
+                    result = isos_api("process-control", "POST", {"schema_version": 2, "operation": "restart"})
+                except HTTPError as error:
+                    raise AssertionError(f"restart HTTP {error.code}: {error.read().decode()}") from error
                 assert result["started"][0] == "eos"
                 startups.append((time.perf_counter() - start) * 1000)
             status = json.loads(run("status", "--json", env=env).stdout)
@@ -367,33 +377,38 @@ def main():
             print(f"BENCH socket median_ms={statistics.median(samples):.3f} p99_ms={percentile(samples,.99):.3f} throughput_rps={200 / (sum(samples)/1000):.1f}")
             print("PASS clean-home IsOS→EOS→mock MuJoCo scenario")
         finally:
+            if (root / "run.log").exists():
+                print("--- run log ---", (root / "run.log").read_text(), flush=True)
+            if (root / "serve.log").exists():
+                serve_log.flush()
+                print("--- serve log ---", (root / "serve.log").read_text(), flush=True)
             if run_process is not None and run_process.poll() is None:
                 run_process.send_signal(signal.SIGINT)
                 run_process.wait(timeout=10)
-            if init_process.poll() is None:
-                init_process.send_signal(signal.SIGINT)
-            init_exit = init_process.wait(timeout=10)
-            init_log.flush()
-            if init_exit != 0:
-                raise AssertionError(f"isos init exited {init_exit}:\n{(root / 'init.log').read_text()}")
+            if serve_process.poll() is None:
+                serve_process.send_signal(signal.SIGINT)
+            serve_exit = serve_process.wait(timeout=10)
+            serve_log.flush()
+            if serve_exit != 0:
+                raise AssertionError(f"isos serve exited {serve_exit}:\n{(root / 'serve.log').read_text()}")
             for pid in shutdown_pids:
                 try:
                     os.kill(pid, 0)
                 except ProcessLookupError:
                     continue
-                raise AssertionError(f"managed child {pid} survived init Ctrl+C")
+                raise AssertionError(f"managed child {pid} survived serve Ctrl+C")
             assert not (home / "run/manager.sock").exists()
-            init_log.close()
-            init_output = (root / "init.log").read_text()
-            assert f"http://127.0.0.1:{ui_port}/en/isos" in init_output
-            assert f"IsOS API: http://127.0.0.1:{isos_port}" in init_output
-            assert f"IsOS log: {home / 'data/logs/default/isos.log'}" in init_output
-            assert "#token=" not in init_output
+            serve_log.close()
+            serve_output = (root / "serve.log").read_text()
+            assert f"http://127.0.0.1:{ui_port}/en/isos" in serve_output
+            assert f"IsOS API: http://127.0.0.1:{isos_port}" in serve_output
+            assert f"IsOS log: {home / 'data/logs/default/isos.log'}" in serve_output
+            assert "#token=" not in serve_output
             assert not (home / "run/ui-token").exists()
             with socket.socket() as probe:
                 probe.settimeout(0.2)
                 assert probe.connect_ex(("127.0.0.1", ui_port)) != 0
-            print("ISOS INIT Ctrl+C stopped API and npm frontend: PASS")
+            print("ISOS SERVE Ctrl+C stopped API and npm frontend: PASS")
 
 
 if __name__ == "__main__":

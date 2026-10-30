@@ -22,11 +22,167 @@ pub const EOS_BINARIES: [&str; 5] = [
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct IsosReceipt {
+    pub schema_version: u32,
+    pub product_version: String,
+    pub source_commit: String,
+    pub source_dirty: bool,
+    pub source_fingerprint: String,
+    pub executable: PathBuf,
+    pub sha256: String,
+}
+
+pub fn verify_isos(receipt: &IsosReceipt) -> Result<()> {
+    ensure!(
+        receipt.schema_version == 1 && receipt.product_version == env!("CARGO_PKG_VERSION"),
+        "invalid IsOS build receipt"
+    );
+    ensure!(
+        receipt.executable.is_absolute() && receipt.executable.is_file(),
+        "staged IsOS executable missing"
+    );
+    ensure!(
+        fs::metadata(&receipt.executable)?.permissions().mode() & 0o111 != 0,
+        "staged IsOS executable is not executable"
+    );
+    ensure!(
+        digest(&receipt.executable)? == receipt.sha256,
+        "staged IsOS executable digest changed"
+    );
+    Ok(())
+}
+
+pub fn build_isos(paths: &Paths) -> Result<IsosReceipt> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).canonicalize()?;
+    let (commit, dirty, fingerprint) = source_identity(&root)?;
+    ensure!(
+        paths.mode()? != "product" || !dirty,
+        "product IsOS build requires clean source"
+    );
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .map(|home| home.join(".cargo/bin/cargo"))
+            .filter(|path| path.is_file())
+            .map(Into::into)
+            .unwrap_or_else(|| "cargo".into())
+    });
+    let output = Command::new(cargo)
+        .args(["build", "--release", "--bin", "isos"])
+        .env_remove("CARGO_TARGET_DIR")
+        .current_dir(&root)
+        .output()
+        .context("build IsOS")?;
+    ensure!(
+        output.status.success(),
+        "IsOS build failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let source = root.join("target/release/isos");
+    ensure!(source.is_file(), "IsOS release executable missing");
+    let sha256 = digest(&source)?;
+    let base = paths.data.join("builds/isos");
+    fs::create_dir_all(&base)?;
+    fs::set_permissions(&base, fs::Permissions::from_mode(0o700))?;
+    let stage = base.join(format!(
+        "{}-{}-{}",
+        &commit[..12],
+        &fingerprint[..12],
+        &sha256[..12]
+    ));
+    let executable = stage.join("isos");
+    let receipt = IsosReceipt {
+        schema_version: 1,
+        product_version: env!("CARGO_PKG_VERSION").into(),
+        source_commit: commit,
+        source_dirty: dirty,
+        source_fingerprint: fingerprint,
+        executable,
+        sha256,
+    };
+    if stage.exists() {
+        verify_isos(&receipt)?;
+    } else {
+        let staging = tempfile::Builder::new()
+            .prefix("stage-")
+            .tempdir_in(&base)?;
+        let dest = staging.path().join("isos");
+        fs::copy(&source, &dest)?;
+        fs::set_permissions(&dest, fs::Permissions::from_mode(0o700))?;
+        ensure!(
+            digest(&dest)? == receipt.sha256,
+            "IsOS staged copy differs from build"
+        );
+        fs::rename(staging.path(), &stage)?;
+    }
+    config::atomic_write(
+        &stage.join("receipt.json"),
+        &serde_json::to_vec_pretty(&receipt)?,
+    )?;
+    Ok(receipt)
+}
+
+pub fn install_isos(paths: &Paths, selector: &str) -> Result<IsosReceipt> {
+    let mut matches = Vec::new();
+    let base = paths.data.join("builds/isos");
+    for entry in fs::read_dir(&base).with_context(|| format!("read {}", base.display()))? {
+        let path = entry?.path().join("receipt.json");
+        if !path.is_file() {
+            continue;
+        }
+        let receipt: IsosReceipt = serde_json::from_slice(&fs::read(&path)?)?;
+        if receipt.source_commit.starts_with(selector) || receipt.sha256.starts_with(selector) {
+            matches.push(receipt);
+        }
+    }
+    ensure!(
+        matches.len() == 1,
+        "expected one IsOS build matching {selector}; found {}",
+        matches.len()
+    );
+    let receipt = matches.remove(0);
+    verify_isos(&receipt)?;
+    ensure!(
+        paths.mode()? != "product"
+            || (!receipt.source_dirty && !receipt.source_fingerprint.is_empty()),
+        "product mode requires clean IsOS receipt"
+    );
+    ensure!(
+        std::os::unix::net::UnixStream::connect(paths.socket()).is_err(),
+        "stop the IsOS manager before activating a new executable"
+    );
+    let installed = std::env::current_exe()?.canonicalize()?;
+    let parent = installed.parent().context("installed IsOS has no parent")?;
+    let staging = tempfile::Builder::new()
+        .prefix(".isos-install-")
+        .tempfile_in(parent)?;
+    fs::copy(&receipt.executable, staging.path())?;
+    fs::set_permissions(staging.path(), fs::Permissions::from_mode(0o755))?;
+    ensure!(
+        digest(staging.path())? == receipt.sha256,
+        "IsOS activation copy changed"
+    );
+    staging.persist(&installed)?;
+    config::atomic_write(
+        &paths.config.join("pins/isos.json"),
+        &serde_json::to_vec_pretty(&receipt)?,
+    )?;
+    Ok(receipt)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BuildReceipt {
     pub schema_version: u32,
     pub component: String,
     pub product_version: String,
     pub source_commit: String,
+    #[serde(default)]
+    pub source_dirty: bool,
+    #[serde(default)]
+    pub source_fingerprint: String,
+    #[serde(default)]
+    pub source_root: Option<PathBuf>,
     pub binaries: BTreeMap<String, PathBuf>,
     pub sha256: BTreeMap<String, String>,
 }
@@ -77,6 +233,10 @@ fn probe(path: &Path, binary: &str, features: &[&str]) -> Result<()> {
 
 pub fn preflight_processes(paths: &Paths, specs: &[crate::v2_process::ProcessSpec]) -> Result<()> {
     let selected = selected(paths)?;
+    ensure!(
+        selected.is_some(),
+        "EOS build is unselected; run `isos build eos`, then `isos version select eos <commit>`"
+    );
     for (id, binary, features) in [
         (
             "eos",
@@ -184,12 +344,43 @@ fn digest(path: &Path) -> Result<String> {
     Ok(hex::encode(Sha256::digest(bytes)))
 }
 
+pub fn source_identity(root: &Path) -> Result<(String, bool, String)> {
+    let commit = git(root, &["rev-parse", "HEAD"])?;
+    let dirty = !git(root, &["status", "--porcelain", "--untracked-files=all"])?.is_empty();
+    let output = Command::new("git")
+        .args(["ls-files", "-co", "--exclude-standard", "-z"])
+        .current_dir(root)
+        .output()?;
+    ensure!(output.status.success(), "git ls-files failed");
+    let mut names: Vec<_> = output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|name| !name.is_empty())
+        .collect();
+    names.sort();
+    names.dedup();
+    let mut hash = Sha256::new();
+    hash.update(commit.as_bytes());
+    for name in names {
+        let relative = std::str::from_utf8(name)?;
+        let path = root.join(relative);
+        hash.update(name);
+        hash.update([0]);
+        if path.is_file() {
+            hash.update(Sha256::digest(fs::read(path)?));
+        } else {
+            hash.update(b"missing");
+        }
+    }
+    Ok((commit, dirty, hex::encode(hash.finalize())))
+}
+
 pub fn build_eos(paths: &Paths) -> Result<BuildReceipt> {
     let root = source_root()?;
-    let commit = git(&root, &["rev-parse", "HEAD"])?;
+    let (commit, dirty, fingerprint) = source_identity(&root)?;
     ensure!(
-        git(&root, &["status", "--porcelain"])?.is_empty(),
-        "EOS source has uncommitted changes; commit before building a reproducible set"
+        paths.mode()? != "product" || !dirty,
+        "product EOS build requires clean source"
     );
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| {
         std::env::var_os("HOME")
@@ -221,7 +412,12 @@ pub fn build_eos(paths: &Paths) -> Result<BuildReceipt> {
         source_hashes.insert(name.to_owned(), digest(&path)?);
     }
     let set_hash = hex::encode(Sha256::digest(serde_json::to_vec(&source_hashes)?));
-    let stage = base.join(format!("{}-{}", &commit[..12], &set_hash[..12]));
+    let stage = base.join(format!(
+        "{}-{}-{}",
+        &commit[..12],
+        &fingerprint[..12],
+        &set_hash[..12]
+    ));
     let bin_dir = stage.join("bin");
     if !stage.exists() {
         let staging = tempfile::Builder::new()
@@ -248,6 +444,9 @@ pub fn build_eos(paths: &Paths) -> Result<BuildReceipt> {
         component: "eos".into(),
         product_version: "2.0.0".into(),
         source_commit: commit,
+        source_dirty: dirty,
+        source_fingerprint: fingerprint,
+        source_root: Some(root),
         binaries,
         sha256: source_hashes,
     };
@@ -301,21 +500,106 @@ pub fn build_eos(paths: &Paths) -> Result<BuildReceipt> {
         &stage.join("receipt.json"),
         &serde_json::to_vec_pretty(&receipt)?,
     )?;
-    config::atomic_write(
-        &base.join("current.json"),
-        &serde_json::to_vec_pretty(&receipt)?,
-    )?;
     Ok(receipt)
 }
 
 pub fn selected(paths: &Paths) -> Result<Option<BuildReceipt>> {
-    let path = paths.data.join("builds/eos/current.json");
+    let pin = paths.config.join("pins/eos.json");
+    let path = if pin.exists() {
+        pin
+    } else {
+        paths.data.join("builds/eos/current.json")
+    };
     if !path.exists() {
         return Ok(None);
     }
     let receipt: BuildReceipt = serde_json::from_slice(&fs::read(path)?)?;
     verify(&receipt)?;
+    verify_source(paths, &receipt)?;
     Ok(Some(receipt))
+}
+
+pub fn verify_source(paths: &Paths, receipt: &BuildReceipt) -> Result<()> {
+    if paths.mode()? == "product" {
+        ensure!(
+            !receipt.source_dirty && !receipt.source_fingerprint.is_empty(),
+            "product mode requires a clean, fingerprinted EOS receipt"
+        );
+    }
+    if paths.mode()? == "dev"
+        && !receipt.source_fingerprint.is_empty()
+        && let Some(root) = &receipt.source_root
+        && root.is_dir()
+    {
+        let (commit, _, fingerprint) = source_identity(root)?;
+        ensure!(
+            commit == receipt.source_commit && fingerprint == receipt.source_fingerprint,
+            "EOS source changed since selected build; run `isos build eos`, then `isos version select eos <commit>`"
+        );
+    }
+    Ok(())
+}
+
+pub fn candidates(paths: &Paths) -> Result<Vec<BuildReceipt>> {
+    let base = paths.data.join("builds/eos");
+    if !base.exists() {
+        return Ok(Vec::new());
+    }
+    let mut found = Vec::new();
+    for entry in fs::read_dir(base)? {
+        let path = entry?.path().join("receipt.json");
+        if path.is_file() {
+            found.push(serde_json::from_slice(&fs::read(path)?)?);
+        }
+    }
+    Ok(found)
+}
+
+pub fn select_eos(
+    paths: &Paths,
+    name: &str,
+    version: &str,
+    expected_revision: &str,
+) -> Result<BuildReceipt> {
+    crate::v2_process::validate_deployment_name(name)?;
+    let matches: Vec<_> = candidates(paths)?
+        .into_iter()
+        .filter(|r| {
+            r.source_commit == version
+                || r.source_commit.starts_with(version)
+                || r.product_version == version
+        })
+        .collect();
+    ensure!(
+        matches.len() == 1,
+        "expected one EOS build matching {version}; found {}",
+        matches.len()
+    );
+    let receipt = matches.into_iter().next().unwrap();
+    verify(&receipt)?;
+    verify_source(paths, &receipt)?;
+    let _lock = crate::lifecycle::Lock::take(paths)?;
+    let graph_path = paths.v2_node_graph(name);
+    let previous = fs::read(&graph_path)?;
+    ensure!(
+        hex::encode(Sha256::digest(&previous)) == expected_revision,
+        "node graph revision changed; reload before selecting EOS"
+    );
+    let graph: serde_json::Value = serde_json::from_slice(&previous)?;
+    let suggested = suggest_graph(&graph, &receipt)?;
+    crate::v2_process::validate_value(paths, &suggested)?;
+    let pin = paths.config.join("pins/eos.json");
+    let old_pin = fs::read(&pin).ok();
+    config::atomic_write(&pin, &serde_json::to_vec_pretty(&receipt)?)?;
+    if let Err(error) = config::atomic_write(&graph_path, &serde_json::to_vec_pretty(&suggested)?) {
+        if let Some(old) = old_pin {
+            let _ = config::atomic_write(&pin, &old);
+        } else {
+            let _ = fs::remove_file(&pin);
+        }
+        return Err(error);
+    }
+    Ok(receipt)
 }
 
 pub fn verify(receipt: &BuildReceipt) -> Result<()> {
@@ -386,6 +670,62 @@ mod tests {
     }
 
     #[test]
+    fn isos_receipt_rejects_artifact_damage() {
+        let temp = tempfile::tempdir().unwrap();
+        let executable = temp.path().join("isos");
+        fs::write(&executable, b"first").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let receipt = IsosReceipt {
+            schema_version: 1,
+            product_version: env!("CARGO_PKG_VERSION").into(),
+            source_commit: "a".repeat(40),
+            source_dirty: false,
+            source_fingerprint: "b".repeat(64),
+            executable: executable.clone(),
+            sha256: digest(&executable).unwrap(),
+        };
+        verify_isos(&receipt).unwrap();
+        fs::write(executable, b"second").unwrap();
+        assert!(verify_isos(&receipt).is_err());
+    }
+
+    #[test]
+    fn source_identity_changes_with_uncommitted_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        for args in [
+            vec!["init", "-q"],
+            vec![
+                "-c",
+                "user.name=IsOS Test",
+                "-c",
+                "user.email=test@localhost",
+                "commit",
+                "-qm",
+                "initial",
+                "--allow-empty",
+            ],
+        ] {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        let (_, clean, before) = source_identity(root).unwrap();
+        assert!(!clean);
+        fs::write(root.join("source.rs"), "one").unwrap();
+        let (_, dirty, after) = source_identity(root).unwrap();
+        assert!(dirty);
+        assert_ne!(before, after);
+    }
+
+    #[test]
     fn suggested_graph_changes_only_process_executable_paths() {
         let mut binaries = BTreeMap::new();
         for name in EOS_BINARIES {
@@ -396,6 +736,9 @@ mod tests {
             component: "eos".into(),
             product_version: "2.0.0".into(),
             source_commit: "a".repeat(40),
+            source_dirty: false,
+            source_fingerprint: String::new(),
+            source_root: None,
             binaries,
             sha256: BTreeMap::new(),
         };

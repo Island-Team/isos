@@ -26,6 +26,12 @@ pub struct Receipt {
     pub manifest: Manifest,
     pub directory: PathBuf,
     pub sha256: String,
+    #[serde(default)]
+    pub source_dirty: bool,
+    #[serde(default)]
+    pub source_fingerprint: String,
+    #[serde(default)]
+    pub source_root: Option<PathBuf>,
 }
 
 fn build_root(paths: &Paths) -> PathBuf {
@@ -137,10 +143,10 @@ pub fn build(paths: &Paths) -> Result<Receipt> {
         .ok_or_else(|| anyhow::anyhow!("ISOSUI_REPO_PATH is required for isos build isosui"))?;
     ensure!(root.is_dir(), "ISOSUI_REPO_PATH is not a directory");
     let root = root.canonicalize()?;
-    let commit = command(&root, "git", &["rev-parse", "HEAD"])?;
+    let (commit, dirty, fingerprint) = crate::v2_build::source_identity(&root)?;
     ensure!(
-        command(&root, "git", &["status", "--porcelain"])?.is_empty(),
-        "IsosUI source has uncommitted changes; commit first"
+        paths.mode()? != "product" || !dirty,
+        "product IsosUI build requires clean source"
     );
     command(&root, "npm", &["ci"])?;
     command(&root, "npm", &["run", "build:local"])?;
@@ -151,7 +157,7 @@ pub fn build(paths: &Paths) -> Result<Receipt> {
         "IsosUI manifest source_commit differs from checkout"
     );
     let source_hash = digest(&output)?;
-    let destination = build_root(paths).join(&commit);
+    let destination = build_root(paths).join(format!("{}-{}", commit, &fingerprint[..12]));
     if destination.exists() {
         ensure!(
             digest(&destination)? == source_hash,
@@ -170,20 +176,26 @@ pub fn build(paths: &Paths) -> Result<Receipt> {
         );
         fs::rename(&staging, &destination)?;
     }
+    let receipt_path = build_root(paths).join(format!(
+        "{}-{}-{}.json",
+        commit,
+        &fingerprint[..12],
+        &source_hash[..12]
+    ));
     let receipt = Receipt {
         schema_version: 1,
         manifest: identity,
         directory: destination,
         sha256: source_hash,
+        source_dirty: dirty,
+        source_fingerprint: fingerprint,
+        source_root: Some(root),
     };
-    config::atomic_write(
-        &build_root(paths).join(format!("{commit}.json")),
-        &serde_json::to_vec_pretty(&receipt)?,
-    )?;
+    config::atomic_write(&receipt_path, &serde_json::to_vec_pretty(&receipt)?)?;
     Ok(receipt)
 }
 
-fn verify(receipt: &Receipt) -> Result<()> {
+pub fn verify(receipt: &Receipt) -> Result<()> {
     ensure!(
         receipt.schema_version == 1,
         "unknown IsosUI build receipt schema"
@@ -197,6 +209,39 @@ fn verify(receipt: &Receipt) -> Result<()> {
         "IsosUI build digest changed"
     );
     Ok(())
+}
+
+pub fn selected_bundle(paths: &Paths) -> Result<PathBuf> {
+    let receipt = read_pin(paths)?.context(
+        "IsosUI is unselected; run `isos build isosui` and `isos version select isosui <commit>`",
+    )?;
+    verify(&receipt)?;
+    if paths.mode()? == "product" {
+        ensure!(
+            !receipt.source_dirty && !receipt.source_fingerprint.is_empty(),
+            "product mode requires a clean, fingerprinted IsosUI receipt"
+        );
+    }
+    if paths.mode()? == "dev"
+        && !receipt.source_fingerprint.is_empty()
+        && let Some(root) = &receipt.source_root
+        && root.is_dir()
+    {
+        let (commit, _, fingerprint) = crate::v2_build::source_identity(root)?;
+        ensure!(
+            commit == receipt.manifest.source_commit && fingerprint == receipt.source_fingerprint,
+            "IsosUI source changed since selected build; run `isos build isosui`, then `isos version select isosui <commit>`"
+        );
+    }
+    Ok(receipt.directory)
+}
+
+pub fn selected_receipt(paths: &Paths) -> Result<Option<Receipt>> {
+    let receipt = read_pin(paths)?;
+    if let Some(ref receipt) = receipt {
+        verify(receipt)?;
+    }
+    Ok(receipt)
 }
 
 fn candidates(paths: &Paths) -> Result<Vec<Receipt>> {
@@ -229,6 +274,8 @@ pub fn pin(paths: &Paths, version: &str) -> Result<Receipt> {
             r.manifest.version == version
                 || r.manifest.source_commit == version
                 || r.manifest.source_commit.starts_with(version)
+                || r.sha256.starts_with(version)
+                || r.source_fingerprint.starts_with(version)
         })
         .collect();
     ensure!(
@@ -292,6 +339,9 @@ mod tests {
             manifest: identity,
             directory: directory.clone(),
             sha256: digest(&directory).unwrap(),
+            source_dirty: false,
+            source_fingerprint: String::new(),
+            source_root: None,
         };
         config::atomic_write(&pin_path(&paths), &serde_json::to_vec(&receipt).unwrap()).unwrap();
         assert_eq!(check(&paths).unwrap()["status"], "pinned");
