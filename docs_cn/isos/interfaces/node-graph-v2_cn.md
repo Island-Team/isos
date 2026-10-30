@@ -8,9 +8,9 @@
 
 ## 后端节点
 
-新的软件包贡献 MuJoCo 后端使用 `eos.process.mujoco@v1.0`，路径为 `cores/eos/layers/process/groups/mujoco/nodes/<id>`。精确包版本写在 `profile.package:{id,version}`；设置包含 `scene`、`socket`、可选 `env` 与 `start_timeout_ms`，类型和限制见下表。旧内置后端类型及其 `settings.package`/`settings.version` 对已保存图继续有效。软件包贡献的相机、底盘、机械臂实例位于 `cores/eos/layers/hardware/groups/mujoco`，设备类别由注册的节点类型确定，不由共同分组推断。
+新的软件包贡献 MuJoCo 进程节点使用 `eos.process.mujoco@v1.0`，路径为 `eos/process/mujoco/<id>`。精确包版本写在 `profile.package:{id,version}`；设置包含 `scene`、`socket`、可选 `env` 与 `start_timeout_ms`，类型和限制见下表。旧内置后端类型及其 `settings.package`/`settings.version` 对已保存图继续有效。相机、底盘、机械臂设备分别使用 `eos/hardware/camera/<id>`、`eos/hardware/base/<id>` 和 `eos/hardware/manipulator/<id>` 下的通用 EOS 类型。每台设备在 `profile.adapter` 中选择固定软件包版本的适配器系列；通用硬件节点类型不归软件包所有。
 
-路径：`cores/eos/layers/process/groups/backend/nodes/<id>`。类型：`eos.process.backend@v1.0`。节点只配置运行方式；`backend-v2.json` 是软件包元数据，相机帧和运动命令使用独立的 Rust 数据结构。可执行文件和场景路径由 IsOS 从校验过的软件包推导，不在节点中填写命令。
+旧路径：`cores/eos/layers/process/groups/backend/nodes/<id>`。旧类型：`eos.process.backend@v1.0`。节点只配置运行方式；`backend-v2.json` 是软件包元数据，相机帧和运动命令使用独立的 Rust 数据结构。可执行文件和场景路径由 IsOS 从校验过的软件包推导，不在节点中填写命令。
 
 | 设置 | Rust 类型 | 单位 | 用途与校验 |
 | --- | --- | --- | --- |
@@ -59,6 +59,6 @@ IsOS 将已验证的可执行文件、场景路径和 MuJoCo 库路径传给 EOS
 
 ## 标准节点路径与原语绑定
 
-节点引用采用 `<core>/<layer>/<group>/<node>` 四段非空路径。图的存储结构仍嵌套在 `cores`、`layers`、`groups`、`nodes` 下。节点集合预览会在返回的草稿中原子地转换旧八段式引用；保存仍须经过带修订校验的 Apply。MuJoCo 替换预览仅移除精确匹配的旧后端及相机、底盘、机械臂实例，并将现有控制引用改接至对应新节点；无关节点和控制保持不变。
+节点引用采用 `<core>/<layer>/<group>/<node>` 四段非空路径。图的存储结构仍嵌套在 `cores`、`layers`、`groups`、`nodes` 下。节点集合预览会在返回的草稿中原子地转换旧八段式引用；保存仍须经过带修订校验的 Apply。MuJoCo 替换预览仅移除精确匹配的旧后端及相机、底盘、机械臂实例，并将现有控制引用改接至对应新节点。预览会清理替换后为空的组，并把旧模拟器的环境设置（包括操作员指定的 MuJoCo 库和 GUI 设置）带入新节点；无关节点和控制保持不变。
 
 `eos.dispatcher.primitive_base@v1.0` 与 `eos.dispatcher.primitive_manipulator@v1.0` 是绑定节点。其 `settings` 用字符串 `primitive_name`、`primitive_version`、`movement_type` 指定原语。硬件 `inputs.command` 是来自绑定节点的 `{node,output}` 边数组；每个绑定输出必须连接到一个兼容硬件节点。适配器实现由硬件实例的 `adapter.type` 选择，与通用硬件节点类型独立。IsOS Vision 配置为 `isos.ui.vision@v1.0`，放在 `isos/ui/panel` 下，是内部 UI 节点，不作为进程监管。
