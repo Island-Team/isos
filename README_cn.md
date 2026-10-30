@@ -4,6 +4,8 @@ IsOS 管理共享 Aether v2 图、后端软件包、本地工作台 API 和直�
 
 ## 启动 MuJoCo 部署
 
+从 v2 `master` 源码目录运行 `./install.sh` 以替换已安装的 IsOS 命令。安装程序会停止旧部署及旧版 `isos-server.service`，删除已废弃的 UI 令牌，并强制安装当前源码构建的可执行文件。随后用 `isos --version` 确认版本为 `2.0.0`。`isos stop` 也能停止残留的旧版 IsOS 服务。v2 的 `isos init` 服务在当前终端运行，按 Ctrl+C 退出。
+
 构建并安装 IsOS、IsosUI 本地构建（`npm run build:local`）及 Aether Rust 可执行文件（`aether-profile`、`aether-runtime`、`aether-http-bridge`、`aether-config-server`）。将 Aether 可执行文件放在 `isos` 旁边或 `PATH` 中，或者在运行 `isos init` 前把 `ISOS_AETHER_BIN_DIR` 设为其绝对构建目录。将 `ISOSUI_REPO_PATH` 指向已构建的 IsosUI 仓库，或将 `ISOS_WEB_DIST` 指向其 `dist/local` 目录；IsOS 也会读取命令工作目录下 `.env` 中的这些设置。在 MuJoCo 仓库构建仿真器，并用 `tools/build-backend-bundle.py` 制作 v2 包。把 `MUJOCO_ROOT` 指向已安装的 MuJoCo 运行环境，然后执行：
 
 ```sh

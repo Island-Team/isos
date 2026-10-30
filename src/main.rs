@@ -938,6 +938,20 @@ fn v2_call(paths: &config::Paths, name: &str, op: &str) -> Result<Value> {
     v2_call_revision(paths, name, op, None)
 }
 
+fn stop_legacy_server() -> Result<bool> {
+    let active = Command::new("systemctl")
+        .args(["--user", "is-active", "--quiet", "isos-server.service"])
+        .status();
+    if !active.is_ok_and(|status| status.success()) {
+        return Ok(false);
+    }
+    let stopped = Command::new("systemctl")
+        .args(["--user", "stop", "isos-server.service"])
+        .status()?;
+    ensure!(stopped.success(), "failed to stop legacy IsOS server");
+    Ok(true)
+}
+
 fn v2_call_revision(
     paths: &config::Paths,
     name: &str,
@@ -1081,10 +1095,14 @@ fn main_run() -> Result<()> {
             wait_for_interrupt(&paths, &name)?;
         }
         CommandLine::Stop => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&v2_call(&paths, &name, "v2_stop")?)?
-            );
+            let legacy_stopped = stop_legacy_server()?;
+            match v2_call(&paths, &name, "v2_stop") {
+                Ok(result) => println!("{}", serde_json::to_string_pretty(&result)?),
+                Err(_) if legacy_stopped => {
+                    println!("{}", json!({"stopped":["isos-server.service"]}))
+                }
+                Err(error) => return Err(error),
+            }
         }
         CommandLine::Restart => {
             catch_interrupts()?;

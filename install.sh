@@ -10,8 +10,25 @@ else
   exit 127
 fi
 INSTALL_ROOT="${ISOS_INSTALL_ROOT:-${CARGO_HOME:-${HOME}/.cargo}}"
+# Stop the previous deployment before replacing its executable. Older IsOS
+# releases left the API in a transient user service after `isos init` exited.
+if [[ -x "$INSTALL_ROOT/bin/isos" ]]; then
+  "$INSTALL_ROOT/bin/isos" stop >/dev/null 2>&1 || true
+fi
+if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active --quiet isos-server.service; then
+  systemctl --user stop isos-server.service
+  echo "Stopped the legacy isos-server.service"
+fi
+RUNTIME_ROOT="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/isos"
+rm -f "$RUNTIME_ROOT/ui-token"
 "$ROOT/build.sh"
-"$CARGO_BIN" install --path "$ROOT" --root "$INSTALL_ROOT"
+"$CARGO_BIN" install --force --locked --path "$ROOT" --root "$INSTALL_ROOT"
+EXPECTED_VERSION="$("$ROOT/target/release/isos" --version)"
+INSTALLED_VERSION="$("$INSTALL_ROOT/bin/isos" --version)"
+if [[ "$EXPECTED_VERSION" != "$INSTALLED_VERSION" ]]; then
+  echo "Installed IsOS version does not match this checkout: $INSTALLED_VERSION != $EXPECTED_VERSION" >&2
+  exit 1
+fi
 if [[ -n "${ISOS_HOME:-}" ]]; then
   CONFIG_ROOT="$ISOS_HOME/config"
 else
