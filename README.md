@@ -26,6 +26,8 @@ isos run
 
 `isos init` creates the editable graph only when absent and starts the local IsOS workbench server. Home shows package readiness and revisions. Graph edits the one `2.0.0` IsOS/EOS/EGIA graph with versioned `v1.0` node types. Validate and Apply save a revision; Run rechecks the exact package, graph, scene, executable, assets, and MuJoCo dependency. Install or link alone never changes an active deployment. EOS and EGIA have separate workbench pages, with EGIA runtime controls reserved for later.
 
+When a v2 MuJoCo bundle is already linked or installed, a new graph selects its pinned version and first advertised scene. Existing authored graphs are preserved.
+
 IsOS uses `~/.config/isos/deployments/<name>.nodes.json`, `~/.local/share/isos/packages/`, and `$XDG_RUNTIME_DIR/isos/` by default. `ISOS_HOME` creates isolated `config/`, `data/`, and `run/` directories for testing. The owner-only control socket is in the runtime directory; the browser API listens on `127.0.0.1:16000`. A local IsosUI bundle may also be pinned separately.
 
 To use an archive instead of a local link, run `isos pkg verify <manifest> <asset>` and `isos pkg install --manifest <manifest> --asset <asset> --allow-unapproved` for a local candidate. Approved catalog packages can use `isos pkg install island/mujoco-sim --version 2.0.0` when published. `isos pkg remove` rejects packages referenced by an applied graph.

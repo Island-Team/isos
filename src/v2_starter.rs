@@ -91,14 +91,23 @@ pub fn draft(paths: &Paths, name: &str) -> Result<Value> {
         "depends_on".into(),
         json!(["cores/isos/layers/process/groups/backend/nodes/simulator"]),
     );
-    if let Some(first) = v2_backend::installed(paths).first()
-        && let Some(version) = first.get("version")
-    {
-        at(
-            &mut graph,
-            "/cores/isos/layers/process/groups/backend/nodes/simulator/settings/version",
-        )?
-        .clone_from(version);
+    if let Some(first) = v2_backend::installed(paths).into_iter().find(|backend| {
+        backend
+            .get("scenes")
+            .and_then(Value::as_array)
+            .is_some_and(|scenes| !scenes.is_empty())
+    }) {
+        let backend_settings = "/cores/isos/layers/process/groups/backend/nodes/simulator/settings";
+        if let Some(version) = first.get("version") {
+            at(&mut graph, &format!("{backend_settings}/version"))?.clone_from(version);
+        }
+        if let Some(scene) = first
+            .get("scenes")
+            .and_then(Value::as_array)
+            .and_then(|scenes| scenes.first())
+        {
+            at(&mut graph, &format!("{backend_settings}/scene"))?.clone_from(scene);
+        }
     }
     Ok(graph)
 }
@@ -120,6 +129,42 @@ pub fn revision(path: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn starter_uses_installed_backend_scene_and_version() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        paths.prepare().unwrap();
+        let bundle = temp.path().join("bundle");
+        fs::create_dir_all(&bundle).unwrap();
+        fs::write(
+            bundle.join("backend-v2.json"),
+            serde_json::to_vec(&json!({
+                "schema_version": "2.0.0",
+                "package": {"id": "island/mujoco-sim", "version": "2.0.0"},
+                "entrypoint": "bin/eos-mujoco-sim",
+                "protocol": "mujoco-v2",
+                "scenes": [{"id": "pick-place", "path": "assets/scene.xml"},
+                           {"id": "navigation", "path": "assets/navigation.xml"}],
+                "devices": {"camera": "cam-0", "base": "base-0", "manipulator": "arm-0"},
+                "runtime": {"mujoco_version": "3.16.0", "environment_variable": "MUJOCO_ROOT",
+                            "library": "lib/libmujoco.so.3.16.0"}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        crate::packages::link(&paths, "island/mujoco-sim", "2.0.0", &bundle).unwrap();
+        let graph = draft(&paths, "robot-a").unwrap();
+        let settings = graph
+            .pointer("/cores/isos/layers/process/groups/backend/nodes/simulator/settings")
+            .unwrap();
+        assert_eq!(settings["version"], "2.0.0");
+        assert_eq!(settings["scene"], "pick-place");
+    }
 
     #[test]
     fn init_keeps_authored_graph_and_uses_private_runtime_socket() {
