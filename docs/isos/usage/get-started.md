@@ -2,23 +2,29 @@
 
 [中文](../../../docs_cn/isos/usage/get-started_cn.md)
 
-Install IsOS and the Aether Rust binaries. Build the MuJoCo C++ simulator, set `MUJOCO_ROOT`, and stage a bundle with the MuJoCo repository's `tools/build-backend-bundle.py`. Link the exact bundle version, then initialize a graph:
+Install IsOS, then initialize a development home. `init` writes configuration and an editable starter graph only when absent, then exits. It does not start the manager or UI.
 
 ```sh
-isos pkg link island/mujoco-sim 2.0.0 /absolute/path/to/bundle
-isos init
+isos init --mode dev
+isos build eos
+isos version select eos <staged-commit-or-fingerprint>
+isos build isosui
+isos version select isosui <staged-commit>
+isos serve
 ```
 
-Leave `isos init` running in this terminal. It owns the workbench server and process manager; Ctrl+C stops both and their children. In a second terminal, run `isos open` and edit the graph.
+`isos serve` runs the manager, API, and verified static IsosUI in the foreground. Run `isos open` in another terminal. Use `isos serve --ui-live` only when developing the frontend from an IsosUI checkout with npm dependencies installed. Product mode requires clean, selected builds and serves the pinned UI without npm or source checkouts. See the [README](../../../README.md) for product setup.
 
-Home shows installed packages, prerequisites, saved and active revisions, process status, and logs. Build graph edits the shared IsOS/EOS/EGIA/IsosUI graph. The starter graph has EOS runtime, HTTP bridge, catalog, and dispatcher nodes. Preview the installed `sim-hardware` node set to add the MuJoCo backend, camera, base, manipulator, camera gate, and Vision node; choose the scene and inspect the preview, then Validate and Apply. Run starts the applied graph. CLI equivalents are:
+Build the MuJoCo simulator and stage a `2.0.0` bundle with its repository's `tools/build-backend-bundle.py`; set `MUJOCO_ROOT` to the matching runtime. Link the bundle and preview its `sim-hardware` node set in the Graph workbench. The starter graph contains EOS process and dispatcher nodes but no hardware package. The preview adds the MuJoCo process, camera, base, manipulator, gate, and Vision nodes. Choose a scene, inspect the draft, then Validate and Apply. CLI equivalents are:
 
 ```sh
+isos pkg link island/mujoco-sim 2.0.0 /absolute/path/to/bundle --manifest /absolute/path/to/bundle/release.json
+isos pkg node-sets
 isos config validate ~/.config/isos/deployments/default.nodes.json
 isos config apply ~/.config/isos/deployments/default.nodes.json
 isos run
 ```
 
-`run`, `start`, and `restart` remain attached to the terminal. Ctrl+C requests a clean stop. Use another terminal for `status`, `logs`, or `stop` while the deployment is running.
+`run`, `start`, and `restart` stay attached. Ctrl+C stops the deployment. In another terminal, `isos status --json` shows the manager and active revision; `isos version check` compares configured, selected, and active identities. `isos deployment stop` stops only the graph, while `isos stop` also stops services, UI, API, and manager. Repeated stops succeed.
 
-Run rechecks the exact package and graph, starts EOS, and lets EOS start MuJoCo before admitting hardware operations. Stop terminates EOS and its simulator child. Installing a package or changing an editor draft does not alter running processes; apply and restart to activate a new revision. A local link is revalidated on every apply/run. See [package commands](packages.md) and [graph fields](../interfaces/node-graph-v2.md).
+Run rechecks the exact graph revision, executable receipts, package, scene, and assets. EOS starts and owns its MuJoCo child. Installing a package, staging a build, or editing a draft does not alter an active deployment; select or apply the change and restart explicitly. See [package commands](packages.md), [graph fields](../interfaces/node-graph-v2.md), and the [independent services contract](../interfaces/services.md).

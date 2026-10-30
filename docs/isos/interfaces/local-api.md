@@ -30,9 +30,15 @@ The API binds only to `127.0.0.1` and serves no frontend files. IsosUI calls it 
 
 The process manager validates the saved graph and exact package again before starting children. EOS starts MuJoCo as its direct child and stops it after admitted actuators are stopped. Graph layout belongs to the editor; the HTTP graph contains runtime configuration and typed connections only.
 
-Log `source` may be `isos`, `packages`, `graph`, `ui`, `eos`, `egia`, `mujoco`, `bridge`, `config`, or a validated child ID. `limit` is 1–200 (default 100). Each line has an RFC 3339 UTC `timestamp` string, `level` string (`info` or `error` for child streams), `source` string, and `message` string. `next_cursor` is a string even when no more lines are available; poll with it for later writes. Files have a `0700` directory and `0600` regular-file permissions, rotate after `[logging].max_bytes` bytes (default 1 MiB), and retain `[logging].backups` copies (default 3). The legacy process endpoint reads mirrored raw lines.
+## Owner-only manager operations
 
-`[logging].level` filters file records at or above `trace < debug < info < warn < error` (default `info`). Child stdout is `info`, stderr is `error`; `warn` and `error` suppress stdout in both categorized and legacy files while retaining errors. Terminal status and command errors are unaffected.
+The Unix socket accepts one JSON request per line: `{schema_version:1,op,deployment?,revision?,service_id?,cursor?,limit?}`. It replies `{schema_version:1,ok,data,error}`. The manager checks peer UID before processing. `manager_identity` returns `pid` (process ID), `start_ticks` (Linux process start identity), `mode` (`dev` or `product`), `executable` (absolute path), `executable_sha256` (digest), IsOS/API/service-contract versions, `api_origin`, and `ui_url`. Use this identity to distinguish an existing IsOS owner from a foreign port listener; a port number alone never confers ownership.
+
+`manager_shutdown` stops all graph children and independent services, then ends the API, UI, and manager. `v2_stop` affects only the requested deployment. `services_list`, `services_validate`, `services_status`, `services_start`, `services_stop`, `services_restart`, and `services_logs` operate on the [independent service definitions](services.md); start/stop/restart/logs require `service_id`, and logs accepts opaque `cursor` plus `limit` 1–200. A CLI with a different executable digest may still request shutdown but cannot start or restart deployment or services. `isos status --json` combines deployment status, manager identity, and service statuses; `isos version check` compares configured, selected, and active identities.
+
+Log `source` may be `all`, `isos`, `services`, a service source such as `service-gateway`, `packages`, `graph`, `ui`, `eos`, `egia`, `mujoco`, `bridge`, `config`, or a validated child ID. `limit` is 1–200 (default 100). Each line has an RFC 3339 UTC `timestamp`, a `level` (including structured child severity where available), `source`, `message`, and optional `event_code` and `pid`. Unstructured child stderr is recorded as `warn`. `next_cursor` is a string even when no more lines are available; poll with it for later writes. Files have a `0700` directory and `0600` regular-file permissions, rotate after `[logging].max_bytes` bytes (default 1 MiB), and retain `[logging].backups` copies (default 3). The legacy process endpoint reads mirrored raw lines.
+
+`[logging].level` filters file records at or above `trace < debug < info < warn < error` (default `info`). Unstructured child stdout is `info` and stderr is `warn`; structured child severity takes precedence. The UI severity selector filters displayed entries without changing recording. Terminal status and command errors are unaffected.
 
 When an applied graph has a MuJoCo package, IsOS passes the deployment log directory to EOS runtime. EOS alone writes and rotates `mujoco.log` using the same JSON line and permission contract; IsOS reads it through this API.
 
@@ -44,7 +50,7 @@ IsOS reads `~/.config/isos/config.toml` (or `ISOS_HOME/config/config.toml`) if p
 | --- | --- | --- | --- |
 | `server.http_port` | integer TCP port | IsOS loopback API; 1024–65535 | `ISOS_HTTP_PORT` |
 | `server.ui_port` | integer TCP port | IsosUI loopback frontend; 1024–65535, different from HTTP port | `ISOSUI_PORT` |
-| `paths.ui_repo` | absolute path string | IsosUI repository with npm dependencies | `ISOSUI_REPO_PATH` |
+| `paths.ui_repo` | absolute path string | IsosUI source repository for builds or explicit `--ui-live`; npm dependencies are required only for live mode | `ISOSUI_REPO_PATH` |
 | `paths.aether_bin_dir` | absolute path string | Aether Rust executable directory | `ISOS_AETHER_BIN_DIR` |
 | `paths.mujoco_root` | absolute path string | Optional MuJoCo runtime root | `MUJOCO_ROOT` |
 | `deployment.name` | slug string | Default graph/log namespace; validated deployment name | `ISOS_DEPLOYMENT` |

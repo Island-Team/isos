@@ -4,7 +4,7 @@
 
 位于 `~/.config/isos/deployments/<name>.nodes.json`（或 `ISOS_HOME/config/deployments/`）的 `2.0.0` 图同时配置 IsOS、EOS 与仅供设计的 EGIA 节点。节点类型声明 core、layer、group、字段与端口；节点实例提供 ID 和设置。当前节点类型版本为 `v1.0`。应用前以及运行前都执行 `aether-profile validate --file <graph>`；IsOS 随后校验软件包进程投影。图的 SHA-256 是保存修订号，运行中的进程保持其修订号直到重启。
 
-`isos init` 只在图不存在时创建可编辑图，。新草稿包含 EOS 进程节点与调度器；预览已安装软件包的节点集合后再添加硬件。`isos config validate <file>` 校验软件包和图；`isos config apply <file>` 保存规范化 JSON；`isos run`、`restart`、`stop`、`status` 和 `logs <node>` 通过仅所有者可访问的直接子进程管理器工作。EOS 在准入硬件操作前启动 MuJoCo，并在 EOS 停止时终止它。安装或链接软件包不会改变运行中的部署。
+`isos init` 只在图不存在时创建可编辑图，然后退出。新草稿包含 EOS 进程节点与调度器；预览已安装软件包的节点集合后再添加硬件。`isos config validate <file>` 校验软件包和图；`isos config apply <file>` 保存规范化 JSON。`isos serve` 运行仅所有者可访问的管理器和界面。`isos run` 与 `restart` 保持前台运行；`isos deployment stop` 只停止该图，`isos stop` 关闭管理器及所有所属子进程。EOS 在准入硬件操作前启动 MuJoCo，并在 EOS 停止时终止它。安装或链接软件包不会改变运行中的部署。
 
 ## 后端节点
 
