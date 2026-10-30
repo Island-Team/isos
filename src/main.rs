@@ -1691,9 +1691,16 @@ fn main_run() -> Result<()> {
             }
         }
         CommandLine::Open => {
+            v2_call(&paths, &name, "manager_identity")?;
             let url = http::ui_url()?;
+            Command::new("xdg-open")
+                .arg(&url)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .context("launch IsosUI with xdg-open")?;
             println!("{url}");
-            let _ = Command::new("xdg-open").arg(url).spawn();
         }
         CommandLine::Run => {
             catch_interrupts()?;

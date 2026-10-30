@@ -24,6 +24,8 @@ isos serve
 
 在第二个终端执行：
 
+`isos open` 要求 `isos serve` 管理器已运行；它会输出 UI 地址并启动浏览器，不会把桌面工具包的诊断信息转发到终端。
+
 ```sh
 isos open
 isos pkg link island/mujoco-sim 2.0.0 /absolute/path/to/bundle --manifest /absolute/path/to/bundle/release.json
