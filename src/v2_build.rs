@@ -599,11 +599,7 @@ pub fn select_eos(
     crate::v2_process::validate_deployment_name(name)?;
     let matches: Vec<_> = candidates(paths)?
         .into_iter()
-        .filter(|r| {
-            r.source_commit == version
-                || r.source_commit.starts_with(version)
-                || r.product_version == version
-        })
+        .filter(|r| eos_selector_matches(r, version))
         .collect();
     ensure!(
         matches.len() == 1,
@@ -635,6 +631,13 @@ pub fn select_eos(
         return Err(error);
     }
     Ok(receipt)
+}
+
+fn eos_selector_matches(receipt: &BuildReceipt, selector: &str) -> bool {
+    receipt.source_commit.starts_with(selector)
+        || receipt.product_version == selector
+        || (!receipt.source_fingerprint.is_empty()
+            && receipt.source_fingerprint.starts_with(selector))
 }
 
 pub fn verify(receipt: &BuildReceipt) -> Result<()> {
@@ -692,6 +695,29 @@ pub fn suggest_graph(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fingerprint_selects_one_build_when_commit_is_shared() {
+        let legacy = BuildReceipt {
+            schema_version: 2,
+            component: "eos".into(),
+            product_version: "2.0.0".into(),
+            source_commit: "a".repeat(40),
+            source_dirty: false,
+            source_fingerprint: String::new(),
+            source_root: None,
+            binaries: BTreeMap::new(),
+            sha256: BTreeMap::new(),
+        };
+        let current = BuildReceipt {
+            source_fingerprint: "b".repeat(64),
+            ..legacy.clone()
+        };
+        assert!(eos_selector_matches(&legacy, &"a".repeat(12)));
+        assert!(eos_selector_matches(&current, &"a".repeat(12)));
+        assert!(!eos_selector_matches(&legacy, &"b".repeat(12)));
+        assert!(eos_selector_matches(&current, &"b".repeat(12)));
+    }
 
     #[test]
     fn capability_probe_rejects_stale_runtime() {

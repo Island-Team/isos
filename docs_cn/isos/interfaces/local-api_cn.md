@@ -54,7 +54,7 @@ IsOS 会读取存在的 `~/.config/isos/config.toml`（或 `ISOS_HOME/config/con
 
 ## Rust 程序与选择器契约
 
-`receipt` 包含 `schema_version`（整数 2）、`component`（`eos`）、`product_version`（`2.0.0`）、`source_commit`（完整 Git SHA）、`source_dirty`（源码有修改或未跟踪文件时为 true）、`source_fingerprint`（提交和源码文件的 SHA-256）、`source_root`（用于开发环境漂移检查的可选绝对源码路径）、`binaries`（按程序名索引的绝对路径）和 `sha256`（文件摘要）。构建会将五个 Aether 程序作为同一集合放入 IsOS 私有数据目录，但不会改变已选构建。产品模式仅接纳干净且带源码指纹的收据。Run 会探测 EOS、bridge、config 与 profile 的精确能力；程序过旧或图指向其他程序时直接报错。`suggested_graph` 为 `{revision,graph}` 或 null，不会自动应用。CLI `isos build eos` 使用同一构建服务；选择接口或 `isos version select eos <commit>` 校验图修订后再应用三个程序路径和固定选择。
+`receipt` 包含 `schema_version`（整数 2）、`component`（`eos`）、`product_version`（`2.0.0`）、`source_commit`（完整 Git SHA）、`source_dirty`（源码有修改或未跟踪文件时为 true）、`source_fingerprint`（提交和源码文件的 SHA-256）、`source_root`（用于开发环境漂移检查的可选绝对源码路径）、`binaries`（按程序名索引的绝对路径）和 `sha256`（文件摘要）。构建会将五个 Aether 程序作为同一集合放入 IsOS 私有数据目录，但不会改变已选构建。产品模式仅接纳干净且带源码指纹的收据。Run 会探测 EOS、bridge、config 与 profile 的精确能力；程序过旧或图指向其他程序时直接报错。`suggested_graph` 为 `{revision,graph}` 或 null，不会自动应用。CLI `isos build eos` 使用同一构建服务；选择接口或 `isos version select eos <selector>` 校验图修订后再应用三个程序路径和固定选择。选择器接受唯一的提交前缀、产品版本或源码指纹前缀；同一提交有多个构建时使用指纹。
 
 IsOS 和 IsosUI 构建使用独立的不可变收据，并记录相同的源码身份字段。`isos build isos` 暂存 release 可执行文件；`isos version select isos <commit>` 要求先停止管理器，再激活该程序。IsosUI 收据还将目录摘要绑定到清单；产品模式仅从已选择且校验通过的目录提供页面。
 
