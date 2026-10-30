@@ -105,7 +105,14 @@ impl LogStore {
 
     fn path(&self, source: &str) -> Result<PathBuf> {
         ensure!(source_valid(source), "invalid log source");
-        Ok(self.root.join(format!("{source}.log")))
+        Ok(self.root.join(format!(
+            "{}.log",
+            if matches!(source, "all" | "services") {
+                "events"
+            } else {
+                source
+            }
+        )))
     }
 
     fn append_file(&self, path: &Path, line: &[u8]) -> Result<()> {
@@ -137,6 +144,16 @@ impl LogStore {
     }
 
     pub fn append(&self, source: &str, level: &str, message: &str) -> Result<()> {
+        self.append_event(source, level, "message", message)
+    }
+
+    pub fn append_event(
+        &self,
+        source: &str,
+        level: &str,
+        event_code: &str,
+        message: &str,
+    ) -> Result<()> {
         let rank = level_rank(level).context("invalid log level")?;
         if rank < self.level {
             return Ok(());
@@ -149,10 +166,14 @@ impl LogStore {
             message
         };
         let mut line = serde_json::to_vec(
-            &json!({"timestamp":Utc::now().to_rfc3339_opts(SecondsFormat::Millis,true),"level":level,"source":source,"message":message}),
+            &json!({"timestamp":Utc::now().to_rfc3339_opts(SecondsFormat::Millis,true),"level":level,"source":source,"event_code":event_code,"message":message,"pid":std::process::id()}),
         )?;
         line.push(b'\n');
-        self.append_file(&path, &line)
+        self.append_file(&path, &line)?;
+        if source != "events" {
+            self.append_file(&self.root.join("events.log"), &line)?;
+        }
+        Ok(())
     }
 
     pub fn append_child(&self, source: &str, level: &str, message: &str) -> Result<()> {
@@ -212,7 +233,12 @@ impl LogStore {
                 break;
             }
             consumed += size as u64;
-            if let Ok(value) = serde_json::from_slice::<Value>(&raw) {
+            if let Ok(value) = serde_json::from_slice::<Value>(&raw)
+                && (source != "services"
+                    || value["source"]
+                        .as_str()
+                        .is_some_and(|name| name.starts_with("service-")))
+            {
                 lines.push(value);
             }
         }
@@ -239,8 +265,18 @@ pub fn capture<R: std::io::Read + Send + 'static>(
                 Ok(0) | Err(_) => break,
                 Ok(_) => {
                     let message = String::from_utf8_lossy(&raw);
-                    let _ =
-                        store.append_child(&source, level, message.trim_end_matches(['\r', '\n']));
+                    let message = message.trim_end_matches(['\r', '\n']);
+                    if let Ok(record) = serde_json::from_str::<Value>(message)
+                        && let (Some(severity), Some(body)) = (
+                            record.get("level").and_then(Value::as_str),
+                            record.get("message").and_then(Value::as_str),
+                        )
+                        && level_rank(severity).is_some()
+                    {
+                        let _ = store.append_child(&source, severity, body);
+                    } else {
+                        let _ = store.append_child(&source, level, message);
+                    }
                 }
             }
         }
@@ -328,5 +364,24 @@ mod tests {
             "important stderr\n"
         );
         assert!(store.append("isos", "verbose", "unknown").is_err());
+    }
+
+    #[test]
+    fn unified_stream_keeps_isos_and_service_events() {
+        let (_temp, store) = store();
+        store
+            .append_event("isos", "warn", "admission_failed", "stale receipt")
+            .unwrap();
+        store
+            .append_event("service-model", "error", "child_exited", "exit 1")
+            .unwrap();
+        let all = store.read("all", None, 10).unwrap();
+        assert_eq!(all["lines"].as_array().unwrap().len(), 2);
+        assert_eq!(all["lines"][0]["event_code"], "admission_failed");
+        assert_eq!(all["lines"][1]["source"], "service-model");
+        assert!(all["lines"][0]["pid"].is_number());
+        let services = store.read("services", None, 10).unwrap();
+        assert_eq!(services["lines"].as_array().unwrap().len(), 1);
+        assert_eq!(services["lines"][0]["event_code"], "child_exited");
     }
 }

@@ -1,4 +1,4 @@
-//! Loopback configuration API. IsosUI runs in a separate npm process.
+//! Loopback configuration API and verified static IsosUI server.
 use crate::{
     component,
     config::{self, Paths},
@@ -21,13 +21,14 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{fs, net::SocketAddr, path::PathBuf, sync::Arc};
+use tower_http::services::{ServeDir, ServeFile};
 
 struct App {
     paths: Paths,
     deployment: String,
 }
 
-fn local_port() -> Result<u16> {
+pub fn local_port() -> Result<u16> {
     let port = std::env::var("ISOS_HTTP_PORT")
         .unwrap_or_else(|_| "16000".into())
         .parse::<u16>()?;
@@ -390,6 +391,39 @@ async fn build_binaries_status(State(app): State<Arc<App>>, headers: HeaderMap) 
     let selected = v2_build::selected(&app.paths)
         .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
     ok(json!({"selected":selected}))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SelectBinariesRequest {
+    schema_version: u32,
+    selector: String,
+    revision: String,
+}
+
+async fn select_binaries(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(request): Json<SelectBinariesRequest>,
+) -> ApiResult {
+    authorized(&app, &headers)?;
+    if request.schema_version != 2 {
+        return Err(err(StatusCode::BAD_REQUEST, "API schema_version must be 2"));
+    }
+    let paths = app.paths.clone();
+    let deployment = app.deployment.clone();
+    let receipt = tokio::task::spawn_blocking(move || {
+        v2_build::select_eos(&paths, &deployment, &request.selector, &request.revision)
+    })
+    .await
+    .map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR, error))?
+    .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
+    let bytes = fs::read(app.paths.v2_node_graph(&app.deployment))
+        .map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR, error))?;
+    let graph: Value = serde_json::from_slice(&bytes)
+        .map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR, error))?;
+    record(&app, "isos", "Selected exact Rust Aether executable set");
+    ok(json!({"receipt":receipt,"graph":{"revision":revision(&bytes),"graph":graph}}))
 }
 
 async fn package_node_sets(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
@@ -763,6 +797,29 @@ pub fn serve(paths: Paths, deployment: String) -> Result<()> {
         Ok(())
     })
 }
+
+pub fn serve_ui(directory: PathBuf) -> Result<()> {
+    let index = directory.join("index.html");
+    anyhow::ensure!(index.is_file(), "selected IsosUI index.html is missing");
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        let address: SocketAddr = format!("127.0.0.1:{}", ui_port()?).parse()?;
+        let listener = tokio::net::TcpListener::bind(address)
+            .await
+            .context("bind IsosUI loopback server")?;
+        let files = ServeDir::new(directory).fallback(ServeFile::new(index));
+        axum::serve(listener, Router::new().fallback_service(files))
+            .with_graceful_shutdown(async {
+                while !crate::INTERRUPTED.load(std::sync::atomic::Ordering::SeqCst) {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+            })
+            .await?;
+        Ok(())
+    })
+}
 fn router(app: Arc<App>) -> Router {
     let api = Router::new()
         .route("/api/isos/v2/version", get(version).options(preflight))
@@ -775,6 +832,10 @@ fn router(app: Arc<App>) -> Router {
             get(build_binaries_status)
                 .post(build_binaries)
                 .options(preflight),
+        )
+        .route(
+            "/api/isos/v2/build-binaries/select",
+            post(select_binaries).options(preflight),
         )
         .route(
             "/api/isos/v2/node-options",

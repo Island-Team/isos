@@ -155,9 +155,22 @@ def main():
                    ISOS_AETHER_BIN_DIR=str(aether), MUJOCO_ROOT=str(mujoco),
                    ISOSUI_REPO_PATH=str(ui_repo))
         command(isos, env, "pkg", "link", "island/mujoco-sim", "2.0.0", str(linked_bundle), "--manifest", str(linked_bundle / "release.json"))
-        init_log = (root / "init.log").open("w+")
-        init = subprocess.Popen([str(isos), "init"], env=env, stdout=init_log,
-                                stderr=subprocess.STDOUT, text=True)
+        command(isos, env, "init", "--mode", "dev")
+        graph_file = root / "home/config/deployments/default.nodes.json"
+        graph_before = graph_file.read_bytes()
+        command(isos, env, "init", "--mode", "dev")
+        assert graph_file.read_bytes() == graph_before
+        built = subprocess.run([str(isos), "build", "eos"], env=env,
+                               text=True, capture_output=True, timeout=300)
+        if built.returncode:
+            raise RuntimeError(f"isos build eos failed: {built.stderr}")
+        receipts = list((root / "home/data/builds/eos").glob("*/receipt.json"))
+        assert len(receipts) == 1, receipts
+        commit = json.loads(receipts[0].read_text())["source_commit"]
+        command(isos, env, "version", "select", "eos", commit)
+        serve_log = (root / "serve.log").open("w+")
+        serve = subprocess.Popen([str(isos), "serve", "--ui-live"], env=env, stdout=serve_log,
+                                 stderr=subprocess.STDOUT, text=True)
         running = None
         try:
             await_condition(lambda: (root / "home/run/manager.sock").exists())
@@ -266,11 +279,11 @@ def main():
             if running is not None and running.poll() is None:
                 running.send_signal(signal.SIGINT)
                 running.wait(timeout=10)
-            if init.poll() is None:
-                init.send_signal(signal.SIGINT)
-            init.wait(timeout=10)
-            init_log.close()
-            print("--- init log ---\n", (root / "init.log").read_text(), flush=True)
+            if serve.poll() is None:
+                serve.send_signal(signal.SIGINT)
+            serve.wait(timeout=10)
+            serve_log.close()
+            print("--- serve log ---\n", (root / "serve.log").read_text(), flush=True)
             if (root / "run.log").exists():
                 print("--- run log ---\n", (root / "run.log").read_text(), flush=True)
             for name in ["eos", "bridge", "config"]:

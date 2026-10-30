@@ -150,6 +150,27 @@ pub fn load_runtime_config() -> Result<()> {
 }
 
 impl Paths {
+    pub fn mode(&self) -> Result<&'static str> {
+        let selected = std::env::var("ISOS_MODE").ok().or_else(|| {
+            fs::read_to_string(self.config.join("mode"))
+                .ok()
+                .map(|value| value.trim().to_owned())
+        });
+        match selected.as_deref().unwrap_or("dev") {
+            "dev" => Ok("dev"),
+            "product" => Ok("product"),
+            _ => anyhow::bail!("IsOS mode must be dev or product"),
+        }
+    }
+
+    pub fn set_mode(&self, mode: &str) -> Result<()> {
+        ensure!(
+            matches!(mode, "dev" | "product"),
+            "IsOS mode must be dev or product"
+        );
+        atomic_write(&self.config.join("mode"), mode.as_bytes())
+    }
+
     pub fn discover() -> Result<Self> {
         if let Ok(base) = std::env::var("ISOS_HOME") {
             let base = PathBuf::from(base);

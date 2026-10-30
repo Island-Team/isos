@@ -4,21 +4,29 @@ IsOS owns the shared Aether v2 graph, backend packages, local workbench API, and
 
 ## Start a MuJoCo deployment
 
-Run `./install.sh` from the v2 `master` checkout to replace the installed IsOS command. The installer stops the previous deployment and legacy `isos-server.service`, removes its obsolete UI token, and force installs the binary built from this checkout. Check `isos --version` afterward; it must report `2.0.0`. `isos stop` also stops a remaining legacy IsOS server. A v2 `isos init` server runs in its terminal and exits with Ctrl+C.
+Run `./install.sh` from the v2 `master` checkout to install the CLI. `isos init --mode dev` creates the configuration and starter graph and exits; running `isos init` again preserves the mode and authored graph. Use `isos init --mode product` to select product admission rules. `isos serve` runs the manager, API, and selected static IsosUI in the foreground; `isos serve --ui-live` explicitly uses supervised Webpack in dev mode.
 
-Build and install IsOS and the Aether Rust executables (`aether-profile`, `aether-runtime`, `aether-http-bridge`, `aether-config-server`). In the sibling IsosUI checkout, run `npm ci` once; `isos init` subsequently starts its `npm start` server. Put the Aether binaries beside `isos`, on `PATH`, or set `ISOS_AETHER_BIN_DIR` to their absolute build directory. Copy [config.example.toml](config.example.toml) to `~/.config/isos/config.toml` and set its absolute paths as needed; environment variables override file values. `ISOS_CONFIG` selects another absolute config path. IsOS does not load `.env` from the command directory. Build the MuJoCo simulator and stage a v2 bundle with `tools/build-backend-bundle.py` in its repository, then:
+Copy [config.example.toml](config.example.toml) to `~/.config/isos/config.toml` and set its absolute source paths as needed; environment variables override file values. `ISOS_CONFIG` selects another absolute config path. IsOS does not load `.env` from the command directory. In dev mode, stage immutable builds and select them explicitly:
 
 ```sh
-isos pkg link island/mujoco-sim 2.0.0 /absolute/path/to/bundle --manifest /absolute/path/to/bundle/release.json
-isos init
+isos init --mode dev
+isos build eos
+isos version select eos <staged-commit>
+isos build isosui
+isos version select isosui <staged-commit>
+isos serve
 ```
 
-`isos init` starts IsosUI at `http://127.0.0.1:16001/en/isos` and serves the IsOS API only at `http://127.0.0.1:16000/api/isos/v2`, without a URL token. `ISOSUI_PORT` and `ISOS_HTTP_PORT` can change the ports; both bind only to loopback. Startup prints both addresses and the main `isos.log` path. `isos run` also prints the active revision and those addresses and log path. Leave the command running while editing the graph and deploying. Ctrl+C stops the npm frontend, API, manager, and managed children.
+`isos serve` hosts IsosUI at `http://127.0.0.1:16001/en/isos` and the API at `http://127.0.0.1:16000/api/isos/v2`. `ISOSUI_PORT` and `ISOS_HTTP_PORT` change the loopback ports. Product mode serves only the selected verified static UI and does not need npm or source checkouts. Ctrl+C or `isos stop` stops the UI, API, deployment, explicitly started services, and manager. `isos deployment stop` stops the graph only.
+
+An optional systemd user unit runs that same product command: after `isos init --mode product` and selecting verified builds, run `tools/user-service.sh install`. Run `tools/user-service.sh remove` to disable it. CLI commands and shell completion work without the unit.
+Product mode requires an exact selected IsOS executable. With the manager stopped, run `isos build isos` and `isos version select isos <staged-commit>` before `isos serve`.
 
 In the second terminal:
 
 ```sh
 isos open
+isos pkg link island/mujoco-sim 2.0.0 /absolute/path/to/bundle --manifest /absolute/path/to/bundle/release.json
 isos pkg node-sets
 
 # Add the installed MuJoCo node set in the Graph workbench, then Validate and Apply.
@@ -27,13 +35,13 @@ isos config apply ~/.config/isos/deployments/default.nodes.json
 isos run
 ```
 
-`isos run` (also `start` and `restart`) stays attached. Press Ctrl+C to stop the deployment in reverse dependency order. Use a third terminal for `isos status --json`, `isos logs eos`, or `isos stop` while it runs.
+`isos run` (also `start` and `restart`) stays attached. Press Ctrl+C to stop the deployment in reverse dependency order. Use `isos status --json`, `isos version check`, `isos services status`, or `isos stop` from another terminal.
 
-`isos init` creates the editable graph only when absent and starts the local IsOS workbench server. Home shows package readiness and revisions. Graph edits the one `2.0.0` IsOS/EOS/EGIA graph with versioned `v1.0` node types. Validate and Apply save a revision; Run rechecks the exact package, graph, scene, executable, assets, and MuJoCo dependency. Install or link alone never changes an active deployment. EOS and EGIA have separate workbench pages, with EGIA runtime controls reserved for later.
+`isos init` creates the editable graph only when absent. Home shows package readiness and revisions. Graph edits the one `2.0.0` IsOS/EOS/EGIA graph with versioned `v1.0` node types. Validate and Apply save a revision; Run rechecks the exact package, graph, scene, executable, assets, and MuJoCo dependency. Install or link alone never changes an active deployment. EOS and EGIA have separate workbench pages, with EGIA runtime controls reserved for later.
 
 New graphs contain EOS process nodes and the dispatcher; the operator adds installed package node sets in Graph before applying. Existing authored graphs are preserved. For an older MuJoCo graph, node-set preview can explicitly replace its legacy backend, hardware, and dependent controls before the operator applies the returned draft.
 
-IsOS uses `~/.config/isos/deployments/<name>.nodes.json`, `~/.local/share/isos/packages/`, and `$XDG_RUNTIME_DIR/isos/` by default. `ISOS_HOME` creates isolated `config/`, `data/`, and `run/` directories for testing. Categorized logs live in `~/.local/share/isos/logs/<deployment>/` as owner-only rotating JSON lines; `GET /api/isos/v2/logs` reads them with a bounded cursor. The old process log endpoint remains available. The owner-only control socket is in the runtime directory; the browser API listens on `127.0.0.1:16000`, while npm serves IsosUI on `127.0.0.1:16001`. The default EOS HTTP bridge and read-only graph catalog listen on `127.0.0.1:16020` and `127.0.0.1:16021`.
+IsOS uses `~/.config/isos/deployments/<name>.nodes.json`, `~/.local/share/isos/packages/`, and `$XDG_RUNTIME_DIR/isos/` by default. `ISOS_HOME` creates isolated `config/`, `data/`, and `run/` directories for testing. Owner-only rotating JSON logs live under `~/.local/share/isos/logs/<deployment>/`; `GET /api/isos/v2/logs?source=all` reads the unified stream with a bounded cursor. The UI defaults to displaying `warn` and higher while recording follows `[logging].level`. Service TOML files and their CLI contract are described in [services](docs/isos/interfaces/services.md).
 
 To use an archive instead of a local link, run `isos pkg verify <manifest> <asset>` and `isos pkg install --manifest <manifest> --asset <asset> --allow-unapproved` for a local candidate. Approved catalog packages can use `isos pkg install island/mujoco-sim --version 2.0.0` when published. `isos pkg remove` rejects packages referenced by an applied graph.
 
