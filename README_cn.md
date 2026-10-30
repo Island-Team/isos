@@ -13,7 +13,7 @@ isos pkg link island/mujoco-sim 2.0.0 /absolute/path/to/bundle --manifest /absol
 isos init
 ```
 
-`isos init` 在 `http://127.0.0.1:16001/en/isos` 启动 IsosUI，IsOS 仅在 `http://127.0.0.1:16000/api/isos/v2` 提供 API，无需 URL 令牌。`ISOSUI_PORT` 和 `ISOS_HTTP_PORT` 可分别调整端口；两者都只绑定环回地址。请保持此终端开启，在第二个终端编辑图并执行部署命令。按 Ctrl+C 会停止 npm 前端、API、进程管理器和受管理的子进程。
+`isos init` 在 `http://127.0.0.1:16001/en/isos` 启动 IsosUI，IsOS 仅在 `http://127.0.0.1:16000/api/isos/v2` 提供 API，无需 URL 令牌。`ISOSUI_PORT` 和 `ISOS_HTTP_PORT` 可分别调整端口；两者都只绑定环回地址。启动时会显示两个地址和主 `isos.log` 路径。`isos run` 还显示运行中修订、两个地址和日志路径。请保持此终端开启，在第二个终端编辑图并执行部署命令。按 Ctrl+C 会停止 npm 前端、API、进程管理器和受管理的子进程。
 
 在第二个终端执行：
 

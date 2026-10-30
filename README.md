@@ -13,7 +13,7 @@ isos pkg link island/mujoco-sim 2.0.0 /absolute/path/to/bundle --manifest /absol
 isos init
 ```
 
-`isos init` starts IsosUI at `http://127.0.0.1:16001/en/isos` and serves the IsOS API only at `http://127.0.0.1:16000/api/isos/v2`, without a URL token. `ISOSUI_PORT` and `ISOS_HTTP_PORT` can change the ports; both bind only to loopback. Leave the command running while editing the graph and deploying. Ctrl+C stops the npm frontend, API, manager, and managed children.
+`isos init` starts IsosUI at `http://127.0.0.1:16001/en/isos` and serves the IsOS API only at `http://127.0.0.1:16000/api/isos/v2`, without a URL token. `ISOSUI_PORT` and `ISOS_HTTP_PORT` can change the ports; both bind only to loopback. Startup prints both addresses and the main `isos.log` path. `isos run` also prints the active revision and those addresses and log path. Leave the command running while editing the graph and deploying. Ctrl+C stops the npm frontend, API, manager, and managed children.
 
 In the second terminal:
 

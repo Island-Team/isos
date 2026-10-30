@@ -15,7 +15,7 @@ mod v2_process;
 mod v2_starter;
 mod versions;
 
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::{Shell, generate};
 use graph::{Deployment, NodeKind};
@@ -1068,6 +1068,7 @@ fn serve_foreground(paths: config::Paths, name: String) -> Result<()> {
     catch_interrupts()?;
     let logs = log_store::LogStore::new(&paths, &name)?;
     logs.append("isos", "info", "Starting IsOS workbench")?;
+    let main_log = logs.root().join("isos.log");
     let mut frontend = Frontend::spawn(&source, logs)?;
     let listener = bind_daemon(&paths)?;
     let api_paths = paths.clone();
@@ -1077,6 +1078,7 @@ fn serve_foreground(paths: config::Paths, name: String) -> Result<()> {
     if result.is_ok() && !INTERRUPTED.load(Ordering::SeqCst) {
         println!("{}", http::ui_url()?);
         println!("IsOS API: {}", http::local_origin());
+        println!("IsOS log: {}", main_log.display());
         println!("IsOS workbench is running; press Ctrl+C to stop it.");
         while !INTERRUPTED.load(Ordering::SeqCst) {
             if let Some(status) = frontend.0.try_wait()? {
@@ -1100,6 +1102,28 @@ fn serve_foreground(paths: config::Paths, name: String) -> Result<()> {
     manager_result?;
     http_result?;
     result
+}
+
+fn print_v2_run_startup(paths: &config::Paths, name: &str, result: &Value) -> Result<()> {
+    println!("{}", serde_json::to_string_pretty(result)?);
+    println!("IsosUI: {}", http::ui_url()?);
+    println!("IsOS API: {}", http::local_origin());
+    println!(
+        "Active revision: {}",
+        result["active_revision"]
+            .as_str()
+            .context("start result lacks active revision")?
+    );
+    println!(
+        "IsOS log: {}",
+        paths
+            .data
+            .join("logs")
+            .join(name)
+            .join("isos.log")
+            .display()
+    );
+    Ok(())
 }
 
 fn wait_for_interrupt(paths: &config::Paths, name: &str) -> Result<()> {
@@ -1256,10 +1280,7 @@ fn main_run() -> Result<()> {
         }
         CommandLine::Run => {
             catch_interrupts()?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&v2_call(&paths, &name, "v2_start")?)?
-            );
+            print_v2_run_startup(&paths, &name, &v2_call(&paths, &name, "v2_start")?)?;
             wait_for_interrupt(&paths, &name)?;
         }
         CommandLine::Serve => {
@@ -1272,10 +1293,7 @@ fn main_run() -> Result<()> {
         },
         CommandLine::Start => {
             catch_interrupts()?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&v2_call(&paths, &name, "v2_start")?)?
-            );
+            print_v2_run_startup(&paths, &name, &v2_call(&paths, &name, "v2_start")?)?;
             wait_for_interrupt(&paths, &name)?;
         }
         CommandLine::Stop => {
@@ -1290,10 +1308,7 @@ fn main_run() -> Result<()> {
         }
         CommandLine::Restart => {
             catch_interrupts()?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&v2_call(&paths, &name, "v2_restart")?)?
-            );
+            print_v2_run_startup(&paths, &name, &v2_call(&paths, &name, "v2_restart")?)?;
             wait_for_interrupt(&paths, &name)?;
         }
         CommandLine::Status { json: _ } => {

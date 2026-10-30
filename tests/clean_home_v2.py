@@ -295,6 +295,12 @@ def main():
             run("logs", "eos", "--lines", "5", env=env)
             run_process.send_signal(signal.SIGINT)
             assert run_process.wait(timeout=10) == 0
+            run_log.flush()
+            run_output = (root / "run.log").read_text()
+            assert f"Active revision: {saved_hash}" in run_output
+            assert f"IsOS API: http://127.0.0.1:{isos_port}" in run_output
+            assert f"IsosUI: http://127.0.0.1:{ui_port}/en/isos" in run_output
+            assert f"IsOS log: {home / 'data/logs/default/isos.log'}" in run_output
             print("ISOS RUN Ctrl+C stopped managed children: PASS")
             assert json.loads(run("status", "--json", env=env).stdout)["state"] == "stopped"
             assert isos_api("process-status")["state"] == "stopped"
@@ -340,6 +346,8 @@ def main():
             init_log.close()
             init_output = (root / "init.log").read_text()
             assert f"http://127.0.0.1:{ui_port}/en/isos" in init_output
+            assert f"IsOS API: http://127.0.0.1:{isos_port}" in init_output
+            assert f"IsOS log: {home / 'data/logs/default/isos.log'}" in init_output
             assert "#token=" not in init_output
             assert not (home / "run/ui-token").exists()
             with socket.socket() as probe:
