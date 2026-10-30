@@ -4,9 +4,11 @@
 
 One `2.0.0` graph at `~/.config/isos/deployments/<name>.nodes.json` (or `ISOS_HOME/config/deployments/`) configures IsOS, EOS, and the design-only EGIA nodes. A node type declares its core, layer, group, fields, and ports; an instance supplies its ID and settings. Current node types are `v1.0`. Run `aether-profile validate --file <graph>` before apply and again before run. IsOS validates the package projection after registry admission. The graph SHA-256 is the saved revision; an active process set retains its revision until restart.
 
-`isos init` writes an editable graph only when absent. It points the EOS camera/base/manipulator adapters at one EOS backend node. `isos config validate <file>` checks the package and graph; `isos config apply <file>` saves normalized JSON; `isos run`, `restart`, `stop`, `status`, and `logs <node>` use the owner-only direct-child manager. EOS starts MuJoCo before admitting hardware operations and stops it with the EOS runtime. A package install or link never changes an active deployment.
+`isos init` writes an editable graph only when absent. The new draft contains EOS process nodes and the dispatcher; preview an installed package node set to add hardware. `isos config validate <file>` checks the package and graph; `isos config apply <file>` saves normalized JSON; `isos run`, `restart`, `stop`, `status`, and `logs <node>` use the owner-only direct-child manager. EOS starts MuJoCo before admitting hardware operations and stops it with the EOS runtime. A package install or link never changes an active deployment.
 
 ## Backend node
+
+New package-contributed MuJoCo backends use `eos.process.mujoco@v1.0` at `cores/eos/layers/process/groups/mujoco/nodes/<id>`. Their exact package is `profile.package:{id,version}`; settings contain `scene`, `socket`, optional `env`, and `start_timeout_ms` with the types and limits below. The older built-in backend type and its `settings.package`/`settings.version` remain valid for saved graphs. Package-contributed camera, base, and manipulator instances live under `cores/eos/layers/hardware/groups/mujoco` and identify device kind from their registered node type, not their shared group.
 
 Path: `cores/eos/layers/process/groups/backend/nodes/<id>`. Type: `eos.process.backend@v1.0`. The node describes configuration; `backend-v2.json` is package metadata, and camera frames and commands have separate Rust payload structs. IsOS derives the executable and scene paths from the verified bundle, never from the node's command field.
 
@@ -40,9 +42,9 @@ Path: `cores/isos/layers/process/groups/component/nodes/<id>`. Type: `isos.proce
 
 The manager starts direct children in dependency order, waits for readiness, and stops process groups in reverse order with TERM then KILL after two seconds. Provider failure stops dependents before recovery. Logs are `$XDG_DATA_HOME/isos/process-logs/<deployment>/<node>.log`. Status includes saved/active revision, pinned package, process PID/restarts, and last supervisor error. The private Unix manager API retains its schema 1 envelope and uses `v2_start`, `v2_restart`, `v2_stop`, and `v2_status` operations.
 
-## EOS control nodes in the starter graph
+## Optional EOS control nodes
 
-The starter graph declares `manual_0`, `base_velocity_0`, `arm_joint_0`, and `demo_0` under `cores/eos/layers/control`. Their types are `eos.control.manual@v1.0`, `eos.control.primitive@v1.0`, and `eos.control.skill@v1.0`. They describe configured command sources; runtime requests and outcomes remain separate typed data. Each control references the canonical EOS dispatcher path. Manual and primitive nodes also reference their target hardware node; a skill references its primitive steps. These references do not create an actuator route: the existing dispatcher output remains the only hardware command input.
+An authored graph may declare `manual_0`, `base_velocity_0`, `arm_joint_0`, and `demo_0` under `cores/eos/layers/control`. Their types are `eos.control.manual@v1.0`, `eos.control.primitive@v1.0`, and `eos.control.skill@v1.0`. They describe configured command sources; runtime requests and outcomes remain separate typed data. Each control references the canonical EOS dispatcher path. Manual and primitive nodes also reference their target hardware node; a skill references its primitive steps. These references do not create an actuator route: the existing dispatcher output remains the only hardware command input.
 
 | Setting | Rust type | Unit | Purpose and validation |
 | --- | --- | --- | --- |

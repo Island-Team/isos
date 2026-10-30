@@ -208,6 +208,7 @@ pub fn install(
             &payload.join("release.json"),
             &serde_json::to_vec_pretty(release)?,
         )?;
+        write_node_types(&payload, release)?;
         fs::rename(&payload, &target)?;
         Ok(())
     })();
@@ -216,8 +217,42 @@ pub fn install(
     Ok(target)
 }
 
+#[cfg(test)]
 pub fn link(paths: &Paths, id: &str, version: &str, source: &Path) -> Result<PathBuf> {
+    link_with_manifest(paths, id, version, source, None)
+}
+
+fn write_node_types(target: &Path, release: &Release) -> Result<()> {
+    if let Some(contributions) = &release.node_contributions {
+        config::atomic_write(
+            &target.join("node-types.json"),
+            &serde_json::to_vec_pretty(&serde_json::json!({
+                "package":{"id":release.id,"version":release.version},
+                "node_types":contributions.node_types,
+                "safety_adapters":contributions.safety_adapters,
+            }))?,
+        )?;
+    }
+    Ok(())
+}
+
+pub fn link_with_manifest(
+    paths: &Paths,
+    id: &str,
+    version: &str,
+    source: &Path,
+    manifest: Option<&Path>,
+) -> Result<PathBuf> {
     let _lock = Lock::take(paths)?;
+    let discovered = source.join("release.json");
+    let manifest = manifest.or_else(|| discovered.is_file().then_some(discovered.as_path()));
+    let release = manifest.map(Release::read_from_path).transpose()?;
+    if let Some(release) = &release {
+        ensure!(
+            release.id == id && release.version == version,
+            "linked manifest identity differs"
+        );
+    }
     let source = source
         .canonicalize()
         .with_context(|| format!("source {} is missing", source.display()))?;
@@ -237,7 +272,68 @@ pub fn link(paths: &Paths, id: &str, version: &str, source: &Path) -> Result<Pat
         &target.join("receipt.json"),
         &serde_json::to_vec_pretty(&receipt)?,
     )?;
+    if let Some(release) = &release {
+        config::atomic_write(
+            &target.join("release.json"),
+            &serde_json::to_vec_pretty(release)?,
+        )?;
+        write_node_types(&target, release)?;
+    }
     Ok(target)
+}
+
+pub fn node_type_sidecars(paths: &Paths) -> Result<Vec<PathBuf>> {
+    let mut sidecars = Vec::new();
+    for receipt in list(paths)? {
+        let file = package_path(paths, &receipt.id, &receipt.version)?.join("node-types.json");
+        if file.is_file() {
+            sidecars.push(file);
+        }
+    }
+    Ok(sidecars)
+}
+
+pub fn node_type_sidecars_for_graph(
+    paths: &Paths,
+    graph: &serde_json::Value,
+) -> Result<Vec<PathBuf>> {
+    let mut pins = std::collections::BTreeSet::new();
+    if let Some(cores) = graph.get("cores").and_then(serde_json::Value::as_object) {
+        for core in cores.values() {
+            if let Some(layers) = core["layers"].as_object() {
+                for layer in layers.values() {
+                    if let Some(groups) = layer["groups"].as_object() {
+                        for group in groups.values() {
+                            if let Some(nodes) = group["nodes"].as_object() {
+                                for node in nodes.values() {
+                                    let package = node.get("package");
+                                    let id = package
+                                        .and_then(|v| v.get("id"))
+                                        .and_then(serde_json::Value::as_str)
+                                        .or_else(|| node["settings"]["package"].as_str());
+                                    let version = package
+                                        .and_then(|v| v.get("version"))
+                                        .and_then(serde_json::Value::as_str)
+                                        .or_else(|| node["settings"]["version"].as_str());
+                                    if let (Some(id), Some(version)) = (id, version) {
+                                        pins.insert((id.to_owned(), version.to_owned()));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut sidecars = Vec::new();
+    for (id, version) in pins {
+        let path = package_path(paths, &id, &version)?.join("node-types.json");
+        if path.is_file() {
+            sidecars.push(path);
+        }
+    }
+    Ok(sidecars)
 }
 
 pub fn list(paths: &Paths) -> Result<Vec<Receipt>> {
@@ -279,17 +375,26 @@ pub fn remove(paths: &Paths, id: &str, version: &str) -> Result<()> {
         {
             let graph: serde_json::Value = serde_json::from_slice(&fs::read(deployment.path())?)?;
             if graph
-                .pointer("/cores/eos/layers/process/groups/backend/nodes")
+                .pointer("/cores")
                 .and_then(serde_json::Value::as_object)
-                .is_some_and(|nodes| {
-                    nodes.values().any(|node| {
-                        node.pointer("/settings/package")
-                            .and_then(serde_json::Value::as_str)
-                            == Some(id)
-                            && node
-                                .pointer("/settings/version")
-                                .and_then(serde_json::Value::as_str)
-                                == Some(version)
+                .is_some_and(|cores| {
+                    cores.values().any(|core| {
+                        core["layers"].as_object().is_some_and(|layers| {
+                            layers.values().any(|layer| {
+                                layer["groups"].as_object().is_some_and(|groups| {
+                                    groups.values().any(|group| {
+                                        group["nodes"].as_object().is_some_and(|nodes| {
+                                            nodes.values().any(|node| {
+                                                (node["package"]["id"] == id
+                                                    && node["package"]["version"] == version)
+                                                    || (node["settings"]["package"] == id
+                                                        && node["settings"]["version"] == version)
+                                            })
+                                        })
+                                    })
+                                })
+                            })
+                        })
                     })
                 })
             {

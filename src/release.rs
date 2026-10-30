@@ -2,7 +2,9 @@
 
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::{fs::File, io::Read, path::Path};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,7 +29,50 @@ pub struct Release {
     pub config_inputs: Vec<ConfigInput>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activation: Option<Activation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_contributions: Option<NodeContributions>,
     pub assets: Vec<Asset>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeContributions {
+    #[serde(default)]
+    pub node_types: Vec<Value>,
+    #[serde(default)]
+    pub safety_adapters: Vec<Value>,
+    #[serde(default)]
+    pub node_sets: Vec<NodeSet>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeSet {
+    pub id: String,
+    #[serde(default)]
+    pub parameters: BTreeMap<String, NodeParameter>,
+    pub nodes: Vec<NodeTemplate>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeParameter {
+    #[serde(rename = "type")]
+    pub value_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeTemplate {
+    #[serde(rename = "ref")]
+    pub reference: String,
+    pub core: String,
+    pub layer: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    pub profile: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -164,6 +209,100 @@ impl Release {
                     destinations.insert(&file.destination),
                     "duplicate activation destination"
                 );
+            }
+        }
+        if let Some(contributions) = &self.node_contributions {
+            let mut type_ids = std::collections::BTreeSet::new();
+            for node_type in &contributions.node_types {
+                let id = node_type
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| anyhow::anyhow!("contributed node type requires id"))?;
+                ensure!(
+                    id.contains("@v1.0") && type_ids.insert(id),
+                    "invalid or duplicate contributed node type {id}"
+                );
+                for field in [
+                    "core",
+                    "layer",
+                    "group",
+                    "kind",
+                    "lifecycle",
+                    "capabilities",
+                    "settings",
+                    "inputs",
+                    "outputs",
+                ] {
+                    ensure!(
+                        node_type.get(field).is_some(),
+                        "{id}: node type requires {field}"
+                    );
+                }
+            }
+            let mut adapter_ids = std::collections::BTreeSet::new();
+            for adapter in &contributions.safety_adapters {
+                let id = adapter
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| anyhow::anyhow!("safety adapter requires id"))?;
+                ensure!(adapter_ids.insert(id), "duplicate safety adapter {id}");
+                ensure!(
+                    adapter.get("supports_stop") == Some(&Value::Bool(true)),
+                    "{id}: safety adapter must support stop"
+                );
+            }
+            let mut set_ids = std::collections::BTreeSet::new();
+            for set in &contributions.node_sets {
+                ensure!(
+                    valid_slug(&set.id) && set_ids.insert(&set.id),
+                    "invalid or duplicate node set {}",
+                    set.id
+                );
+                ensure!(!set.nodes.is_empty(), "node set {} requires nodes", set.id);
+                for (name, parameter) in &set.parameters {
+                    ensure!(
+                        !name.is_empty()
+                            && name
+                                .bytes()
+                                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.'),
+                        "invalid node set parameter {name}"
+                    );
+                    ensure!(
+                        parameter.value_type == "string",
+                        "{name}: only string parameter is supported"
+                    );
+                }
+                let mut refs = std::collections::BTreeSet::new();
+                for node in &set.nodes {
+                    ensure!(
+                        valid_slug(&node.reference) && refs.insert(&node.reference),
+                        "invalid or duplicate node ref {}",
+                        node.reference
+                    );
+                    ensure!(
+                        valid_slug(&node.core) && valid_slug(&node.layer),
+                        "invalid node placement"
+                    );
+                    ensure!(
+                        node.group.as_deref().is_none_or(valid_slug),
+                        "invalid node group"
+                    );
+                    ensure!(node.profile.is_object(), "node profile must be an object");
+                    ensure!(
+                        node.profile
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .is_some_and(valid_slug),
+                        "node profile requires slug id"
+                    );
+                    ensure!(
+                        node.profile
+                            .get("node_type")
+                            .and_then(Value::as_str)
+                            .is_some(),
+                        "node profile requires node_type"
+                    );
+                }
             }
         }
         for a in &self.assets {

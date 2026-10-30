@@ -2,6 +2,12 @@
 
 [English](../../../docs/isos/develop/backend-v2.md)
 
+## 软件包节点契约更新（2026-10-30）
+
+新的 `isos init` 草稿包含 EOS 调度器和 IsOS 管理的 EOS/bridge/config 进程，不预先选择硬件包。用 `isos pkg link island/mujoco-sim 2.0.0 <bundle> --manifest <bundle>/release.json` 链接 v4 MuJoCo 包，然后以 `isos pkg preview-set island/mujoco-sim 2.0.0 sim-hardware <graph> --values <values.json>` 预览节点集合。值文件须包含描述文件中的场景 ID，以及位于 IsOS 运行目录中的套接字路径。返回的 `graph` 通过常规图操作应用。现有已应用图不会自动变更；`--replace-legacy-mujoco` 执行显式预览迁移并保留无关节点。
+
+运行 `cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test`、`cargo build`，再运行 `ISOS_BIN=target/debug/isos AETHER_BIN_DIR=../Island-eos/target/debug python3 tests/clean_home_v2.py`。Linux x86_64 上 40 项 Rust 测试与 clean-home 协议桩均通过。协议桩检查软件包链接、合成、准入失败、进程归属、采集、观测、运动、停止、重启、修订检查和软件包删除保护。固定负载的五次启动/重启中位数/p99 为 252.165/300.935 毫秒；200 次 HTTP 至 EOS 时间请求中位数/p99 为 10.160/10.612 毫秒，吞吐量为每秒 98.4 次。使用 MuJoCo 3.16.0 暂存包，运行 `ISOS_BIN=target/debug/isos ISOS_TEST_REAL_BUNDLE=<bundle> ISOS_AETHER_BIN_DIR=../Island-eos/target/debug MUJOCO_ROOT=<mujoco-root> ISOSUI_REPO_PATH=../IsosUI python3 tests/real_home_v2.py` 也通过：GUI 可见、采集、底盘/机械臂命令与停止、重启、链接资源变更拒绝和 Ctrl+C。真实启动为 1486.053 毫秒；20 次采集中位数/p99 为 356.168/375.170 毫秒，吞吐量每秒 2.8 次。这些是单机基线。完整输出保存在 `logs/test/20261030-package-node-contract/`。以下历史运行使用较早的自动 MuJoCo 起始图。
+
 构建 EOS Rust 可执行文件（`aether-profile`、`aether-runtime`、`aether-http-bridge`、`aether-config-server`）、IsOS 和 MuJoCo 仿真器。使用 MuJoCo 仓库的 `tools/build-backend-bundle.py` 制作真实软件包。`isos pkg link island/mujoco-sim 2.0.0 <bundle>` 注册本地开发包；`isos pkg install` 会先校验发行归档。`isos init` 写入唯一的可编辑共享图；`isos config validate` 与 `apply` 准入并保存。图修改都必须通过同一 v2 注册表和 IsOS 软件包投影。将 Aether 可执行文件安装在 `isos` 旁边，或在生成图前将 `ISOS_AETHER_BIN_DIR` 设为绝对构建目录。`ISOS_AETHER_PROFILE_BIN` 仅覆盖验证器；`MUJOCO_ROOT` 指向 MuJoCo 库根目录。
 
 新建节点图会固定已安装的第一个 v2 MuJoCo 软件包版本及其声明的第一个场景。2026-10-30 使用 `/home/ashex/.cargo/bin/isos` 和同目录 Aether release 可执行文件进行了无二进制路径覆盖的检查：`pkg link`、前台 `init`、`v2 validate`、`v2 apply` 和前台 `run` 均通过。四个子进程依赖顺序启动，Ctrl+C 依赖顺序停止；所选场景为 `pick-place`。命令与节点图记录位于 `logs/test/20261030-starter-scene/installed-home.log`。

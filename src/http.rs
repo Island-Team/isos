@@ -3,7 +3,7 @@ use crate::{
     component,
     config::{self, Paths},
     graph::Deployment,
-    lifecycle, packages, v2_process,
+    lifecycle, node_sets, packages, v2_process,
 };
 use anyhow::{Context, Result};
 use axum::{
@@ -303,6 +303,45 @@ async fn node_types(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResul
     ok(catalog)
 }
 
+async fn package_node_sets(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
+    authorized(&app, &headers)?;
+    ok(node_sets::list(&app.paths)
+        .map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR, error))?)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NodeSetPreview {
+    package: crate::graph::PackageRef,
+    set_id: String,
+    graph: Value,
+    #[serde(default)]
+    values: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    replace_legacy_mujoco: bool,
+}
+
+async fn preview_node_set(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(request): Json<NodeSetPreview>,
+) -> ApiResult {
+    authorized(&app, &headers)?;
+    let preview = node_sets::compose_with_migration(
+        &app.paths,
+        &request.package.id,
+        &request.package.version,
+        &request.set_id,
+        &request.graph,
+        &request.values,
+        request.replace_legacy_mujoco,
+    )
+    .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
+    v2_process::validate_value(&app.paths, &preview["graph"])
+        .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
+    ok(preview)
+}
+
 async fn process_status(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
     authorized(&app, &headers)?;
     let status = crate::v2_call(&app.paths, &app.deployment, "v2_status")
@@ -334,6 +373,8 @@ struct PackageLinkRequest {
     id: String,
     version: String,
     path: PathBuf,
+    #[serde(default)]
+    manifest: Option<PathBuf>,
 }
 
 async fn package_install(
@@ -375,9 +416,25 @@ async fn package_link(
             "package link path must be absolute",
         ));
     }
+    if request
+        .manifest
+        .as_ref()
+        .is_some_and(|path| !path.is_absolute())
+    {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "package manifest path must be absolute",
+        ));
+    }
     let paths = app.paths.clone();
     let linked = tokio::task::spawn_blocking(move || {
-        packages::link(&paths, &request.id, &request.version, &request.path)
+        packages::link_with_manifest(
+            &paths,
+            &request.id,
+            &request.version,
+            &request.path,
+            request.manifest.as_deref(),
+        )
     })
     .await
     .map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR, error))?
@@ -393,14 +450,6 @@ async fn setup_status(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiRes
     let revision = fs::read(&graph_path).ok().map(|bytes| revision(&bytes));
     let backends = crate::v2_backend::installed(&app.paths);
     let mut issues: Vec<String> = Vec::new();
-    if backends.is_empty() {
-        issues.push("MuJoCo backend package is not installed or linked".into());
-    }
-    for backend in &backends {
-        if let Some(messages) = backend.get("issues").and_then(Value::as_array) {
-            issues.extend(messages.iter().filter_map(Value::as_str).map(str::to_owned));
-        }
-    }
     match fs::read(&graph_path) {
         Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
             Ok(graph) => {
@@ -599,6 +648,14 @@ fn router(app: Arc<App>) -> Router {
             get(node_types).options(preflight),
         )
         .route(
+            "/api/isos/v2/node-sets",
+            get(package_node_sets).options(preflight),
+        )
+        .route(
+            "/api/isos/v2/node-sets/preview",
+            post(preview_node_set).options(preflight),
+        )
+        .route(
             "/api/isos/v2/process-status",
             get(process_status).options(preflight),
         )
@@ -723,6 +780,15 @@ mod tests {
             } else {
                 assert_eq!(body["data"]["ready"], false);
                 assert!(body["data"]["issues"].as_array().unwrap().len() >= 2);
+                assert!(
+                    !body["data"]["issues"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|issue| issue
+                            .as_str()
+                            .is_some_and(|message| message.contains("MuJoCo backend package")))
+                );
             }
         }
     }
@@ -741,6 +807,18 @@ mod tests {
             deployment: "default".into(),
         });
         app.paths.prepare().unwrap();
+        let invalid = json!({"id":"island/mujoco-sim","version":"2.0.0","path":bundle,"manifest":"relative.json"});
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/api/isos/v2/packages/link")
+            .header(header::HOST, "127.0.0.1:16000")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(invalid.to_string()))
+            .unwrap();
+        assert_eq!(
+            router(app.clone()).oneshot(request).await.unwrap().status(),
+            StatusCode::BAD_REQUEST
+        );
         let body = json!({"id":"island/mujoco-sim","version":"2.0.0","path":bundle});
         for expected in [StatusCode::OK, StatusCode::UNPROCESSABLE_ENTITY] {
             let request = Request::builder()

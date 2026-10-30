@@ -5,6 +5,7 @@ mod graph;
 mod http;
 mod isosui;
 mod lifecycle;
+mod node_sets;
 mod packages;
 mod release;
 mod v2_backend;
@@ -247,10 +248,25 @@ enum PackageCommand {
         id: String,
         version: String,
         path: PathBuf,
+        #[arg(long)]
+        manifest: Option<PathBuf>,
     },
     List {
         #[arg(long)]
         json: bool,
+    },
+    /// List node sets contributed by installed package releases.
+    NodeSets,
+    /// Compose one installed node set into a graph and print the preview JSON.
+    PreviewSet {
+        id: String,
+        version: String,
+        set_id: String,
+        graph: PathBuf,
+        #[arg(long)]
+        values: Option<PathBuf>,
+        #[arg(long)]
+        replace_legacy_mujoco: bool,
     },
     Verify {
         manifest: PathBuf,
@@ -479,8 +495,14 @@ fn package_command(paths: &config::Paths, cmd: PackageCommand) -> Result<()> {
             serde_json::to_string_pretty(&packages::catalog_release(&id, &version)?)?
         ),
         PackageCommand::Install(args) => install_package(paths, args, None)?,
-        PackageCommand::Link { id, version, path } => {
-            let installed = packages::link(paths, &id, &version, &path)?;
+        PackageCommand::Link {
+            id,
+            version,
+            path,
+            manifest,
+        } => {
+            let installed =
+                packages::link_with_manifest(paths, &id, &version, &path, manifest.as_deref())?;
             println!("linked {} {} at {}", id, version, installed.display());
         }
         PackageCommand::List { json } => {
@@ -503,6 +525,39 @@ fn package_command(paths: &config::Paths, cmd: PackageCommand) -> Result<()> {
                     );
                 }
             }
+        }
+        PackageCommand::NodeSets => println!(
+            "{}",
+            serde_json::to_string_pretty(&node_sets::list(paths)?)?
+        ),
+        PackageCommand::PreviewSet {
+            id,
+            version,
+            set_id,
+            graph,
+            values,
+            replace_legacy_mujoco,
+        } => {
+            let graph = v2_process::normalize_source(&fs::read_to_string(graph)?)?;
+            let values = values
+                .map(
+                    |file| -> Result<std::collections::BTreeMap<String, String>> {
+                        Ok(serde_json::from_slice(&fs::read(file)?)?)
+                    },
+                )
+                .transpose()?
+                .unwrap_or_default();
+            let preview = node_sets::compose_with_migration(
+                paths,
+                &id,
+                &version,
+                &set_id,
+                &graph,
+                &values,
+                replace_legacy_mujoco,
+            )?;
+            v2_process::validate_value(paths, &preview["graph"])?;
+            println!("{}", serde_json::to_string_pretty(&preview)?);
         }
         PackageCommand::Verify { manifest, asset } => {
             let release = packages::read_manifest(&manifest)?;
@@ -738,8 +793,17 @@ fn api_call(
             let saved_revision = v2_starter::revision(&paths.v2_node_graph(&name)).ok();
             let pinned_package = fs::read(paths.v2_node_graph(&name)).ok()
                 .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-                .and_then(|graph| graph.pointer("/cores/eos/layers/process/groups/backend/nodes").and_then(Value::as_object).and_then(|nodes| nodes.values().next()).and_then(|node| node.get("settings")).cloned())
-                .map(|settings| json!({"id":settings.get("package"),"version":settings.get("version"),"scene":settings.get("scene")}));
+                .and_then(|graph| {
+                    ["mujoco", "backend"].into_iter().find_map(|group| {
+                        graph.pointer(&format!("/cores/eos/layers/process/groups/{group}/nodes"))
+                            .and_then(Value::as_object).and_then(|nodes| nodes.values().next()).cloned()
+                    })
+                })
+                .map(|node| json!({
+                    "id":node["package"].get("id").or_else(|| node["settings"].get("package")),
+                    "version":node["package"].get("version").or_else(|| node["settings"].get("version")),
+                    "scene":node["settings"].get("scene")
+                }));
             let active = managers.get_mut(&name);
             let processes = if let Some(active) = active {
                 match active.supervisor.status() {

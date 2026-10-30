@@ -9,7 +9,7 @@ Run `./install.sh` from the v2 `master` checkout to replace the installed IsOS c
 Build and install IsOS and the Aether Rust executables (`aether-profile`, `aether-runtime`, `aether-http-bridge`, `aether-config-server`). In the sibling IsosUI checkout, run `npm ci` once; `isos init` subsequently starts its `npm start` server. Put the Aether binaries beside `isos`, on `PATH`, or set `ISOS_AETHER_BIN_DIR` to their absolute build directory before `isos init`. Set `ISOSUI_REPO_PATH` if IsosUI is not at `../IsosUI`; IsOS also reads it from a `.env` file in the command's working directory. Build the MuJoCo simulator and stage a v2 bundle with `tools/build-backend-bundle.py` in its repository. Set `MUJOCO_ROOT` to the installed MuJoCo runtime, then:
 
 ```sh
-isos pkg link island/mujoco-sim 2.0.0 /absolute/path/to/bundle
+isos pkg link island/mujoco-sim 2.0.0 /absolute/path/to/bundle --manifest /absolute/path/to/bundle/release.json
 isos init
 ```
 
@@ -19,6 +19,9 @@ In the second terminal:
 
 ```sh
 isos open
+isos pkg node-sets
+
+# Add the installed MuJoCo node set in the Graph workbench, then Validate and Apply.
 isos config validate ~/.config/isos/deployments/default.nodes.json
 isos config apply ~/.config/isos/deployments/default.nodes.json
 isos run
@@ -28,7 +31,7 @@ isos run
 
 `isos init` creates the editable graph only when absent and starts the local IsOS workbench server. Home shows package readiness and revisions. Graph edits the one `2.0.0` IsOS/EOS/EGIA graph with versioned `v1.0` node types. Validate and Apply save a revision; Run rechecks the exact package, graph, scene, executable, assets, and MuJoCo dependency. Install or link alone never changes an active deployment. EOS and EGIA have separate workbench pages, with EGIA runtime controls reserved for later.
 
-When a v2 MuJoCo bundle is already linked or installed, a new graph selects its pinned version and first advertised scene. Existing authored graphs are preserved.
+New graphs contain EOS process nodes and the dispatcher; the operator adds installed package node sets in Graph before applying. Existing authored graphs are preserved. For an older MuJoCo graph, node-set preview can explicitly replace its legacy backend, hardware, and dependent controls before the operator applies the returned draft.
 
 IsOS uses `~/.config/isos/deployments/<name>.nodes.json`, `~/.local/share/isos/packages/`, and `$XDG_RUNTIME_DIR/isos/` by default. `ISOS_HOME` creates isolated `config/`, `data/`, and `run/` directories for testing. The owner-only control socket is in the runtime directory; the browser API listens on `127.0.0.1:16000`, while npm serves IsosUI on `127.0.0.1:16001`. The default EOS HTTP bridge and read-only graph catalog listen on `127.0.0.1:16020` and `127.0.0.1:16021`.
 
