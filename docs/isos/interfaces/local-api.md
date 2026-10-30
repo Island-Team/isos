@@ -12,6 +12,10 @@ The API binds only to `127.0.0.1` and serves no frontend files. IsosUI calls it 
 | `PUT /api/isos/v2/node-graph` | `{schema_version:2,revision,graph}` | Validate and apply the graph. Stale revision returns 409. |
 | `POST /api/isos/v2/node-graph/validate` | `{schema_version:2,graph}` → `{valid,diagnostics}` | Registry and package admission, without applying. |
 | `GET /api/isos/v2/node-types` | `{types:[...]}` | Node type catalog from `aether-profile`. |
+| `GET /api/isos/v2/node-options` | `{adapter_families,primitive_bindings,targets}` | Selector options for the saved graph. |
+| `POST /api/isos/v2/node-options` | `{schema_version:2,graph}` → `{adapter_families,primitive_bindings,targets}` | Selector options for an unapplied draft. |
+| `GET /api/isos/v2/build-binaries` | `{selected:receipt|null}` | Exact staged Rust EOS binary set. |
+| `POST /api/isos/v2/build-binaries` | `{schema_version:2,target:"eos",install_deps:false}` → `{receipt,suggested_graph}` | Build and stage Rust EOS binaries. Apply the suggested graph through the revision checked graph API. |
 | `GET /api/isos/v2/node-sets` | `{sets:[{package,id,parameters,nodes}]}` | Installed package node sets. |
 | `POST /api/isos/v2/node-sets/preview` | `{package:{id,version},set_id,graph,values:{name:string}}` → `{graph,added_paths}` | Compose a set into a draft without saving it; invalid composition returns 422. |
 | `GET /api/isos/v2/backends` | `{backends:[{id,version,linked,scenes,devices,ready,issues}]}` | Installed/linked v2 backend choices and prerequisite checks. |
@@ -23,7 +27,7 @@ The API binds only to `127.0.0.1` and serves no frontend files. IsosUI calls it 
 | `GET /api/isos/v2/logs?source=isos&cursor=...&limit=100` | `{lines:[{timestamp,level,source,message}],next_cursor,rotated}` | Read categorized JSON logs, at most 200 lines or 64 KiB per call. `cursor` is opaque; `rotated` signals a replaced file. |
 | `GET /api/isos/v2/version` | `{api_schema_version,isos_version}` | Workbench compatibility check. |
 
-The process manager validates the saved graph and exact package again before starting children. It starts MuJoCo before EOS, and stops EOS before MuJoCo. Graph layout belongs to the editor; the HTTP graph contains runtime configuration and typed connections only.
+The process manager validates the saved graph and exact package again before starting children. EOS starts MuJoCo as its direct child and stops it after admitted actuators are stopped. Graph layout belongs to the editor; the HTTP graph contains runtime configuration and typed connections only.
 
 Log `source` may be `isos`, `packages`, `graph`, `ui`, `eos`, `egia`, `mujoco`, `bridge`, `config`, or a validated child ID. `limit` is 1–200 (default 100). Each line has an RFC 3339 UTC `timestamp` string, `level` string (`info` or `error` for child streams), `source` string, and `message` string. `next_cursor` is a string even when no more lines are available; poll with it for later writes. Files have a `0700` directory and `0600` regular-file permissions, rotate after `[logging].max_bytes` bytes (default 1 MiB), and retain `[logging].backups` copies (default 3). The legacy process endpoint reads mirrored raw lines.
 
@@ -46,3 +50,9 @@ IsOS reads `~/.config/isos/config.toml` (or `ISOS_HOME/config/config.toml`) if p
 | `logging.max_bytes` | integer bytes | Rotation threshold, 65,536–100,000,000; default 1,048,576 | `ISOS_LOG_MAX_BYTES` |
 | `logging.backups` | integer count | Rotated copies, 1–10; default 3 | `ISOS_LOG_BACKUPS` |
 | `logging.level` | enum string | Minimum file severity: `trace`, `debug`, `info`, `warn`, or `error`; default `info` | `ISOS_LOG_LEVEL` |
+
+## Rust binary and selector contracts
+
+`receipt` contains `schema_version` (integer 2), `component` (`eos`), `product_version` (`2.0.0`), `source_commit` (Git SHA), `binaries` (absolute paths keyed by executable name), and `sha256` (matching file digests). Build stages the five Aether executables together under the private IsOS data directory. Run probes the exact EOS, bridge, config, and profile executable capabilities and returns an error when the set is stale or the graph points elsewhere. `suggested_graph` is `{revision,graph}` or null and is never applied automatically. CLI `isos build eos` calls the same build service.
+
+`adapter_families` entries contain `id` (stable adapter ID), `device_kinds` (device classes), `package` (optional exact `{id,version}`), `compiled` and `available` (booleans), `transport` and `description` (strings), optional `supported_primitives`, and `reason` when unavailable. `primitive_bindings` entries contain `node_type`, `device_kind`, `movement_types`, `available`, `reason`, and `primitives` with exact name, version, movement type, and description. `targets` entries contain the four-segment `path`, `node_type`, `device_kind`, `adapter_type`, `movement_types`, `available`, and `reason`. `GET /node-types` also forwards EOS `primitive_specs` and typed `data_types`.

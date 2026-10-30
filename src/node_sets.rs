@@ -94,38 +94,47 @@ fn resolve_refs(value: &mut Value, paths: &BTreeMap<String, String>) -> Result<(
     Ok(())
 }
 
-fn references_any(value: &Value, paths: &BTreeSet<String>) -> bool {
-    match value {
-        Value::String(s) => paths.contains(s),
-        Value::Array(items) => items.iter().any(|item| references_any(item, paths)),
-        Value::Object(fields) => fields.values().any(|item| references_any(item, paths)),
-        _ => false,
+fn short_path(path: &str) -> Option<String> {
+    let parts: Vec<_> = path.split('/').collect();
+    if parts.len() == 8
+        && parts[0] == "cores"
+        && parts[2] == "layers"
+        && parts[4] == "groups"
+        && parts[6] == "nodes"
+    {
+        Some(format!(
+            "{}/{}/{}/{}",
+            parts[1], parts[3], parts[5], parts[7]
+        ))
+    } else {
+        None
     }
 }
 
-fn graph_nodes(graph: &Value) -> Vec<(String, Value)> {
-    let mut out = Vec::new();
-    if let Some(cores) = graph["cores"].as_object() {
-        for (core_id, core) in cores {
-            if let Some(layers) = core["layers"].as_object() {
-                for (layer_id, layer) in layers {
-                    if let Some(groups) = layer["groups"].as_object() {
-                        for (group_id, group) in groups {
-                            if let Some(nodes) = group["nodes"].as_object() {
-                                for (node_id, profile) in nodes {
-                                    out.push((format!("cores/{core_id}/layers/{layer_id}/groups/{group_id}/nodes/{node_id}"), profile.clone()));
-                                }
-                            }
-                        }
-                    }
-                }
+fn rewrite_paths(value: &mut Value, replacements: &BTreeMap<String, String>) {
+    match value {
+        Value::String(s) => {
+            if let Some(replacement) = replacements.get(s) {
+                *s = replacement.clone();
+            } else if let Some(path) = short_path(s) {
+                *s = path;
             }
         }
+        Value::Array(items) => {
+            for item in items {
+                rewrite_paths(item, replacements);
+            }
+        }
+        Value::Object(fields) => {
+            for item in fields.values_mut() {
+                rewrite_paths(item, replacements);
+            }
+        }
+        _ => {}
     }
-    out
 }
 
-fn migrate_legacy_mujoco(graph: &mut Value) -> Result<()> {
+fn migrate_legacy_mujoco(graph: &mut Value, replacements: &BTreeMap<String, String>) -> Result<()> {
     let legacy = [
         (
             "cores/eos/layers/process/groups/backend/nodes/simulator",
@@ -154,26 +163,11 @@ fn migrate_legacy_mujoco(graph: &mut Value) -> Result<()> {
             removed.insert(path.to_owned());
         }
     }
-    loop {
-        let before = removed.len();
-        for (path, profile) in graph_nodes(graph) {
-            if removed.contains(&path) {
-                continue;
-            }
-            if references_any(&profile, &removed) {
-                if path == "cores/eos/layers/dispatcher/groups/control/nodes/command" {
-                    continue;
-                }
-                ensure!(
-                    !path.starts_with("cores/isos/"),
-                    "IsOS process {path} references legacy MuJoCo hardware"
-                );
-                removed.insert(path);
-            }
-        }
-        if removed.len() == before {
-            break;
-        }
+    for path in &removed {
+        ensure!(
+            replacements.contains_key(path),
+            "no replacement for legacy node {path}"
+        );
     }
     for path in &removed {
         let (parent, id) = path.rsplit_once('/').unwrap();
@@ -183,16 +177,7 @@ fn migrate_legacy_mujoco(graph: &mut Value) -> Result<()> {
             .context("legacy node parent disappeared")?
             .remove(id);
     }
-    if let Some(dispatcher) =
-        graph.pointer_mut("/cores/eos/layers/dispatcher/groups/control/nodes/command")
-        && let Some(references) = dispatcher["references"].as_array_mut()
-    {
-        references.retain(|reference| {
-            reference
-                .as_str()
-                .is_none_or(|path| !removed.contains(path))
-        });
-    }
+    rewrite_paths(graph, replacements);
     Ok(())
 }
 
@@ -251,10 +236,7 @@ pub fn compose_with_migration(
             .context("node profile requires id")?;
         paths_by_ref.insert(
             node.reference.clone(),
-            format!(
-                "cores/{}/layers/{}/groups/{group}/nodes/{instance}",
-                node.core, node.layer
-            ),
+            format!("{}/{}/{group}/{instance}", node.core, node.layer),
         );
     }
     let mut draft = graph.clone();
@@ -267,14 +249,41 @@ pub fn compose_with_migration(
             id == "island/mujoco-sim",
             "legacy migration is only for MuJoCo"
         );
-        migrate_legacy_mujoco(&mut draft)?;
+        let old = [
+            (
+                "cores/eos/layers/process/groups/backend/nodes/simulator",
+                "simulator",
+            ),
+            (
+                "cores/eos/layers/hardware/groups/camera/nodes/front",
+                "front",
+            ),
+            ("cores/eos/layers/hardware/groups/base/nodes/drive", "drive"),
+            (
+                "cores/eos/layers/hardware/groups/manipulator/nodes/arm",
+                "arm",
+            ),
+        ];
+        let mut replacements = BTreeMap::new();
+        for (old_path, reference) in old {
+            if let Some(new_path) = paths_by_ref.get(reference) {
+                replacements.insert(old_path.to_owned(), new_path.clone());
+            }
+        }
+        migrate_legacy_mujoco(&mut draft, &replacements)?;
+    } else {
+        rewrite_paths(&mut draft, &BTreeMap::new());
     }
     let mut added_paths = Vec::new();
     let mut seen = BTreeSet::new();
     for node in &set.nodes {
         let path = &paths_by_ref[&node.reference];
         ensure!(seen.insert(path), "node set duplicates path {path}");
-        let pointer = format!("/{path}");
+        let segments: Vec<_> = path.split('/').collect();
+        let pointer = format!(
+            "/cores/{}/layers/{}/groups/{}/nodes/{}",
+            segments[0], segments[1], segments[2], segments[3]
+        );
         ensure!(
             draft.pointer(&pointer).is_none(),
             "node path already exists: {path}"
@@ -300,26 +309,25 @@ pub fn compose_with_migration(
                 "built-in node type cannot carry package pin"
             );
         }
-        let segments: Vec<_> = path.split('/').collect();
         let core = draft["cores"]
             .as_object_mut()
             .context("graph lacks cores object")?
-            .entry(segments[1])
+            .entry(segments[0])
             .or_insert_with(|| json!({"layers":{}}));
         let layer = core["layers"]
             .as_object_mut()
             .context("core lacks layers object")?
-            .entry(segments[3])
+            .entry(segments[1])
             .or_insert_with(|| json!({"groups":{}}));
         let group = layer["groups"]
             .as_object_mut()
             .context("layer lacks groups object")?
-            .entry(segments[5])
+            .entry(segments[2])
             .or_insert_with(|| json!({"nodes":{}}));
         group["nodes"]
             .as_object_mut()
             .context("group lacks nodes object")?
-            .insert(segments[7].to_owned(), profile);
+            .insert(segments[3].to_owned(), profile);
         added_paths.push(path.clone());
     }
     Ok(json!({"graph":draft,"added_paths":added_paths}))
@@ -379,7 +387,7 @@ mod tests {
         assert_eq!(
             preview["graph"]["cores"]["eos"]["layers"]["hardware"]["groups"]["mujoco"]["nodes"]["front"]
                 ["adapter"]["settings"]["backend"],
-            "cores/eos/layers/process/groups/mujoco/nodes/simulator"
+            "eos/process/mujoco/simulator"
         );
         assert!(preview["graph"]["cores"]["eos"]["layers"]["interface"]["groups"]["gate"]["nodes"]["gate"].get("package").is_none());
         assert!(preview["graph"]["cores"]["isosui"]["layers"]["system"]["groups"]["ui"]["nodes"]["vision"].get("package").is_none());
@@ -419,7 +427,11 @@ mod tests {
             "control":{"groups":{"manual":{"nodes":{"old":{"references":["cores/eos/layers/hardware/groups/camera/nodes/front"]},"other":{"references":["cores/eos/layers/hardware/groups/camera/nodes/other"]}}}}},
             "dispatcher":{"groups":{"control":{"nodes":{"command":{"references":["cores/eos/layers/hardware/groups/camera/nodes/front","cores/eos/layers/hardware/groups/camera/nodes/other"]}}}}}
         }}}});
-        migrate_legacy_mujoco(&mut graph).unwrap();
+        let replacements = BTreeMap::from([(
+            "cores/eos/layers/hardware/groups/camera/nodes/front".to_owned(),
+            "eos/hardware/camera/front".to_owned(),
+        )]);
+        migrate_legacy_mujoco(&mut graph, &replacements).unwrap();
         assert!(
             graph
                 .pointer("/cores/eos/layers/hardware/groups/camera/nodes/front")
@@ -428,7 +440,7 @@ mod tests {
         assert!(
             graph
                 .pointer("/cores/eos/layers/control/groups/manual/nodes/old")
-                .is_none()
+                .is_some()
         );
         assert!(
             graph
@@ -443,7 +455,7 @@ mod tests {
         assert_eq!(
             graph["cores"]["eos"]["layers"]["dispatcher"]["groups"]["control"]["nodes"]["command"]
                 ["references"],
-            json!(["cores/eos/layers/hardware/groups/camera/nodes/other"])
+            json!(["eos/hardware/camera/front", "eos/hardware/camera/other"])
         );
     }
 }

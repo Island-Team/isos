@@ -22,6 +22,20 @@ const MAX_GRAPH_BYTES: u64 = 1024 * 1024;
 const MAX_COMMAND_ARGS: usize = 64;
 const MAX_RESTARTS: u32 = 10;
 
+fn canonical_node_path(path: &str) -> String {
+    let parts: Vec<_> = path.split('/').collect();
+    if parts.len() == 8
+        && parts[0] == "cores"
+        && parts[2] == "layers"
+        && parts[4] == "groups"
+        && parts[6] == "nodes"
+    {
+        format!("{}/{}/{}/{}", parts[1], parts[3], parts[5], parts[7])
+    } else {
+        path.to_owned()
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Graph {
@@ -254,8 +268,7 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
                     {
                         continue;
                     }
-                    let path =
-                        format!("cores/{core_id}/layers/{layer_id}/groups/{group_id}/nodes/{key}");
+                    let path = format!("{core_id}/{layer_id}/{group_id}/{key}");
                     ensure!(
                         core_id == "eos"
                             && layer_id == "process"
@@ -338,11 +351,14 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
                         .get("backend")
                         .and_then(Value::as_str)
                         .context("MuJoCo adapter lacks backend reference")?;
-                    let (resolved, socket) = backends.get(backend_path).with_context(|| {
+                    let backend_path = canonical_node_path(backend_path);
+                    let (resolved, socket) = backends.get(&backend_path).with_context(|| {
                         format!("MuJoCo adapter {key} references missing backend {backend_path}")
                     })?;
                     ensure!(
-                        node.references.iter().any(|r| r == backend_path),
+                        node.references
+                            .iter()
+                            .any(|r| canonical_node_path(r) == backend_path),
                         "MuJoCo adapter {key} must reference its backend node"
                     );
                     ensure!(
@@ -387,8 +403,7 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
         for (layer_id, layer) in core.layers {
             for (group_id, group) in layer.groups {
                 for (key, node) in group.nodes {
-                    let path =
-                        format!("cores/{core_id}/layers/{layer_id}/groups/{group_id}/nodes/{key}");
+                    let path = format!("{core_id}/{layer_id}/{group_id}/{key}");
                     if node.node_type == "eos.process.backend@v1.0"
                         || node.node_type == "eos.process.mujoco@v1.0"
                     {
@@ -400,8 +415,12 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
                             "{path}: process type has invalid placement"
                         );
                         ensure!(key == node.id, "{path}: node id differs from map key");
-                        let settings: ProcessSettings = serde_json::from_value(node.settings)
-                            .with_context(|| format!("{path}: invalid process settings"))?;
+                        let mut settings: ProcessSettings =
+                            serde_json::from_value(node.settings)
+                                .with_context(|| format!("{path}: invalid process settings"))?;
+                        for dependency in &mut settings.depends_on {
+                            *dependency = canonical_node_path(dependency);
+                        }
                         let mut spec = ProcessSpec {
                             id: key.clone(),
                             path,
@@ -439,6 +458,13 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
                             "duplicate process id {key}"
                         );
                     } else if core_id == "isos" {
+                        if node.node_type == "isos.ui.vision@v1.0"
+                            && layer_id == "ui"
+                            && group_id == "panel"
+                            && key == node.id
+                        {
+                            continue;
+                        }
                         bail!("{path}: unregistered IsOS node type {}", node.node_type);
                     }
                 }
@@ -544,8 +570,22 @@ pub fn catalog() -> Result<Value> {
     );
     let mut contributed = BTreeMap::new();
     let mut contributed_data = BTreeMap::new();
+    let mut contributed_adapters = BTreeMap::new();
     for sidecar in packages::node_type_sidecars(&Paths::discover()?)? {
-        let value: Value = serde_json::from_slice(&fs::read(sidecar)?)?;
+        let value: Value = serde_json::from_slice(&fs::read(&sidecar)?)?;
+        let admitted = Command::new(&program)
+            .arg("catalog")
+            .arg("--node-types")
+            .arg(&sidecar)
+            .output()
+            .with_context(|| format!("catalog package sidecar {}", sidecar.display()))?;
+        ensure!(
+            admitted.status.success(),
+            "EOS rejected package sidecar {}: {}",
+            sidecar.display(),
+            String::from_utf8_lossy(&admitted.stderr).trim()
+        );
+        let admitted: Value = serde_json::from_slice(&admitted.stdout)?;
         if let Some(types) = value["node_types"].as_array() {
             for node_type in types {
                 let id = node_type["id"]
@@ -569,6 +609,27 @@ pub fn catalog() -> Result<Value> {
                 ensure!(
                     contributed_data.insert(id.to_owned(), data_type).is_none(),
                     "installed packages contribute duplicate data type {id}; remove one package version"
+                );
+            }
+        }
+        if let Some(adapters) = admitted["adapter_families"].as_array() {
+            for adapter in adapters {
+                let id = adapter["id"]
+                    .as_str()
+                    .context("contributed adapter family lacks id")?;
+                if !value["adapter_families"]
+                    .as_array()
+                    .is_some_and(|families| families.iter().any(|family| family["id"] == id))
+                {
+                    continue;
+                }
+                let mut adapter = adapter.clone();
+                adapter["package"] = value["package"].clone();
+                ensure!(
+                    contributed_adapters
+                        .insert(id.to_owned(), adapter)
+                        .is_none(),
+                    "installed packages contribute duplicate adapter family {id}"
                 );
             }
         }
@@ -599,6 +660,21 @@ pub fn catalog() -> Result<Value> {
             "package data type {id} conflicts with built-in type"
         );
         data_types.push(data_type);
+    }
+    if !catalog["adapter_families"].is_array() {
+        catalog["adapter_families"] = serde_json::json!([]);
+    }
+    let families = catalog["adapter_families"].as_array_mut().unwrap();
+    let builtin_families: BTreeSet<_> = families
+        .iter()
+        .filter_map(|value| value["id"].as_str().map(str::to_owned))
+        .collect();
+    for (id, family) in contributed_adapters {
+        ensure!(
+            !builtin_families.contains(&id),
+            "package adapter family {id} conflicts with built-in family"
+        );
+        families.push(family);
     }
     Ok(catalog)
 }

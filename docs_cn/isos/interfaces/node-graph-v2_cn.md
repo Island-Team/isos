@@ -56,3 +56,9 @@ IsOS 将已验证的可执行文件、场景路径和 MuJoCo 库路径传给 EOS
 手动和原语节点必须从调度器接收 `status: Status` 输入，并从目标硬件接收 `base_observation: BaseObservation` 或 `manipulator_observation: ManipulatorObservation` 输入；技能节点必须从调度器接收 `status: Status`。手动和原语节点提供 `request: ControlRequest` 与 `outcome: CommandOutcome` 输出端口；技能节点提供 `outcome: SkillOutcome`。节点 ID 默认由最终类型名和序号组成，例如 `manual_0` 或 `demo_0`；它是图身份，不是运动数据结构。
 
 另见[后端软件包设计](../design/backend-v2_cn.md)和[本地 API](local-api_cn.md)。
+
+## 标准节点路径与原语绑定
+
+节点引用采用 `<core>/<layer>/<group>/<node>` 四段非空路径。图的存储结构仍嵌套在 `cores`、`layers`、`groups`、`nodes` 下。节点集合预览会在返回的草稿中原子地转换旧八段式引用；保存仍须经过带修订校验的 Apply。MuJoCo 替换预览仅移除精确匹配的旧后端及相机、底盘、机械臂实例，并将现有控制引用改接至对应新节点；无关节点和控制保持不变。
+
+`eos.dispatcher.primitive_base@v1.0` 与 `eos.dispatcher.primitive_manipulator@v1.0` 是绑定节点。其 `settings` 用字符串 `primitive_name`、`primitive_version`、`movement_type` 指定原语。硬件 `inputs.command` 是来自绑定节点的 `{node,output}` 边数组；每个绑定输出必须连接到一个兼容硬件节点。适配器实现由硬件实例的 `adapter.type` 选择，与通用硬件节点类型独立。IsOS Vision 配置为 `isos.ui.vision@v1.0`，放在 `isos/ui/panel` 下，是内部 UI 节点，不作为进程监管。
