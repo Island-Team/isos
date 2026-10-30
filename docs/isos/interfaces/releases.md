@@ -61,3 +61,11 @@ Activation files are TOML templates. IsOS replaces {{package_file:relative/path}
 The current IsOS CLI does not import the older EOS isos.lock or v1-v3 manifests. Use the [manual migration guide](../maintenance/migration.md) until an explicit import command is implemented.
 
 Related: [deployment graph](deployment-graph.md), [package operations](../usage/packages.md).
+
+## Package node contributions
+
+Any v4 package kind may declare `node_contributions`. `node_types` and `safety_adapters` use EOS v1.0 registry JSON. IsOS snapshots them with the exact `{id,version}` package pin into `node-types.json` beside the receipt; EOS loads that sidecar through repeatable `--node-types` options. Contributed actuator types need a registered safety adapter with stop support. A linked bundle uses `isos pkg link ID VERSION BUNDLE --manifest release.json`; IsOS validates and snapshots the full v4 manifest. Old links without a manifest remain valid but contribute no node sets.
+
+`node_sets` contains objects with `id`, optional `parameters`, and `nodes`. Each node declares a symbolic `ref`, `core`, `layer`, optional `group`, and complete `profile`. The default group is the package name after `/`; MuJoCo declares `mujoco` explicitly. A parameter has `{ "type": "string", "default": "optional" }`; `${name}` in any profile string is replaced by the provided value. A profile reference to `@ref` resolves to the corresponding full graph path, including in `references`, `inputs`, and adapter settings. IsOS injects `profile.package={id,version}` and rejects conflicting pins. Profile fields follow the [EOS node graph contract](node-graph-v2.md).
+
+Package installation only makes node sets available. `isos pkg node-sets` lists them, and `isos pkg preview-set ID VERSION SET_ID graph.json --values values.json` prints a composed graph and `added_paths`. The HTTP preview has the same behavior. For a saved legacy MuJoCo graph, `--replace-legacy-mujoco` or preview body `replace_legacy_mujoco:true` removes the old backend, hardware, and dependent control nodes in the returned draft before adding the new set. Applying still uses the revision-checked graph API. Removal rejects any saved graph node with the exact package pin.

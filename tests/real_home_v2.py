@@ -91,7 +91,7 @@ def main():
                    ISOSUI_PORT=str(ui_port),
                    ISOS_AETHER_BIN_DIR=str(aether), MUJOCO_ROOT=str(mujoco),
                    ISOSUI_REPO_PATH=str(ui_repo))
-        command(isos, env, "pkg", "link", "island/mujoco-sim", "2.0.0", str(linked_bundle))
+        command(isos, env, "pkg", "link", "island/mujoco-sim", "2.0.0", str(linked_bundle), "--manifest", str(linked_bundle / "release.json"))
         init_log = (root / "init.log").open("w+")
         init = subprocess.Popen([str(isos), "init"], env=env, stdout=init_log,
                                 stderr=subprocess.STDOUT, text=True)
@@ -100,8 +100,8 @@ def main():
             await_condition(lambda: (root / "home/run/manager.sock").exists())
             graph_file = root / "home/config/deployments/default.nodes.json"
             graph = json.loads(graph_file.read_text())
-            backend = graph["cores"]["eos"]["layers"]["process"]["groups"]["backend"]["nodes"]["simulator"]["settings"]
-            backend["scene"] = scene
+            graph = api(isos_port, "node-sets/preview", "POST", {"package": {"id": "island/mujoco-sim", "version": "2.0.0"}, "set_id": "sim-hardware", "graph": graph, "values": {"scene": scene, "socket": str(root / "home/run/default-mujoco.sock")}})["graph"]
+            backend = graph["cores"]["eos"]["layers"]["process"]["groups"]["mujoco"]["nodes"]["simulator"]["settings"]
             backend["env"] = {"MUJOCO_GUI": "1"}
             components = graph["cores"]["isos"]["layers"]["process"]["groups"]["component"]["nodes"]
             for node, listen in [("bridge", bridge_port), ("config", config_port)]:
@@ -136,9 +136,9 @@ def main():
                 print("MuJoCo GUI visibility check skipped: DISPLAY or xwininfo unavailable", flush=True)
             assert command(isos, env, "pkg", "remove", "island/mujoco-sim", "2.0.0", success=False).returncode != 0
             assert eos(bridge_port, {"op": "discover"})["nodes"]
-            camera = "cores/eos/layers/hardware/groups/camera/nodes/front"
-            base = "cores/eos/layers/hardware/groups/base/nodes/drive"
-            arm = "cores/eos/layers/hardware/groups/manipulator/nodes/arm"
+            camera = "cores/eos/layers/hardware/groups/mujoco/nodes/front"
+            base = "cores/eos/layers/hardware/groups/mujoco/nodes/drive"
+            arm = "cores/eos/layers/hardware/groups/mujoco/nodes/arm"
             assert eos(bridge_port, {"op": "capture", "node_path": camera})["frame"]["width_px"] > 0
             samples = []
             for _ in range(20):
@@ -166,31 +166,6 @@ def main():
             assert arm_result["result"]["status"] != "Rejected"
             print("Real base and manipulator dispatch:", base_result["result"]["status"],
                   arm_result["result"]["status"], flush=True)
-            manual = "cores/eos/layers/control/groups/manual/nodes/manual_0"
-            primitive = "cores/eos/layers/control/groups/primitive/nodes/arm_joint_0"
-            skill = "cores/eos/layers/control/groups/skill/nodes/demo_0"
-            manual_request = {"op": "manual", "node_path": manual, "command_id": "real-manual-1",
-                              "deadline_monotonic_ns": now + 5_000_000_000,
-                              "movement": {"type": "body_velocity", "x_m_s": 0.05,
-                                           "y_m_s": 0.0, "yaw_rad_s": 0.0, "valid_for_ms": 100}}
-            assert eos(bridge_port, manual_request)["result"]["status"] != "Rejected"
-            primitive_request = {"op": "primitive", "node_path": primitive,
-                                 "command_id": "real-primitive-1",
-                                 "deadline_monotonic_ns": now + 5_000_000_000,
-                                 "movement": {"type": "joint_positions",
-                                              "joint_names": [f"joint{i}" for i in range(1, 7)],
-                                              "joint_positions_rad": [0.0] * 6}}
-            assert eos(bridge_port, primitive_request)["result"]["status"] != "Rejected"
-            execution = eos(bridge_port, {"op": "skill_execute", "node_path": skill,
-                                          "execution_id": "real-skill-1",
-                                          "steps": [{"movement": manual_request["movement"]},
-                                                    {"movement": primitive_request["movement"]}]})
-            assert execution["execution"]["status"] in ("queued", "running", "failed", "completed")
-            assert await_condition(lambda: (result if (result := eos(bridge_port, {
-                "op": "skill_result", "execution_id": "real-skill-1"}))["execution"]["status"]
-                in ("failed", "completed") else None))["execution"]["status"] == "failed"
-            assert eos(bridge_port, {"op": "manual_stop", "node_path": manual})["ok"]
-            print("Real manual and primitive control, skill uncertain-outcome stop: PASS", flush=True)
             assert eos(bridge_port, {"op": "stop", "node_path": base})["ok"]
             assert eos(bridge_port, {"op": "stop", "node_path": arm})["ok"]
             nested_asset = linked_bundle / "assets/menagerie/robotiq_2f85/2f85.xml"

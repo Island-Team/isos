@@ -4,6 +4,7 @@
 Requires built IsOS and Aether Rust binaries. Uses a protocol stub, not MuJoCo physics.
 """
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -22,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 EOS_BIN = Path(os.environ.get("AETHER_BIN_DIR", str(ROOT.parent / "Island-eos/target/debug")))
 ISOS = Path(os.environ.get("ISOS_BIN", str(ROOT / "target/debug/isos")))
 MOCK = ROOT / "tests/mock_mujoco_v2.py"
+CONTRIBUTIONS = ROOT.parent / "isos-mujoco-sim/tools/node_contributions.py"
 
 
 def run(*args, env, expect=True):
@@ -84,6 +86,15 @@ def main():
                         "library": "lib/libmujoco.so.3.16.0"},
         }
         (bundle / "backend-v2.json").write_text(json.dumps(descriptor))
+        module_spec = importlib.util.spec_from_file_location("node_contributions", CONTRIBUTIONS)
+        module = importlib.util.module_from_spec(module_spec)
+        module_spec.loader.exec_module(module)
+        manifest = bundle / "release.json"
+        manifest.write_text(json.dumps({
+            "schema_version": 4, "id": "island/mujoco-sim", "kind": "backend", "version": "2.0.0",
+            "source_commit": "a" * 40, "node_contributions": module.contributions(),
+            "assets": [{"os": "linux", "arch": "x86_64", "url": "https://github.com/Island-Team/isos-mujoco-sim/releases/download/v2.0.0/mock.tar.gz", "size_bytes": 1, "sha256": "b" * 64}],
+        }))
         library = root / "mujoco/lib"
         library.mkdir(parents=True)
         (library / "libmujoco.so.3.16.0").write_bytes(b"test-only dependency stub")
@@ -97,7 +108,7 @@ def main():
         env = dict(os.environ, ISOS_HOME=str(home), MUJOCO_ROOT=str(library.parent),
                    ISOS_HTTP_PORT=str(isos_port), ISOSUI_PORT=str(ui_port), ISOSUI_REPO_PATH=str(ui_repo),
                    ISOS_AETHER_BIN_DIR=str(EOS_BIN))
-        run("pkg", "link", "island/mujoco-sim", "2.0.0", str(bundle), env=env)
+        run("pkg", "link", "island/mujoco-sim", "2.0.0", str(bundle), "--manifest", str(manifest), env=env)
         init_log = (root / "init.log").open("w+")
         init_process = subprocess.Popen([str(ISOS), "init"], env=env,
                                         stdout=init_log, stderr=subprocess.STDOUT, text=True)
@@ -113,10 +124,11 @@ def main():
             raise RuntimeError("isos init did not bind its control socket")
         graph_path = home / "config/deployments/default.nodes.json"
         graph = json.loads(graph_path.read_text())
-        controls = graph["cores"]["eos"]["layers"]["control"]["groups"]
-        assert set(controls) == {"manual", "primitive", "skill"}
-        assert set(controls["primitive"]["nodes"]) == {"base_velocity_0", "arm_joint_0"}
-        backend = graph["cores"]["eos"]["layers"]["process"]["groups"]["backend"]["nodes"]["simulator"]["settings"]
+        assert "hardware" not in graph["cores"]["eos"]["layers"]
+        values_path = root / "node-values.json"
+        values_path.write_text(json.dumps({"scene": "default", "socket": str(home / "run/default-mujoco.sock")}))
+        graph = json.loads(run("pkg", "preview-set", "island/mujoco-sim", "2.0.0", "sim-hardware", str(graph_path), "--values", str(values_path), env=env).stdout)["graph"]
+        backend = graph["cores"]["eos"]["layers"]["process"]["groups"]["mujoco"]["nodes"]["simulator"]["settings"]
         gui_report = root / "simulator-env.txt"
         parent_report = root / "simulator-parent.json"
         backend["env"] = {"MUJOCO_GUI": "1", "ISOS_TEST_ENV_REPORT": str(gui_report),
@@ -135,13 +147,13 @@ def main():
         assert run("config", "validate", str(graph_path), env=env, expect=False).returncode != 0
         missing.write_text("<mujoco/>")
         bad_graph = json.loads(graph_path.read_text())
-        bad_graph["cores"]["eos"]["layers"]["hardware"]["groups"]["base"]["nodes"]["drive"]["adapter"]["settings"]["device_id"] = "wrong-base"
+        bad_graph["cores"]["eos"]["layers"]["hardware"]["groups"]["mujoco"]["nodes"]["drive"]["adapter"]["settings"]["device_id"] = "wrong-base"
         bad_path = root / "bad.nodes.json"
         bad_path.write_text(json.dumps(bad_graph))
         assert run("config", "validate", str(bad_path), env=env, expect=False).returncode != 0
         legacy_graph = json.loads(graph_path.read_text())
         legacy_backend = legacy_graph["cores"]["eos"]["layers"].pop("process")
-        legacy_graph["cores"]["isos"]["layers"]["process"]["groups"]["backend"] = legacy_backend["groups"]["backend"]
+        legacy_graph["cores"]["isos"]["layers"]["process"]["groups"]["backend"] = legacy_backend["groups"]["mujoco"]
         legacy_graph["cores"]["isos"]["layers"]["process"]["groups"]["backend"]["nodes"]["simulator"]["node_type"] = "isos.process.backend@v1.0"
         legacy_path = root / "legacy.nodes.json"
         legacy_path.write_text(json.dumps(legacy_graph))
@@ -211,7 +223,8 @@ def main():
                     break
                 if run_process.poll() is not None:
                     run_log.flush()
-                    raise RuntimeError(f"isos run exited {run_process.returncode}: {(root / 'run.log').read_text()}")
+                    config_log = home / "data/process-logs/default/config.log"
+                    raise RuntimeError(f"isos run exited {run_process.returncode}: {(root / 'run.log').read_text()}\nconfig log: {config_log.read_text() if config_log.exists() else 'missing'}")
                 time.sleep(0.05)
             else:
                 raise RuntimeError("isos run did not start")
@@ -245,9 +258,9 @@ def main():
                 assert json.load(response)["ok"]
             discovered = control({"op": "discover"}, bridge_port)
             assert len(discovered["nodes"]) >= 3
-            camera = "cores/eos/layers/hardware/groups/camera/nodes/front"
-            base = "cores/eos/layers/hardware/groups/base/nodes/drive"
-            arm = "cores/eos/layers/hardware/groups/manipulator/nodes/arm"
+            camera = "cores/eos/layers/hardware/groups/mujoco/nodes/front"
+            base = "cores/eos/layers/hardware/groups/mujoco/nodes/drive"
+            arm = "cores/eos/layers/hardware/groups/mujoco/nodes/arm"
             frame = control({"op": "capture", "node_path": camera}, bridge_port)
             assert frame["frame"]["width_px"] == 1
             assert control({"op": "observe", "node_path": base}, bridge_port)["observation"]["valid"]
@@ -257,40 +270,16 @@ def main():
                         "deadline_monotonic_ns": now + 5_000_000_000,
                         "movement": {"type": "body_velocity", "x_m_s": 0.1, "y_m_s": 0.0,
                                      "yaw_rad_s": 0.0, "valid_for_ms": 100}}
-            assert control(base_cmd, bridge_port)["result"]["status"] != "Rejected"
+            base_result = control(base_cmd, bridge_port)["result"]
+            assert base_result["status"] != "Rejected", base_result
             arm_cmd = {"op": "dispatch", "node_path": arm, "command_id": "mock-arm-1",
                        "deadline_monotonic_ns": now + 5_000_000_000,
                        "movement": {"type": "joint_positions", "joint_names": [f"joint{i}" for i in range(1, 7)],
                                     "joint_positions_rad": [0.0] * 6}}
             assert control(arm_cmd, bridge_port)["result"]["status"] != "Rejected"
-            manual = "cores/eos/layers/control/groups/manual/nodes/manual_0"
-            primitive = "cores/eos/layers/control/groups/primitive/nodes/arm_joint_0"
-            skill = "cores/eos/layers/control/groups/skill/nodes/demo_0"
-            manual_result = control(dict(base_cmd, op="manual", node_path=manual,
-                                         command_id="mock-manual-1"), bridge_port)["result"]
-            assert manual_result["status"] != "Rejected", manual_result
-            assert control(dict(arm_cmd, op="primitive", node_path=primitive,
-                                command_id="mock-primitive-1"), bridge_port)["result"]["status"] != "Rejected"
-            execution = control({"op": "skill_execute", "node_path": skill,
-                                 "execution_id": "mock-skill-1",
-                                 "steps": [{"movement": base_cmd["movement"]},
-                                           {"movement": arm_cmd["movement"]}]}, bridge_port)
-            assert execution["execution"]["status"] in ("queued", "running", "failed", "completed")
-            for _ in range(100):
-                outcome = control({"op": "skill_result", "execution_id": "mock-skill-1"}, bridge_port)
-                if outcome["execution"]["status"] in ("failed", "completed"):
-                    break
-                time.sleep(0.01)
-            else:
-                raise AssertionError("skill did not reach a terminal state")
-            assert outcome["execution"]["status"] == "failed", "mock lacks a physical completion signal"
-            assert len(outcome["execution"]["results"]) == 1
-            assert control({"op": "skill_cancel", "execution_id": "mock-skill-1"}, bridge_port)["execution"]["status"] == "failed"
-            assert control({"op": "manual_stop", "node_path": manual}, bridge_port)["ok"]
             assert control({"op": "stop", "node_path": base}, bridge_port)["ok"]
             assert control({"op": "stop", "node_path": arm}, bridge_port)["ok"]
             print("OPERATIONS discovery, camera capture, base/manipulator observation and command, safe stop: PASS")
-            print("OPERATIONS manual, primitive, skill failure and safe stop: PASS")
             samples = []
             for _ in range(200):
                 start = time.perf_counter()

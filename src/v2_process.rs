@@ -3,7 +3,7 @@
 //! The graph remains the authored source. This module admits only registered
 //! IsOS process nodes and keeps direct child handles in the manager process.
 
-use crate::{config::Paths, v2_backend, v2_bins};
+use crate::{config::Paths, packages, v2_backend, v2_bins};
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -63,13 +63,17 @@ struct GraphNode {
     references: Vec<String>,
     #[serde(default)]
     adapter: Option<Value>,
+    #[serde(default)]
+    package: Option<v2_backend::PackageIdentity>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BackendSettings {
-    package: String,
-    version: String,
+    #[serde(default)]
+    package: Option<String>,
+    #[serde(default)]
+    version: Option<String>,
     scene: String,
     socket: PathBuf,
     #[serde(default)]
@@ -236,7 +240,12 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
         source.len() as u64 <= MAX_GRAPH_BYTES,
         "v2 graph exceeds 1 MiB"
     );
-    let graph: Graph = serde_json::from_value(normalize_source(source)?)?;
+    let value = normalize_source(source)?;
+    let sidecars = paths
+        .map(|paths| packages::node_type_sidecars_for_graph(paths, &value))
+        .transpose()?
+        .unwrap_or_default();
+    let graph: Graph = serde_json::from_value(value)?;
     ensure!(graph.version == "2.0.0", "graph version must be 2.0.0");
     let mut specs = BTreeMap::new();
     let mut backends = BTreeMap::new();
@@ -244,7 +253,9 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
         for (layer_id, layer) in &core.layers {
             for (group_id, group) in &layer.groups {
                 for (key, node) in &group.nodes {
-                    if node.node_type != "eos.process.backend@v1.0" {
+                    if node.node_type != "eos.process.backend@v1.0"
+                        && node.node_type != "eos.process.mujoco@v1.0"
+                    {
                         continue;
                     }
                     let path =
@@ -252,7 +263,12 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
                     ensure!(
                         core_id == "eos"
                             && layer_id == "process"
-                            && group_id == "backend"
+                            && group_id
+                                == if node.node_type == "eos.process.mujoco@v1.0" {
+                                    "mujoco"
+                                } else {
+                                    "backend"
+                                }
                             && key == &node.id,
                         "{path}: backend has invalid placement or id"
                     );
@@ -261,6 +277,23 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
                     let settings: BackendSettings =
                         serde_json::from_value(node.settings.clone())
                             .with_context(|| format!("{path}: invalid backend settings"))?;
+                    let package = node
+                        .package
+                        .as_ref()
+                        .map(|p| p.id.as_str())
+                        .or(settings.package.as_deref())
+                        .context("backend requires package identity")?;
+                    let version = node
+                        .package
+                        .as_ref()
+                        .map(|p| p.version.as_str())
+                        .or(settings.version.as_deref())
+                        .context("backend requires package version")?;
+                    ensure!(
+                        settings.package.as_deref().is_none_or(|id| id == package)
+                            && settings.version.as_deref().is_none_or(|v| v == version),
+                        "backend package pin differs"
+                    );
                     ensure!(
                         settings.socket.is_absolute()
                             && settings.socket.as_os_str().as_bytes().len() <= 107,
@@ -276,8 +309,8 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
                     );
                     let resolved = v2_backend::resolve(
                         paths,
-                        &settings.package,
-                        &settings.version,
+                        package,
+                        version,
                         &settings.scene,
                         &settings.env,
                     )?;
@@ -320,11 +353,24 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
                         settings.get("socket_path").and_then(Value::as_str) == socket.to_str(),
                         "MuJoCo adapter {key} socket differs from backend"
                     );
+                    let kind = if group_id == "mujoco" {
+                        if node.node_type.ends_with("mujoco_camera@v1.0") {
+                            "camera"
+                        } else if node.node_type.ends_with("mujoco_base@v1.0") {
+                            "base"
+                        } else if node.node_type.ends_with("mujoco_manipulator@v1.0") {
+                            "manipulator"
+                        } else {
+                            anyhow::bail!("unknown MuJoCo hardware type {}", node.node_type)
+                        }
+                    } else {
+                        group_id.as_str()
+                    };
                     let expected = resolved
                         .descriptor
                         .devices
-                        .get(group_id.as_str())
-                        .with_context(|| format!("backend lacks {group_id} device"))?;
+                        .get(kind)
+                        .with_context(|| format!("backend lacks {kind} device"))?;
                     ensure!(
                         settings.get("simulator_node").and_then(Value::as_str)
                             == Some(expected.as_str()),
@@ -347,7 +393,9 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
                 for (key, node) in group.nodes {
                     let path =
                         format!("cores/{core_id}/layers/{layer_id}/groups/{group_id}/nodes/{key}");
-                    if node.node_type == "eos.process.backend@v1.0" {
+                    if node.node_type == "eos.process.backend@v1.0"
+                        || node.node_type == "eos.process.mujoco@v1.0"
+                    {
                         continue;
                     }
                     if node.node_type == "isos.process.component@v1.0" {
@@ -365,6 +413,14 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
                             package: None,
                             fingerprint: None,
                         };
+                        if key == "eos" || key == "config" {
+                            for sidecar in &sidecars {
+                                spec.settings.command.extend([
+                                    "--node-types".into(),
+                                    sidecar.to_string_lossy().into_owned(),
+                                ]);
+                            }
+                        }
                         if key == "eos" {
                             ensure!(backends.len() <= 1, "EOS currently supports one backend");
                             for (backend_path, (resolved, _socket)) in &backends {
@@ -471,8 +527,9 @@ pub fn validate_full_graph(path: &Path) -> Result<()> {
 
 pub fn catalog() -> Result<Value> {
     let program = v2_bins::resolve("aether-profile")?;
-    let output = Command::new(&program)
-        .arg("catalog")
+    let mut command = Command::new(&program);
+    command.arg("catalog");
+    let output = command
         .output()
         .with_context(|| format!("run EOS v2 type catalog {}", Path::new(&program).display()))?;
     ensure!(
@@ -484,19 +541,46 @@ pub fn catalog() -> Result<Value> {
         output.stdout.len() <= MAX_GRAPH_BYTES as usize,
         "EOS v2 catalog exceeds 1 MiB"
     );
-    let catalog: Value = serde_json::from_slice(&output.stdout)?;
+    let mut catalog: Value = serde_json::from_slice(&output.stdout)?;
     ensure!(
         catalog.get("types").and_then(Value::as_array).is_some(),
         "EOS v2 catalog has no types array"
     );
+    let mut contributed = BTreeMap::new();
+    for sidecar in packages::node_type_sidecars(&Paths::discover()?)? {
+        let value: Value = serde_json::from_slice(&fs::read(sidecar)?)?;
+        if let Some(types) = value["node_types"].as_array() {
+            for node_type in types {
+                let id = node_type["id"]
+                    .as_str()
+                    .context("contributed node type lacks id")?;
+                let mut node_type = node_type.clone();
+                node_type["package"] = value["package"].clone();
+                contributed.insert(id.to_owned(), node_type);
+            }
+        }
+    }
+    let types = catalog["types"].as_array_mut().unwrap();
+    let builtin: BTreeSet<_> = types
+        .iter()
+        .filter_map(|value| value["id"].as_str().map(str::to_owned))
+        .collect();
+    for (id, node_type) in contributed {
+        if !builtin.contains(&id) {
+            types.push(node_type);
+        }
+    }
     Ok(catalog)
 }
 
 fn validate_with_program(path: &Path, program: &Path) -> Result<()> {
-    let output = Command::new(program)
-        .arg("validate")
-        .arg("--file")
-        .arg(path)
+    let mut command = Command::new(program);
+    command.arg("validate").arg("--file").arg(path);
+    let graph = normalize_source(&fs::read_to_string(path)?)?;
+    for sidecar in packages::node_type_sidecars_for_graph(&Paths::discover()?, &graph)? {
+        command.arg("--node-types").arg(sidecar);
+    }
+    let output = command
         .output()
         .with_context(|| format!("run EOS v2 graph validator {}", program.display()))?;
     ensure!(

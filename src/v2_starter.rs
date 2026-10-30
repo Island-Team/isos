@@ -1,6 +1,6 @@
-//! Create the editable shared graph from the built-in MuJoCo preset.
+//! Create the editable shared graph from the generic v2 preset.
 
-use crate::{config::Paths, v2_backend, v2_bins};
+use crate::{config::Paths, v2_bins};
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::{
@@ -15,27 +15,9 @@ fn at<'a>(graph: &'a mut Value, pointer: &str) -> Result<&'a mut Value> {
 }
 
 pub fn draft(paths: &Paths, name: &str) -> Result<Value> {
-    let preset: toml::Value = toml::from_str(include_str!("../templates/mujoco-graph-v2.toml"))?;
+    let preset: toml::Value = toml::from_str(include_str!("../templates/generic-graph-v2.toml"))?;
     let mut graph = serde_json::to_value(preset)?;
     at(&mut graph, "/robot/id")?.clone_from(&json!(name));
-    let socket = paths.runtime.join(format!("{name}-mujoco.sock"));
-    let socket = socket.to_string_lossy().into_owned();
-    at(
-        &mut graph,
-        "/cores/eos/layers/process/groups/backend/nodes/simulator/settings/socket",
-    )?
-    .clone_from(&json!(socket));
-    for group in ["camera", "base", "manipulator"] {
-        let node = match group {
-            "camera" => "front",
-            "base" => "drive",
-            _ => "arm",
-        };
-        let pointer = format!(
-            "/cores/eos/layers/hardware/groups/{group}/nodes/{node}/adapter/settings/socket_path"
-        );
-        at(&mut graph, &pointer)?.clone_from(&json!(socket));
-    }
     let graph_path = paths.v2_node_graph(name).to_string_lossy().into_owned();
     let eos_socket = paths
         .runtime
@@ -81,24 +63,6 @@ pub fn draft(paths: &Paths, name: &str) -> Result<Value> {
         "--listen",
         "127.0.0.1:16021"
     ]));
-    if let Some(first) = v2_backend::installed(paths).into_iter().find(|backend| {
-        backend
-            .get("scenes")
-            .and_then(Value::as_array)
-            .is_some_and(|scenes| !scenes.is_empty())
-    }) {
-        let backend_settings = "/cores/eos/layers/process/groups/backend/nodes/simulator/settings";
-        if let Some(version) = first.get("version") {
-            at(&mut graph, &format!("{backend_settings}/version"))?.clone_from(version);
-        }
-        if let Some(scene) = first
-            .get("scenes")
-            .and_then(Value::as_array)
-            .and_then(|scenes| scenes.first())
-        {
-            at(&mut graph, &format!("{backend_settings}/scene"))?.clone_from(scene);
-        }
-    }
     Ok(graph)
 }
 
@@ -121,7 +85,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn starter_uses_installed_backend_scene_and_version() {
+    fn starter_has_no_hardware_until_package_set_is_added() {
         let temp = tempfile::tempdir().unwrap();
         let paths = Paths {
             config: temp.path().join("config"),
@@ -129,31 +93,10 @@ mod tests {
             runtime: temp.path().join("run"),
         };
         paths.prepare().unwrap();
-        let bundle = temp.path().join("bundle");
-        fs::create_dir_all(&bundle).unwrap();
-        fs::write(
-            bundle.join("backend-v2.json"),
-            serde_json::to_vec(&json!({
-                "schema_version": "2.0.0",
-                "package": {"id": "island/mujoco-sim", "version": "2.0.0"},
-                "entrypoint": "bin/eos-mujoco-sim",
-                "protocol": "mujoco-v2",
-                "scenes": [{"id": "pick-place", "path": "assets/scene.xml"},
-                           {"id": "navigation", "path": "assets/navigation.xml"}],
-                "devices": {"camera": "cam-0", "base": "base-0", "manipulator": "arm-0"},
-                "runtime": {"mujoco_version": "3.16.0", "environment_variable": "MUJOCO_ROOT",
-                            "library": "lib/libmujoco.so.3.16.0"}
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-        crate::packages::link(&paths, "island/mujoco-sim", "2.0.0", &bundle).unwrap();
         let graph = draft(&paths, "robot-a").unwrap();
-        let settings = graph
-            .pointer("/cores/eos/layers/process/groups/backend/nodes/simulator/settings")
-            .unwrap();
-        assert_eq!(settings["version"], "2.0.0");
-        assert_eq!(settings["scene"], "pick-place");
+        assert!(graph.pointer("/cores/eos/layers/process").is_none());
+        assert!(graph.pointer("/cores/eos/layers/hardware").is_none());
+        assert_eq!(graph["robot"]["name"], "Aether v2 deployment");
     }
 
     #[test]
@@ -167,12 +110,7 @@ mod tests {
         paths.prepare().unwrap();
         let path = init(&paths, "robot-a").unwrap();
         let graph: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        let socket = graph
-            .pointer("/cores/eos/layers/process/groups/backend/nodes/simulator/settings/socket")
-            .and_then(Value::as_str)
-            .unwrap();
-        assert!(socket.starts_with(paths.runtime.to_str().unwrap()));
-        assert_eq!(graph.pointer("/cores/eos/layers/hardware/groups/camera/nodes/front/adapter/settings/socket_path").and_then(Value::as_str), Some(socket));
+        assert!(graph.pointer("/cores/eos/layers/process").is_none());
         assert_eq!(
             graph
                 .pointer(
@@ -187,7 +125,7 @@ mod tests {
     }
 
     #[test]
-    fn starter_declares_typed_controls_without_direct_actuator_edges() {
+    fn starter_declares_dispatcher_without_uninstalled_hardware() {
         let temp = tempfile::tempdir().unwrap();
         let paths = Paths {
             config: temp.path().join("config"),
@@ -196,35 +134,11 @@ mod tests {
         };
         paths.prepare().unwrap();
         let graph = draft(&paths, "robot-a").unwrap();
-        let controls = &graph["cores"]["eos"]["layers"]["control"]["groups"];
+        assert!(graph.pointer("/cores/eos/layers/control").is_none());
         assert_eq!(
-            controls["manual"]["nodes"]["manual_0"]["settings"]["target"],
-            "cores/eos/layers/hardware/groups/base/nodes/drive"
-        );
-        assert_eq!(
-            controls["primitive"]["nodes"]["arm_joint_0"]["settings"]["movement_type"],
-            "joint_positions"
-        );
-        assert_eq!(
-            controls["skill"]["nodes"]["demo_0"]["settings"]["steps"]
-                .as_array()
-                .unwrap()
-                .len(),
-            2
-        );
-        assert_eq!(
-            controls["manual"]["nodes"]["manual_0"]["inputs"]["status"]["output"],
-            "status"
-        );
-        assert_eq!(
-            controls["primitive"]["nodes"]["arm_joint_0"]["inputs"]["manipulator_observation"]["output"],
-            "observation"
-        );
-        let base = &graph["cores"]["eos"]["layers"]["hardware"]["groups"]["base"]["nodes"]["drive"]
-            ["inputs"]["command"]["node"];
-        assert_eq!(
-            base,
-            "cores/eos/layers/dispatcher/groups/control/nodes/command"
+            graph["cores"]["eos"]["layers"]["dispatcher"]["groups"]["control"]["nodes"]["command"]
+                ["node_type"],
+            "eos.dispatcher.control@v1.0"
         );
     }
 }
