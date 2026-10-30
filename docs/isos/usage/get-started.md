@@ -21,4 +21,4 @@ isos run
 
 `run`, `start`, and `restart` remain attached to the terminal. Ctrl+C requests a clean stop. Use another terminal for `status`, `logs`, or `stop` while the deployment is running.
 
-Run rechecks the exact package and graph and starts MuJoCo before EOS. Stop reverses dependency order. Installing a package or changing an editor draft does not alter running processes; apply and restart to activate a new revision. A local link is revalidated on every apply/run. See [package commands](packages.md) and [graph fields](../interfaces/node-graph-v2.md).
+Run rechecks the exact package and graph, starts EOS, and lets EOS start MuJoCo before admitting hardware operations. Stop terminates EOS and its simulator child. Installing a package or changing an editor draft does not alter running processes; apply and restart to activate a new revision. A local link is revalidated on every apply/run. See [package commands](packages.md) and [graph fields](../interfaces/node-graph-v2.md).

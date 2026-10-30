@@ -100,7 +100,7 @@ def main():
             await_condition(lambda: (root / "home/run/manager.sock").exists())
             graph_file = root / "home/config/deployments/default.nodes.json"
             graph = json.loads(graph_file.read_text())
-            backend = graph["cores"]["isos"]["layers"]["process"]["groups"]["backend"]["nodes"]["simulator"]["settings"]
+            backend = graph["cores"]["eos"]["layers"]["process"]["groups"]["backend"]["nodes"]["simulator"]["settings"]
             backend["scene"] = scene
             backend["env"] = {"MUJOCO_GUI": "1"}
             components = graph["cores"]["isos"]["layers"]["process"]["groups"]["component"]["nodes"]
@@ -122,7 +122,7 @@ def main():
             status = await_condition(lambda: api(isos_port, "process-status") if
                                      api(isos_port, "process-status")["state"] == "running" else None)
             startup_ms = (time.perf_counter() - startup_begin) * 1000
-            assert {p["id"] for p in status["processes"]} == {"simulator", "eos", "bridge", "config"}
+            assert {p["id"] for p in status["processes"]} == {"eos", "bridge", "config"}
             assert status["active_revision"] == revision
             assert hashlib.sha256(graph_file.read_bytes()).hexdigest() == revision
             if env.get("DISPLAY") and shutil.which("xwininfo"):
@@ -176,8 +176,8 @@ def main():
             print("Changed nested linked asset blocked active start: PASS", flush=True)
             restarted = api(isos_port, "process-control", "POST",
                             {"schema_version": 2, "operation": "restart", "revision": revision})
-            assert restarted["started"][0] == "simulator"
-            assert api(isos_port, "process-logs/simulator?lines=10")["node"] == "simulator"
+            assert restarted["started"][0] == "eos"
+            assert api(isos_port, "process-logs/eos?lines=10")["node"] == "eos"
             print("Real MuJoCo discovery, capture, observations, stops, restart, logs: PASS", flush=True)
             running.send_signal(signal.SIGINT)
             assert running.wait(timeout=10) == 0
@@ -194,7 +194,7 @@ def main():
             print("--- init log ---\n", (root / "init.log").read_text(), flush=True)
             if (root / "run.log").exists():
                 print("--- run log ---\n", (root / "run.log").read_text(), flush=True)
-            for name in ["simulator", "eos", "bridge", "config"]:
+            for name in ["eos", "bridge", "config"]:
                 log = root / "home/data/process-logs/default" / f"{name}.log"
                 if log.exists():
                     print(f"--- {name} log ---\n", log.read_text(errors="replace")[-6000:], flush=True)

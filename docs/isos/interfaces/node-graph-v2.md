@@ -4,11 +4,11 @@
 
 One `2.0.0` graph at `~/.config/isos/deployments/<name>.nodes.json` (or `ISOS_HOME/config/deployments/`) configures IsOS, EOS, and the design-only EGIA nodes. A node type declares its core, layer, group, fields, and ports; an instance supplies its ID and settings. Current node types are `v1.0`. Run `aether-profile validate --file <graph>` before apply and again before run. IsOS validates the package projection after registry admission. The graph SHA-256 is the saved revision; an active process set retains its revision until restart.
 
-`isos init` writes an editable graph only when absent. It points the EOS camera/base/manipulator adapters at one IsOS backend node. `isos config validate <file>` checks the package and graph; `isos config apply <file>` saves normalized JSON; `isos run`, `restart`, `stop`, `status`, and `logs <node>` use the owner-only direct-child manager. The MuJoCo package starts before EOS and stops after EOS. A package install or link never changes an active deployment.
+`isos init` writes an editable graph only when absent. It points the EOS camera/base/manipulator adapters at one EOS backend node. `isos config validate <file>` checks the package and graph; `isos config apply <file>` saves normalized JSON; `isos run`, `restart`, `stop`, `status`, and `logs <node>` use the owner-only direct-child manager. EOS starts MuJoCo before admitting hardware operations and stops it with the EOS runtime. A package install or link never changes an active deployment.
 
 ## Backend node
 
-Path: `cores/isos/layers/process/groups/backend/nodes/<id>`. Type: `isos.process.backend@v1.0`. The node describes configuration; `backend-v2.json` is package metadata, and camera frames and commands have separate Rust payload structs. IsOS derives the executable and scene paths from the verified bundle, never from the node's command field.
+Path: `cores/eos/layers/process/groups/backend/nodes/<id>`. Type: `eos.process.backend@v1.0`. The node describes configuration; `backend-v2.json` is package metadata, and camera frames and commands have separate Rust payload structs. IsOS derives the executable and scene paths from the verified bundle, never from the node's command field.
 
 | Setting | Rust type | Unit | Purpose and validation |
 | --- | --- | --- | --- |
@@ -18,12 +18,9 @@ Path: `cores/isos/layers/process/groups/backend/nodes/<id>`. Type: `isos.process
 | `socket` | `PathBuf` | Unix path | Required owner-only socket under IsOS runtime, absolute and at most 107 bytes. EOS adapters must use this path. |
 | `env` | `BTreeMap<String,String>` | environment | Optional runtime values passed only to the simulator child. `MUJOCO_ROOT` locates the library; `MUJOCO_GUI=1` requests the simulator's visible window on a graphical host. Keys are ASCII alphanumeric or `_`, values exclude NUL. |
 | `start_timeout_ms` | `u64` | ms | Readiness deadline, default 30000, range 1–120000. |
-| `restart` | `Restart` | policy | `never`, `on_failure`, or `always`; default `never`. |
-| `max_restarts` | `u32` | attempts | Automatic restart cap, default 0, maximum 10. |
-| `depends_on` | `Vec<String>` | canonical node paths | Process prerequisites, unique and acyclic. |
 
 The backend descriptor's `entrypoint`, `scenes`, `devices`, `protocol`, and MuJoCo runtime requirement are verified at apply and run. IsOS checks referenced scene assets and includes their bytes in the link fingerprint. Each EOS hardware adapter must name the backend in `references`, set `adapter.settings.backend` to its canonical path, match `socket_path` to the backend socket, and match `device_id`/`simulator_node` to the package device for its camera/base/manipulator group.
-IsOS launches the descriptor entrypoint directly and prepends the verified MuJoCo library directory to that child's `LD_LIBRARY_PATH`, preserving any existing search path. This environment change is scoped to the simulator process.
+IsOS passes the verified executable and scene as explicit EOS runtime arguments and the verified MuJoCo library path in the EOS child environment. EOS starts the simulator, scopes the backend `env` values to that child, and waits for the configured Unix socket.
 
 ## Component process node
 

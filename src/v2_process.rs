@@ -76,12 +76,6 @@ struct BackendSettings {
     env: BTreeMap<String, String>,
     #[serde(default = "default_start_timeout_ms")]
     start_timeout_ms: u64,
-    #[serde(default)]
-    restart: Restart,
-    #[serde(default)]
-    max_restarts: u32,
-    #[serde(default)]
-    depends_on: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -250,13 +244,13 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
         for (layer_id, layer) in &core.layers {
             for (group_id, group) in &layer.groups {
                 for (key, node) in &group.nodes {
-                    if node.node_type != "isos.process.backend@v1.0" {
+                    if node.node_type != "eos.process.backend@v1.0" {
                         continue;
                     }
                     let path =
                         format!("cores/{core_id}/layers/{layer_id}/groups/{group_id}/nodes/{key}");
                     ensure!(
-                        core_id == "isos"
+                        core_id == "eos"
                             && layer_id == "process"
                             && group_id == "backend"
                             && key == &node.id,
@@ -276,6 +270,10 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
                         settings.socket.starts_with(&paths.runtime),
                         "{path}: socket must be under the IsOS runtime directory"
                     );
+                    ensure!(
+                        (1..=120_000).contains(&settings.start_timeout_ms),
+                        "{path}: start_timeout_ms must be 1..=120000"
+                    );
                     let resolved = v2_backend::resolve(
                         paths,
                         &settings.package,
@@ -283,42 +281,8 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
                         &settings.scene,
                         &settings.env,
                     )?;
-                    let short = &resolved.fingerprint[..12];
-                    let legacy_socket = paths.runtime.join(format!("mj-{short}-legacy.sock"));
-                    let benchmark_socket = paths.runtime.join(format!("mj-{short}-bench.sock"));
-                    let command = vec![
-                        resolved.executable.to_string_lossy().into_owned(),
-                        "--socket".into(),
-                        legacy_socket.to_string_lossy().into_owned(),
-                        "--benchmark-socket".into(),
-                        benchmark_socket.to_string_lossy().into_owned(),
-                        "--v2-socket".into(),
-                        settings.socket.to_string_lossy().into_owned(),
-                        "--scene".into(),
-                        resolved.scene.to_string_lossy().into_owned(),
-                    ];
-                    let spec = ProcessSpec {
-                        id: key.clone(),
-                        path: path.clone(),
-                        settings: ProcessSettings {
-                            command,
-                            cwd: Some(paths.runtime.clone()),
-                            env: resolved.environment.clone(),
-                            ready_tcp: None,
-                            ready_unix: Some(settings.socket.clone()),
-                            start_timeout_ms: settings.start_timeout_ms,
-                            restart: settings.restart,
-                            max_restarts: settings.max_restarts,
-                            depends_on: settings.depends_on,
-                        },
-                        package: Some(resolved.descriptor.package.clone()),
-                        fingerprint: Some(resolved.fingerprint.clone()),
-                    };
-                    spec.validate()?;
                     ensure!(
-                        backends
-                            .insert(path, (resolved, settings.socket, spec))
-                            .is_none(),
+                        backends.insert(path, (resolved, settings.socket)).is_none(),
                         "duplicate backend path"
                     );
                 }
@@ -345,7 +309,7 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
                         .get("backend")
                         .and_then(Value::as_str)
                         .context("MuJoCo adapter lacks backend reference")?;
-                    let (resolved, socket, _) = backends.get(backend_path).with_context(|| {
+                    let (resolved, socket) = backends.get(backend_path).with_context(|| {
                         format!("MuJoCo adapter {key} references missing backend {backend_path}")
                     })?;
                     ensure!(
@@ -377,19 +341,13 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
             }
         }
     }
-    for (path, (_, _, spec)) in backends {
-        ensure!(
-            specs.insert(spec.id.clone(), spec).is_none(),
-            "duplicate backend process {path}"
-        );
-    }
     for (core_id, core) in graph.cores {
         for (layer_id, layer) in core.layers {
             for (group_id, group) in layer.groups {
                 for (key, node) in group.nodes {
                     let path =
                         format!("cores/{core_id}/layers/{layer_id}/groups/{group_id}/nodes/{key}");
-                    if node.node_type == "isos.process.backend@v1.0" {
+                    if node.node_type == "eos.process.backend@v1.0" {
                         continue;
                     }
                     if node.node_type == "isos.process.component@v1.0" {
@@ -400,13 +358,29 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
                         ensure!(key == node.id, "{path}: node id differs from map key");
                         let settings: ProcessSettings = serde_json::from_value(node.settings)
                             .with_context(|| format!("{path}: invalid process settings"))?;
-                        let spec = ProcessSpec {
+                        let mut spec = ProcessSpec {
                             id: key.clone(),
                             path,
                             settings,
                             package: None,
                             fingerprint: None,
                         };
+                        if key == "eos" {
+                            ensure!(backends.len() <= 1, "EOS currently supports one backend");
+                            for (backend_path, (resolved, _socket)) in &backends {
+                                spec.settings.command.extend([
+                                    "--backend-node".into(),
+                                    backend_path.clone(),
+                                    "--backend-executable".into(),
+                                    resolved.executable.to_string_lossy().into_owned(),
+                                    "--backend-scene".into(),
+                                    resolved.scene.to_string_lossy().into_owned(),
+                                ]);
+                                spec.settings.env.extend(resolved.environment.clone());
+                                spec.package = Some(resolved.descriptor.package.clone());
+                                spec.fingerprint = Some(resolved.fingerprint.clone());
+                            }
+                        }
                         spec.validate()?;
                         ensure!(
                             specs.insert(key.clone(), spec).is_none(),
@@ -419,6 +393,10 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
             }
         }
     }
+    ensure!(
+        backends.is_empty() || specs.contains_key("eos"),
+        "EOS backend requires an IsOS-managed EOS runtime process"
+    );
     let mut ordered = Vec::with_capacity(specs.len());
     let mut pending: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for (id, spec) in &specs {

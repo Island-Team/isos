@@ -113,9 +113,11 @@ def main():
             raise RuntimeError("isos init did not bind its control socket")
         graph_path = home / "config/deployments/default.nodes.json"
         graph = json.loads(graph_path.read_text())
-        backend = graph["cores"]["isos"]["layers"]["process"]["groups"]["backend"]["nodes"]["simulator"]["settings"]
+        backend = graph["cores"]["eos"]["layers"]["process"]["groups"]["backend"]["nodes"]["simulator"]["settings"]
         gui_report = root / "simulator-env.txt"
-        backend["env"] = {"MUJOCO_GUI": "1", "ISOS_TEST_ENV_REPORT": str(gui_report)}
+        parent_report = root / "simulator-parent.json"
+        backend["env"] = {"MUJOCO_GUI": "1", "ISOS_TEST_ENV_REPORT": str(gui_report),
+                          "ISOS_TEST_PARENT_REPORT": str(parent_report)}
         bridge_port, config_port = free_port(), free_port()
         bridge = graph["cores"]["isos"]["layers"]["process"]["groups"]["component"]["nodes"]["bridge"]["settings"]
         bridge["command"][-1] = f"127.0.0.1:{bridge_port}"
@@ -134,6 +136,13 @@ def main():
         bad_path = root / "bad.nodes.json"
         bad_path.write_text(json.dumps(bad_graph))
         assert run("config", "validate", str(bad_path), env=env, expect=False).returncode != 0
+        legacy_graph = json.loads(graph_path.read_text())
+        legacy_backend = legacy_graph["cores"]["eos"]["layers"].pop("process")
+        legacy_graph["cores"]["isos"]["layers"]["process"]["groups"]["backend"] = legacy_backend["groups"]["backend"]
+        legacy_graph["cores"]["isos"]["layers"]["process"]["groups"]["backend"]["nodes"]["simulator"]["node_type"] = "isos.process.backend@v1.0"
+        legacy_path = root / "legacy.nodes.json"
+        legacy_path.write_text(json.dumps(legacy_graph))
+        assert run("config", "validate", str(legacy_path), env=env, expect=False).returncode != 0
         run("config", "apply", str(graph_path), env=env)
         assert run("pkg", "remove", "island/mujoco-sim", "2.0.0", env=env, expect=False).returncode != 0
         saved_hash = hashlib.sha256(graph_path.read_bytes()).hexdigest()
@@ -198,7 +207,8 @@ def main():
                 if isos_api("process-status")["state"] == "running":
                     break
                 if run_process.poll() is not None:
-                    raise RuntimeError(f"isos run exited {run_process.returncode}")
+                    run_log.flush()
+                    raise RuntimeError(f"isos run exited {run_process.returncode}: {(root / 'run.log').read_text()}")
                 time.sleep(0.05)
             else:
                 raise RuntimeError("isos run did not start")
@@ -206,11 +216,13 @@ def main():
             for _ in range(4):
                 start = time.perf_counter()
                 result = isos_api("process-control", "POST", {"schema_version": 2, "operation": "restart"})
-                assert result["started"][0] == "simulator"
+                assert result["started"][0] == "eos"
                 startups.append((time.perf_counter() - start) * 1000)
             status = json.loads(run("status", "--json", env=env).stdout)
             assert status["state"] == "running" and status["package"]["version"] == "2.0.0"
-            assert {p["id"] for p in status["processes"]} == {"simulator", "eos", "bridge", "config"}
+            assert {p["id"] for p in status["processes"]} == {"eos", "bridge", "config"}
+            assert json.loads(parent_report.read_text())["parent_pid"] == next(
+                p["pid"] for p in status["processes"] if p["id"] == "eos")
             assert gui_report.read_text() == "1", "backend GUI setting did not reach the simulator"
             assert hashlib.sha256(graph_path.read_bytes()).hexdigest() == saved_hash, "EOS changed applied graph"
             discovered = control({"op": "discover"}, bridge_port)
@@ -241,16 +253,16 @@ def main():
                 start = time.perf_counter()
                 control({"op": "time"}, bridge_port)
                 samples.append((time.perf_counter() - start) * 1000)
-            run("logs", "simulator", "--lines", "5", env=env)
+            run("logs", "eos", "--lines", "5", env=env)
             run_process.send_signal(signal.SIGINT)
             assert run_process.wait(timeout=10) == 0
             print("ISOS RUN Ctrl+C stopped managed children: PASS")
             assert json.loads(run("status", "--json", env=env).stdout)["state"] == "stopped"
             assert isos_api("process-status")["state"] == "stopped"
             api_run = isos_api("process-control", "POST", {"schema_version": 2, "operation": "run", "revision": saved_hash})
-            assert api_run["started"][0] == "simulator"
-            assert isos_api("process-logs/simulator?lines=5")["node"] == "simulator"
-            assert isos_api("process-control", "POST", {"schema_version": 2, "operation": "stop"})["stopped"][-1] == "simulator"
+            assert api_run["started"][0] == "eos"
+            assert isos_api("process-logs/eos?lines=5")["node"] == "eos"
+            assert isos_api("process-control", "POST", {"schema_version": 2, "operation": "stop"})["stopped"][-1] == "eos"
             print("ISOS HTTP Home, graph validation, process control, status, and logs: PASS")
             missing.write_text('<mujoco><mesh file="gone.stl"/></mujoco>')
             assert run("run", env=env, expect=False).returncode != 0
@@ -258,7 +270,7 @@ def main():
             assert "gone.stl" in failed_status["last_error"]
             missing.write_text("<mujoco/>")
             print("FAILURE missing linked asset blocked run and recorded last_error: PASS")
-            assert isos_api("process-control", "POST", {"schema_version": 2, "operation": "run"})["started"][0] == "simulator"
+            assert isos_api("process-control", "POST", {"schema_version": 2, "operation": "run"})["started"][0] == "eos"
             shutdown_pids = [process["pid"] for process in isos_api("process-status")["processes"]]
             print("BENCH fixed workload: 5 process starts/restarts; 200 HTTP→EOS socket time requests")
             print(f"BENCH startup median_ms={statistics.median(startups):.3f} p99_ms={percentile(startups,.99):.3f}")

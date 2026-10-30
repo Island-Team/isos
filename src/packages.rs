@@ -279,7 +279,7 @@ pub fn remove(paths: &Paths, id: &str, version: &str) -> Result<()> {
         {
             let graph: serde_json::Value = serde_json::from_slice(&fs::read(deployment.path())?)?;
             if graph
-                .pointer("/cores/isos/layers/process/groups/backend/nodes")
+                .pointer("/cores/eos/layers/process/groups/backend/nodes")
                 .and_then(serde_json::Value::as_object)
                 .is_some_and(|nodes| {
                     nodes.values().any(|node| {

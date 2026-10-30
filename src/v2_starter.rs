@@ -22,7 +22,7 @@ pub fn draft(paths: &Paths, name: &str) -> Result<Value> {
     let socket = socket.to_string_lossy().into_owned();
     at(
         &mut graph,
-        "/cores/isos/layers/process/groups/backend/nodes/simulator/settings/socket",
+        "/cores/eos/layers/process/groups/backend/nodes/simulator/settings/socket",
     )?
     .clone_from(&json!(socket));
     for group in ["camera", "base", "manipulator"] {
@@ -68,7 +68,7 @@ pub fn draft(paths: &Paths, name: &str) -> Result<Value> {
         "--socket",
         eos_socket,
         "--listen",
-        "127.0.0.1:16201"
+        "127.0.0.1:16020"
     ]));
     at(
         &mut graph,
@@ -79,25 +79,15 @@ pub fn draft(paths: &Paths, name: &str) -> Result<Value> {
         "--profile",
         graph_path,
         "--listen",
-        "127.0.0.1:16202"
+        "127.0.0.1:16021"
     ]));
-    at(
-        &mut graph,
-        "/cores/isos/layers/process/groups/component/nodes/config/settings",
-    )?
-    .as_object_mut()
-    .context("config settings must be an object")?
-    .insert(
-        "depends_on".into(),
-        json!(["cores/isos/layers/process/groups/backend/nodes/simulator"]),
-    );
     if let Some(first) = v2_backend::installed(paths).into_iter().find(|backend| {
         backend
             .get("scenes")
             .and_then(Value::as_array)
             .is_some_and(|scenes| !scenes.is_empty())
     }) {
-        let backend_settings = "/cores/isos/layers/process/groups/backend/nodes/simulator/settings";
+        let backend_settings = "/cores/eos/layers/process/groups/backend/nodes/simulator/settings";
         if let Some(version) = first.get("version") {
             at(&mut graph, &format!("{backend_settings}/version"))?.clone_from(version);
         }
@@ -160,7 +150,7 @@ mod tests {
         crate::packages::link(&paths, "island/mujoco-sim", "2.0.0", &bundle).unwrap();
         let graph = draft(&paths, "robot-a").unwrap();
         let settings = graph
-            .pointer("/cores/isos/layers/process/groups/backend/nodes/simulator/settings")
+            .pointer("/cores/eos/layers/process/groups/backend/nodes/simulator/settings")
             .unwrap();
         assert_eq!(settings["version"], "2.0.0");
         assert_eq!(settings["scene"], "pick-place");
@@ -178,7 +168,7 @@ mod tests {
         let path = init(&paths, "robot-a").unwrap();
         let graph: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         let socket = graph
-            .pointer("/cores/isos/layers/process/groups/backend/nodes/simulator/settings/socket")
+            .pointer("/cores/eos/layers/process/groups/backend/nodes/simulator/settings/socket")
             .and_then(Value::as_str)
             .unwrap();
         assert!(socket.starts_with(paths.runtime.to_str().unwrap()));
@@ -189,7 +179,7 @@ mod tests {
                     "/cores/isos/layers/process/groups/component/nodes/config/settings/depends_on/0"
                 )
                 .and_then(Value::as_str),
-            Some("cores/isos/layers/process/groups/backend/nodes/simulator")
+            Some("cores/isos/layers/process/groups/component/nodes/eos")
         );
         fs::write(&path, "authored").unwrap();
         assert_eq!(init(&paths, "robot-a").unwrap(), path);

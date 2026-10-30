@@ -738,7 +738,7 @@ fn api_call(
             let saved_revision = v2_starter::revision(&paths.v2_node_graph(&name)).ok();
             let pinned_package = fs::read(paths.v2_node_graph(&name)).ok()
                 .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-                .and_then(|graph| graph.pointer("/cores/isos/layers/process/groups/backend/nodes").and_then(Value::as_object).and_then(|nodes| nodes.values().next()).and_then(|node| node.get("settings")).cloned())
+                .and_then(|graph| graph.pointer("/cores/eos/layers/process/groups/backend/nodes").and_then(Value::as_object).and_then(|nodes| nodes.values().next()).and_then(|node| node.get("settings")).cloned())
                 .map(|settings| json!({"id":settings.get("package"),"version":settings.get("version"),"scene":settings.get("scene")}));
             let active = managers.get_mut(&name);
             let processes = if let Some(active) = active {

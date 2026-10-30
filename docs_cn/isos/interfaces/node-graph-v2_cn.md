@@ -4,11 +4,11 @@
 
 位于 `~/.config/isos/deployments/<name>.nodes.json`（或 `ISOS_HOME/config/deployments/`）的 `2.0.0` 图同时配置 IsOS、EOS 与仅供设计的 EGIA 节点。节点类型声明 core、layer、group、字段与端口；节点实例提供 ID 和设置。当前节点类型版本为 `v1.0`。应用前以及运行前都执行 `aether-profile validate --file <graph>`；IsOS 随后校验软件包进程投影。图的 SHA-256 是保存修订号，运行中的进程保持其修订号直到重启。
 
-`isos init` 只在图不存在时创建可编辑图，并把 EOS 的相机、底盘、机械臂适配器指向同一个 IsOS 后端节点。`isos config validate <file>` 校验软件包和图；`isos config apply <file>` 保存规范化 JSON；`isos run`、`restart`、`stop`、`status` 和 `logs <node>` 通过仅所有者可访问的直接子进程管理器工作。MuJoCo 在 EOS 之前启动、在 EOS 之后停止。安装或链接软件包不会改变运行中的部署。
+`isos init` 只在图不存在时创建可编辑图，并把 EOS 的相机、底盘、机械臂适配器指向同一个 EOS 后端节点。`isos config validate <file>` 校验软件包和图；`isos config apply <file>` 保存规范化 JSON；`isos run`、`restart`、`stop`、`status` 和 `logs <node>` 通过仅所有者可访问的直接子进程管理器工作。EOS 在准入硬件操作前启动 MuJoCo，并在 EOS 停止时终止它。安装或链接软件包不会改变运行中的部署。
 
 ## 后端节点
 
-路径：`cores/isos/layers/process/groups/backend/nodes/<id>`。类型：`isos.process.backend@v1.0`。节点只配置运行方式；`backend-v2.json` 是软件包元数据，相机帧和运动命令使用独立的 Rust 数据结构。可执行文件和场景路径由 IsOS 从校验过的软件包推导，不在节点中填写命令。
+路径：`cores/eos/layers/process/groups/backend/nodes/<id>`。类型：`eos.process.backend@v1.0`。节点只配置运行方式；`backend-v2.json` 是软件包元数据，相机帧和运动命令使用独立的 Rust 数据结构。可执行文件和场景路径由 IsOS 从校验过的软件包推导，不在节点中填写命令。
 
 | 设置 | Rust 类型 | 单位 | 用途与校验 |
 | --- | --- | --- | --- |
@@ -18,12 +18,9 @@
 | `socket` | `PathBuf` | Unix 路径 | 必填绝对路径，位于 IsOS 运行目录下、仅所有者可访问，最多 107 字节。EOS 适配器必须使用相同路径。 |
 | `env` | `BTreeMap<String,String>` | 环境变量 | 可选，仅传给仿真器子进程。`MUJOCO_ROOT` 指向库；`MUJOCO_GUI=1` 在有图形环境的主机上请求可见窗口。键仅允许 ASCII 字母、数字或 `_`，值不得含 NUL。 |
 | `start_timeout_ms` | `u64` | 毫秒 | 就绪期限，默认 30000，范围 1–120000。 |
-| `restart` | `Restart` | 策略 | `never`、`on_failure` 或 `always`；默认 `never`。 |
-| `max_restarts` | `u32` | 次数 | 自动重启上限，默认 0，最多 10。 |
-| `depends_on` | `Vec<String>` | 规范节点路径 | 前置进程，不得重复或形成环。 |
 
 应用和运行时校验后端描述文件的 `entrypoint`、`scenes`、`devices`、`protocol` 与 MuJoCo 运行环境。IsOS 检查场景引用的资源，并把其内容纳入链接指纹。每个 EOS 硬件适配器都要在 `references` 中列出后端，令 `adapter.settings.backend` 等于其规范路径、`socket_path` 等于后端套接字，且 `device_id`/`simulator_node` 等于软件包为相机、底盘或机械臂声明的设备 ID。
-IsOS 直接启动描述文件中的可执行文件，并将已验证的 MuJoCo 库目录放在该子进程的 `LD_LIBRARY_PATH` 首位，同时保留原有搜索路径。此环境修改仅作用于仿真器进程。
+IsOS 将已验证的可执行文件、场景路径和 MuJoCo 库路径传给 EOS 运行时。EOS 启动仿真器，把后端 `env` 值限定在该子进程，并等待配置的 Unix 套接字就绪。
 
 ## 组件进程节点
 
