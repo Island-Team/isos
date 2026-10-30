@@ -27,11 +27,12 @@ use std::{
     os::unix::{
         fs::PermissionsExt,
         net::{UnixListener, UnixStream},
+        process::CommandExt,
     },
-    path::PathBuf,
-    process::Command,
+    path::{Path, PathBuf},
+    process::{Child, Command, Stdio},
     sync::atomic::{AtomicBool, Ordering},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
@@ -899,21 +900,125 @@ fn daemon(paths: &config::Paths, listener: UnixListener) -> Result<()> {
     Ok(())
 }
 
+fn ui_source() -> Result<PathBuf> {
+    let source = std::env::var_os("ISOSUI_REPO_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("../IsosUI"));
+    ensure!(
+        source.join("package.json").is_file(),
+        "IsosUI source missing at {}; set ISOSUI_REPO_PATH",
+        source.display()
+    );
+    ensure!(
+        source.join("node_modules").is_dir(),
+        "IsosUI dependencies missing at {}; run npm ci there",
+        source.display()
+    );
+    Ok(source.canonicalize()?)
+}
+
+struct Frontend(Child);
+
+impl Frontend {
+    fn spawn(source: &Path) -> Result<Self> {
+        let mut command = Command::new("npm");
+        command
+            .arg("start")
+            .current_dir(source)
+            .env("ISOSUI_HOST", "127.0.0.1")
+            .env("ISOSUI_PORT", http::ui_port()?.to_string())
+            .env("ISOSUI_API_ORIGIN", http::local_origin())
+            .stdin(Stdio::null());
+        let parent_pid = std::process::id();
+        unsafe {
+            command.pre_exec(move || {
+                if libc::setsid() < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if libc::getppid() as u32 != parent_pid {
+                    return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
+                }
+                Ok(())
+            });
+        }
+        Ok(Self(command.spawn()?))
+    }
+
+    fn ready(&mut self, port: u16) -> Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < deadline {
+            if let Some(status) = self.0.try_wait()? {
+                bail!("IsosUI npm server exited before ready: {status}");
+            }
+            if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                return Ok(());
+            }
+            if INTERRUPTED.load(Ordering::SeqCst) {
+                bail!("IsosUI startup interrupted");
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        bail!("IsosUI npm server did not listen on 127.0.0.1:{port} within 30 seconds")
+    }
+}
+
+impl Drop for Frontend {
+    fn drop(&mut self) {
+        let group = -(self.0.id() as i32);
+        unsafe { libc::kill(group, libc::SIGTERM) };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            if self.0.try_wait().ok().flatten().is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if unsafe { libc::kill(group, 0) } == 0 {
+            unsafe { libc::kill(group, libc::SIGKILL) };
+        }
+        let _ = self.0.wait();
+    }
+}
+
 fn serve_foreground(paths: config::Paths, name: String) -> Result<()> {
-    let url = http::open_url(&paths)?;
+    let source = ui_source()?;
+    let port = http::ui_port()?;
     catch_interrupts()?;
+    let mut frontend = Frontend::spawn(&source)?;
     let listener = bind_daemon(&paths)?;
     let api_paths = paths.clone();
     let manager = std::thread::spawn(move || daemon(&api_paths, listener));
-    println!("{url}");
-    println!("IsOS workbench is running; press Ctrl+C to stop it.");
-    let http_result = http::serve(paths, name);
+    let http_server = std::thread::spawn(move || http::serve(paths, name));
+    let mut result = frontend.ready(port);
+    if result.is_ok() {
+        println!("{}", http::ui_url()?);
+        println!("IsOS API: {}", http::local_origin());
+        println!("IsOS workbench is running; press Ctrl+C to stop it.");
+        while !INTERRUPTED.load(Ordering::SeqCst) {
+            if let Some(status) = frontend.0.try_wait()? {
+                result = Err(anyhow::anyhow!("IsosUI npm server exited: {status}"));
+                break;
+            }
+            if http_server.is_finished() || manager.is_finished() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
     INTERRUPTED.store(true, Ordering::SeqCst);
+    drop(frontend);
+    let http_result = http_server
+        .join()
+        .map_err(|_| anyhow::anyhow!("IsOS HTTP thread panicked"))?;
     let manager_result = manager
         .join()
         .map_err(|_| anyhow::anyhow!("IsOS manager thread panicked"))?;
     manager_result?;
-    http_result
+    http_result?;
+    result
 }
 
 fn wait_for_interrupt(paths: &config::Paths, name: &str) -> Result<()> {
@@ -1066,7 +1171,7 @@ fn main_run() -> Result<()> {
             serve_foreground(paths, name)?;
         }
         CommandLine::Open => {
-            let url = http::open_url(&paths)?;
+            let url = http::ui_url()?;
             println!("{url}");
             let _ = Command::new("xdg-open").arg(url).spawn();
         }

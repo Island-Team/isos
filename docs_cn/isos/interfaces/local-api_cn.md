@@ -2,9 +2,9 @@
 
 [English](../../../docs/isos/interfaces/local-api.md)
 
-`isos init` 默认在 `127.0.0.1:16000` 启动本地工作台服务（`ISOS_HTTP_PORT` 可为隔离测试选择另一个环回端口），并在 `$XDG_RUNTIME_DIR/isos/`（或 `ISOS_HOME/run/`）下创建仅所有者可访问的 Unix 管理套接字。运行目录权限为 `0700`，管理套接字为 `0600`。HTTP 响应封装为 `{schema_version:2,ok,data,error}`；内部单行 Unix 封装仍为 schema 1。
+`isos init` 默认在 `127.0.0.1:16000` 启动 IsOS API（`ISOS_HTTP_PORT` 可调整端口），管理 IsosUI 的 `npm start` 服务并使其监听 `127.0.0.1:16001`（`ISOSUI_PORT` 可调整端口），还会在 `$XDG_RUNTIME_DIR/isos/`（或 `ISOS_HOME/run/`）下创建仅所有者可访问的 Unix 管理套接字。运行目录权限为 `0700`，管理套接字为 `0600`。HTTP 响应封装为 `{schema_version:2,ok,data,error}`；内部单行 Unix 封装仍为 schema 1。
 
-服务只绑定 `127.0.0.1`，在 `/en/isos` 与 `/cn/isos` 提供本地 IsosUI 前端。客户端通过地址和端口连接，无需 URL 或 bearer 令牌。`Host` 必须匹配环回地址和配置的端口。浏览器可使用同源或托管 IsosUI 来源 `https://www.os-island.com`、`https://os-island.com`；其他 Origin 会被拒绝。跨域预检允许 GET、POST、PUT 和 Content-Type。管理 Unix 套接字仍仅供所有者访问。
+API 只绑定 `127.0.0.1`，不提供前端文件。IsosUI 通过地址和端口直接调用 API，无需 URL 或 bearer 令牌。API `Host` 必须匹配其环回地址和配置的端口。浏览器请求可来自 npm 前端 `127.0.0.1:16001`（或配置的 `ISOSUI_PORT`）、API 自身来源，或托管 IsosUI 来源 `https://www.os-island.com`、`https://os-island.com`；其他 Origin 会被拒绝。跨域预检允许 GET、POST、PUT 和 Content-Type。按 Ctrl+C 会停止两个服务和仅所有者可访问的管理器。
 
 | 路由 | 响应或请求 | 用途 |
 | --- | --- | --- |

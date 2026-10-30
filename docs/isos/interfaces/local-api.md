@@ -2,9 +2,9 @@
 
 [中文](../../../docs_cn/isos/interfaces/local-api_cn.md)
 
-`isos init` starts the local workbench service on `127.0.0.1:16000` by default (`ISOS_HTTP_PORT` selects another loopback port for isolated local testing) and an owner-only Unix manager socket below `$XDG_RUNTIME_DIR/isos/` (or `ISOS_HOME/run/`). The runtime directory is mode `0700`, and the manager socket is mode `0600`. The HTTP response envelope is `{schema_version:2,ok,data,error}`. The manager's one-line Unix envelope remains schema 1 internally.
+`isos init` starts the IsOS API on `127.0.0.1:16000` by default (`ISOS_HTTP_PORT` selects another loopback port), supervises IsosUI's `npm start` server on `127.0.0.1:16001` (`ISOSUI_PORT` selects another port), and opens an owner-only Unix manager socket below `$XDG_RUNTIME_DIR/isos/` (or `ISOS_HOME/run/`). The runtime directory is mode `0700`, and the manager socket is mode `0600`. The HTTP response envelope is `{schema_version:2,ok,data,error}`. The manager's one-line Unix envelope remains schema 1 internally.
 
-The server binds only to `127.0.0.1`. It serves the local IsosUI frontend at `/en/isos` and `/cn/isos` and accepts requests by address and port without a URL or bearer token. The `Host` must match the loopback address and configured port. Browser requests may use the same origin or the hosted IsosUI origins `https://www.os-island.com` and `https://os-island.com`; other Origins are rejected. Cross-origin preflight permits GET, POST, PUT, and Content-Type. The manager's Unix socket remains owner-only.
+The API binds only to `127.0.0.1` and serves no frontend files. IsosUI calls it directly by address and port without a URL or bearer token. The API `Host` must match its loopback address and configured port. Browser requests may use the npm UI origin on `127.0.0.1:16001` (or configured `ISOSUI_PORT`), the API's own origin, or the hosted IsosUI origins `https://www.os-island.com` and `https://os-island.com`; other Origins are rejected. Cross-origin preflight permits GET, POST, PUT, and Content-Type. Ctrl+C stops both servers and the owner-only manager.
 
 | Route | Response or request | Purpose |
 | --- | --- | --- |
