@@ -24,6 +24,9 @@ def main():
     if os.environ.get("ISOS_TEST_ENV_REPORT"):
         with open(os.environ["ISOS_TEST_ENV_REPORT"], "w", encoding="utf-8") as report:
             report.write(os.environ.get("MUJOCO_GUI", ""))
+    if os.environ.get("ISOS_TEST_PARENT_REPORT"):
+        with open(os.environ["ISOS_TEST_PARENT_REPORT"], "w", encoding="utf-8") as report:
+            json.dump({"pid": os.getpid(), "parent_pid": os.getppid()}, report)
     parser = argparse.ArgumentParser()
     for flag in ("socket", "benchmark-socket", "v2-socket", "scene"):
         parser.add_argument("--" + flag, required=True)

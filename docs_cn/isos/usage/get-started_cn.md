@@ -21,4 +21,4 @@ isos run
 
 `run`、`start` 和 `restart` 会保持前台运行。按 Ctrl+C 会请求正常停止部署。部署运行时，可在另一终端执行 `status`、`logs` 或 `stop`。
 
-Run 重新校验精确软件包版本和图，先于 EOS 启动 MuJoCo；Stop 按依赖逆序停止。安装包或修改编辑器草稿不改变运行中进程；须应用并重启以激活新修订。本地链接在每次应用和运行时重新校验。参见[软件包命令](packages_cn.md)与[图字段](../interfaces/node-graph-v2_cn.md)。
+Run 重新校验精确软件包版本和图，先启动 EOS，再由 EOS 启动 MuJoCo；Stop 通过 EOS 终止仿真器。安装包或修改编辑器草稿不改变运行中进程；须应用并重启以激活新修订。本地链接在每次应用和运行时重新校验。参见[软件包命令](packages_cn.md)与[图字段](../interfaces/node-graph-v2_cn.md)。

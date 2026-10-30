@@ -12,7 +12,7 @@ description = "MuJoCo JPEG camera decoded to RGB8; depth unavailable"
 frame_id = "front_camera_optical"
 capabilities = ["rgb8"]
 
-references = ["cores/isos/layers/process/groups/backend/nodes/simulator"]
+references = ["cores/eos/layers/process/groups/backend/nodes/simulator"]
 
 [cores.eos.layers.hardware.groups.camera.nodes.front.adapter]
 type = "mujoco-v2"
@@ -21,7 +21,7 @@ type = "mujoco-v2"
 socket_path = "/tmp/mujoco-v2.sock"
 simulator_node = "cam-0"
 device_id = "cam-0"
-backend = "cores/isos/layers/process/groups/backend/nodes/simulator"
+backend = "cores/eos/layers/process/groups/backend/nodes/simulator"
 
 [cores.eos.layers.hardware.groups.camera.nodes.front.health_timing]
 poll_interval_ms = 100
@@ -39,7 +39,7 @@ description = "MuJoCo base velocity controller"
 frame_id = "base_link"
 capabilities = ["body_velocity"]
 
-references = ["cores/isos/layers/process/groups/backend/nodes/simulator"]
+references = ["cores/eos/layers/process/groups/backend/nodes/simulator"]
 
 [cores.eos.layers.hardware.groups.base.nodes.drive.adapter]
 type = "mujoco-v2"
@@ -48,7 +48,7 @@ type = "mujoco-v2"
 socket_path = "/tmp/mujoco-v2.sock"
 simulator_node = "base-0"
 device_id = "base-0"
-backend = "cores/isos/layers/process/groups/backend/nodes/simulator"
+backend = "cores/eos/layers/process/groups/backend/nodes/simulator"
 
 [cores.eos.layers.hardware.groups.base.nodes.drive.health_timing]
 poll_interval_ms = 100
@@ -75,7 +75,7 @@ frame_id = "arm_base"
 joint_names = ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"]
 capabilities = ["joint_positions"]
 
-references = ["cores/isos/layers/process/groups/backend/nodes/simulator"]
+references = ["cores/eos/layers/process/groups/backend/nodes/simulator"]
 
 [cores.eos.layers.hardware.groups.manipulator.nodes.arm.adapter]
 type = "mujoco-v2"
@@ -84,7 +84,7 @@ type = "mujoco-v2"
 socket_path = "/tmp/mujoco-v2.sock"
 simulator_node = "arm-0"
 device_id = "arm-0"
-backend = "cores/isos/layers/process/groups/backend/nodes/simulator"
+backend = "cores/eos/layers/process/groups/backend/nodes/simulator"
 
 [cores.eos.layers.hardware.groups.manipulator.nodes.arm.health_timing]
 poll_interval_ms = 100
@@ -131,20 +131,19 @@ output = "request"
 
 # IsOS resolves the simulator executable and scene from the pinned package.
 # Replace the remaining absolute executable, graph, and journal paths for your host.
-# IsOS owns these processes; EOS owns only its internal nodes and adapters.
-[cores.isos.layers.process.groups.backend.nodes.simulator]
+# EOS owns this backend process; IsOS owns the EOS component process.
+[cores.eos.layers.process.groups.backend.nodes.simulator]
 id = "simulator"
-node_type = "isos.process.backend@v1.0"
+node_type = "eos.process.backend@v1.0"
 label = "MuJoCo simulator"
 description = "First Aether v2 simulator target"
 capabilities = ["process"]
-[cores.isos.layers.process.groups.backend.nodes.simulator.settings]
+[cores.eos.layers.process.groups.backend.nodes.simulator.settings]
 package = "island/mujoco-sim"
 version = "2.0.0"
 scene = "default"
 socket = "/tmp/mujoco-v2.sock"
-restart = "on_failure"
-max_restarts = 3
+start_timeout_ms = 30000
 
 [cores.isos.layers.process.groups.component.nodes.eos]
 id = "eos"
@@ -155,7 +154,6 @@ capabilities = ["process"]
 [cores.isos.layers.process.groups.component.nodes.eos.settings]
 command = ["/absolute/path/to/eosd", "--profile", "/absolute/path/to/mujoco-isos.toml", "--journal-dir", "/absolute/path/to/journal", "--socket", "/tmp/eos-v2.sock"]
 ready_unix = "/tmp/eos-v2.sock"
-depends_on = ["cores/isos/layers/process/groups/backend/nodes/simulator"]
 restart = "on_failure"
 max_restarts = 3
 
@@ -166,8 +164,8 @@ label = "EOS HTTP bridge"
 description = "Loopback control API for clients"
 capabilities = ["process"]
 [cores.isos.layers.process.groups.component.nodes.bridge.settings]
-command = ["/absolute/path/to/eos-north-http", "--socket", "/tmp/eos-v2.sock", "--listen", "127.0.0.1:16201"]
-ready_tcp = "127.0.0.1:16201"
+command = ["/absolute/path/to/eos-north-http", "--socket", "/tmp/eos-v2.sock", "--listen", "127.0.0.1:16020"]
+ready_tcp = "127.0.0.1:16020"
 depends_on = ["cores/isos/layers/process/groups/component/nodes/eos"]
 restart = "on_failure"
 max_restarts = 3
@@ -179,8 +177,8 @@ label = "EOS graph catalog"
 description = "Read-only validated graph and node type catalog"
 capabilities = ["process"]
 [cores.isos.layers.process.groups.component.nodes.config.settings]
-command = ["/absolute/path/to/aether-config-server", "--profile", "/absolute/path/to/mujoco-isos.toml", "--listen", "127.0.0.1:16202"]
-ready_tcp = "127.0.0.1:16202"
-depends_on = ["cores/isos/layers/process/groups/backend/nodes/simulator"]
+command = ["/absolute/path/to/aether-config-server", "--profile", "/absolute/path/to/mujoco-isos.toml", "--listen", "127.0.0.1:16021"]
+ready_tcp = "127.0.0.1:16021"
+depends_on = ["cores/isos/layers/process/groups/component/nodes/eos"]
 restart = "on_failure"
 max_restarts = 3
