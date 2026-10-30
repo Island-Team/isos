@@ -365,4 +365,23 @@ mod tests {
         );
         assert!(store.append("isos", "verbose", "unknown").is_err());
     }
+
+    #[test]
+    fn unified_stream_keeps_isos_and_service_events() {
+        let (_temp, store) = store();
+        store
+            .append_event("isos", "warn", "admission_failed", "stale receipt")
+            .unwrap();
+        store
+            .append_event("service-model", "error", "child_exited", "exit 1")
+            .unwrap();
+        let all = store.read("all", None, 10).unwrap();
+        assert_eq!(all["lines"].as_array().unwrap().len(), 2);
+        assert_eq!(all["lines"][0]["event_code"], "admission_failed");
+        assert_eq!(all["lines"][1]["source"], "service-model");
+        assert!(all["lines"][0]["pid"].is_number());
+        let services = store.read("services", None, 10).unwrap();
+        assert_eq!(services["lines"].as_array().unwrap().len(), 1);
+        assert_eq!(services["lines"][0]["event_code"], "child_exited");
+    }
 }
