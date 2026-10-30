@@ -7,7 +7,7 @@
 起始图现在直接读取 `templates/generic-graph-v2.toml`；过时的 MuJoCo 起始模板已移除。清理后 `cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test v2_starter`（3 项）及 clean-home 集成测试均通过。日志位于 `logs/test/20261030-package-node-contract/*generic-template.log` 与 `starter.log`。
 
 通用接口阶段加入 `config.toml` 加载与环境变量覆盖、已验证 sidecar 和 `/node-types` 中的有类型贡献 `data_types`、软件包与内置节点混合集合的固定版本语义，以及仅所有者可访问的分类轮转日志与游标读取。Linux x86_64 上 `cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test`、`cargo build`、`python3 tests/clean_home_v2.py` 均通过；六节点 MuJoCo 集合包含四个固定软件包节点、内置 EOS 闸门和 IsosUI Vision。完整输出在 `logs/test/20261030-general-interfaces/`。clean-home 使用协议桩；真实 MuJoCo 测试另行记录。
-运行配置还提供经过校验的 `[logging].level` 文件级别阈值，`ISOS_LOG_LEVEL` 环境变量优先。clean-home 覆盖经 EOS 输出的 MuJoCo 子进程日志及游标读取。真实 MuJoCo 测试已通过双 Vision 闸门 WebSocket 流、源切换、生命周期和安全停止；完整输出在 `logs/test/20261030-general-interfaces/real-home-vision-r2.log`。
+运行配置还提供经过校验的 `[logging].level` 文件级别阈值，`ISOS_LOG_LEVEL` 环境变量优先。clean-home 覆盖经 EOS 输出的 MuJoCo 子进程日志及游标读取。最终真实 MuJoCo 测试通过双 Vision 闸门 WebSocket 流、源切换、生命周期和安全停止。在这台 Linux x86_64、MuJoCo 3.16.0 主机上，一次启动耗时 1527.699 ms；20 次相机采集的中位数/p99 为 385.012/448.201 ms，吞吐量为 2.6 次/秒。这些是初始基线，并非性能目标。完整输出在 `logs/test/20261030-general-interfaces/real-home-vision-final.log`。
 
 新的 `isos init` 草稿包含 EOS 调度器和 IsOS 管理的 EOS/bridge/config 进程，不预先选择硬件包。用 `isos pkg link island/mujoco-sim 2.0.0 <bundle> --manifest <bundle>/release.json` 链接 v4 MuJoCo 包，然后以 `isos pkg preview-set island/mujoco-sim 2.0.0 sim-hardware <graph> --values <values.json>` 预览节点集合。值文件须包含描述文件中的场景 ID，以及位于 IsOS 运行目录中的套接字路径。返回的 `graph` 通过常规图操作应用。现有已应用图不会自动变更；`--replace-legacy-mujoco` 执行显式预览迁移并保留无关节点。
 
