@@ -83,6 +83,10 @@ impl LogStore {
         })
     }
 
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     fn path(&self, source: &str) -> Result<PathBuf> {
         ensure!(source_valid(source), "invalid log source");
         Ok(self.root.join(format!("{source}.log")))

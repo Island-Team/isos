@@ -27,6 +27,8 @@ The process manager validates the saved graph and exact package again before sta
 
 Log `source` may be `isos`, `packages`, `graph`, `ui`, `eos`, `egia`, `mujoco`, `bridge`, `config`, or a validated child ID. `limit` is 1–200 (default 100). Each line has an RFC 3339 UTC `timestamp` string, `level` string (`info` or `error` for child streams), `source` string, and `message` string. `next_cursor` is a string even when no more lines are available; poll with it for later writes. Files have a `0700` directory and `0600` regular-file permissions, rotate after `[logging].max_bytes` bytes (default 1 MiB), and retain `[logging].backups` copies (default 3). The legacy process endpoint reads mirrored raw lines.
 
+When an applied graph has a MuJoCo package, IsOS passes the deployment log directory to EOS runtime. EOS alone writes and rotates `mujoco.log` using the same JSON line and permission contract; IsOS reads it through this API.
+
 ### Local runtime configuration
 
 IsOS reads `~/.config/isos/config.toml` (or `ISOS_HOME/config/config.toml`) if present. Set `ISOS_CONFIG` to an absolute path to require another file. Environment variables override matching TOML fields. The command working directory is not searched for `.env`. See [config.example.toml](../../../config.example.toml).

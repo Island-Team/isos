@@ -304,6 +304,8 @@ def main():
             categorized = isos_api("logs?source=eos&limit=5")
             assert isinstance(categorized["lines"], list) and isinstance(categorized["next_cursor"], str)
             assert isos_api("logs?source=ui&limit=5")["lines"]
+            mujoco_lines = isos_api("logs?source=mujoco&limit=5")["lines"]
+            assert any("mock mujoco ready" in line["message"] for line in mujoco_lines)
             assert isos_api("process-control", "POST", {"schema_version": 2, "operation": "stop"})["stopped"][-1] == "eos"
             print("ISOS HTTP Home, graph validation, process control, status, and logs: PASS")
             missing.write_text('<mujoco><mesh file="gone.stl"/></mujoco>')

@@ -680,6 +680,9 @@ impl Supervisor {
     fn spawn(&self, spec: &ProcessSpec) -> Result<Child> {
         let mut command = Command::new(&spec.settings.command[0]);
         command.args(&spec.settings.command[1..]);
+        if spec.id == "eos" && spec.package.is_some() {
+            command.arg("--log-dir").arg(self.logs.root());
+        }
         command.envs(&spec.settings.env);
         if let Some(cwd) = &spec.settings.cwd {
             command.current_dir(cwd);
