@@ -51,7 +51,7 @@ alias = "gateway"
 
 适配器读取 `<仓库>/launch.sh --catalog-json`，要求 schema 版本为 1 且包含指定别名，再运行 `--only <alias> --preflight-json`。仅当 `ready:true` 时返回绝对路径形式的 `launch.sh --managed --only <alias>` 命令。IsOS 不修改 Island-models，也不按端口接管进程。服务定义需固定启动器摘要；更新仓库后重新校验。适配器报告预检中的缺失产物和错误，但不暴露环境变量值。
 
-写入服务文件前可以运行 `isos services adapter models <仓库绝对路径> <别名>` 检查并打印托管命令。
+`isos services adapter models <仓库绝对路径> <别名>` 检查并打印托管命令，但不会写入服务文件；操作员需显式创建 TOML 定义并固定摘要。
 
 ## 错误
 

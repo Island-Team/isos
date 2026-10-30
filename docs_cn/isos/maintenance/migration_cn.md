@@ -1,18 +1,13 @@
 # 从旧启动器迁移
 
-旧版 EOS island-launch、island-pkg 和 EGIA bin/island 在各自源码仓库保留兼容入口。新部署的进程组合由 IsOS 管理。
-
-1. 安装 IsOS 并运行 isos doctor。
-2. 执行 isos config init，备份旧 stack.toml、eos.toml、island.toml 和模型服务配置。
-3. 在 JSON 中填写 EOS/EGIA 命令，将模型进程设为 service 节点、硬件或仿真进程设为 backend 节点，并连接依赖边。
-4. 使用 isos packages install 或 link 选择准确的版本，在节点中记录软件包 ID 和版本。
-5. 执行 isos config validate <file> 和 isos config apply <file>。
-6. 停止旧启动器，再执行 isos start、isos status 和 isos eos enter。
-
-当前版本尚未自动导入旧 TOML，也不会移动模型权重。生成的 stack.toml 是旧 EOS 工具的适配文件；请编辑 JSON 部署图，而不是修改生成结果。不要让旧 EGIA 组合启动器与 IsOS 同时管理同一部署。
-
 [English](../../../docs/isos/maintenance/migration.md)
 
-## 配置图 v1 升级到 v2
+旧版 EOS、EGIA 启动器与 IsOS 组件图仍是兼容入口。当前 IsOS 部署使用 [v2 节点图](../interfaces/node-graph-v2_cn.md)、精确构建收据和[独立服务契约](../interfaces/services_cn.md)。当前没有自动导入 TOML 或旧图的功能，也没有 `isos config migrate` 命令。
 
-保存本地编辑后运行 `isos config migrate`。IsOS 创建带时间戳的 `.bak` 副本，加入 EOS/EGIA 精确配置引用、逻辑 `eos.uds` 端点和 EGIA 类型连接，在替换原图前校验结果。严格 JSON 解码器拒绝未知字段，不会静默丢弃。运行前需选择组件构建并应用迁移后的配置图。
+1. 备份旧版 stack、EOS、EGIA、模型服务及 `<name>.json` 文件。
+2. 执行 `isos init --mode dev` 或 `isos init --mode product`。已有的 v2 编辑图会被保留。
+3. 构建并选择精确的 IsOS、EOS 和 IsosUI 产物。用 `isos version check` 检查选中和运行中的身份。激活新的 IsOS 可执行文件前须停止管理器。
+4. 安装或链接精确版本的软件包，将其节点集合预览到 v2 草稿，校验并应用图。模型类服务放在图外各自的 TOML 文件中。
+5. 停止旧启动器。先运行 `isos serve`，再在另一终端运行 `isos run`。检查 `isos status --json` 和日志。`isos deployment stop` 只停止图部署；`isos stop` 关闭管理器及所有所属子进程。
+
+不要让旧版和 v2 管理器同时持有相同端口或进程。IsOS 不会自动移动模型权重或改写旧配置。

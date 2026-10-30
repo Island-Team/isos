@@ -4,7 +4,7 @@
 
 One `2.0.0` graph at `~/.config/isos/deployments/<name>.nodes.json` (or `ISOS_HOME/config/deployments/`) configures IsOS, EOS, and the design-only EGIA nodes. A node type declares its core, layer, group, fields, and ports; an instance supplies its ID and settings. Current node types are `v1.0`. Run `aether-profile validate --file <graph>` before apply and again before run. IsOS validates the package projection after registry admission. The graph SHA-256 is the saved revision; an active process set retains its revision until restart.
 
-`isos init` writes an editable graph only when absent. The new draft contains EOS process nodes and the dispatcher; preview an installed package node set to add hardware. `isos config validate <file>` checks the package and graph; `isos config apply <file>` saves normalized JSON; `isos run`, `restart`, `stop`, `status`, and `logs <node>` use the owner-only direct-child manager. EOS starts MuJoCo before admitting hardware operations and stops it with the EOS runtime. A package install or link never changes an active deployment.
+`isos init` writes an editable graph only when absent and exits. The new draft contains EOS process nodes and the dispatcher; preview an installed package node set to add hardware. `isos config validate <file>` checks the package and graph; `isos config apply <file>` saves normalized JSON. `isos serve` runs the owner-only manager and UI. `isos run` and `restart` stay attached; `isos deployment stop` stops only this graph, while `isos stop` shuts down the manager and all owned children. EOS starts MuJoCo before admitting hardware operations and stops it with the EOS runtime. A package install or link never changes an active deployment.
 
 ## Backend node
 

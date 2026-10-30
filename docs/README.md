@@ -1,5 +1,5 @@
 # IsOS documentation
 
-IsOS manages packages, deployment configuration, and the lifecycle of EOS and EGIA. Start with the [IsOS guide](isos/README.md); the guide links everyday commands, wire contracts, and migration work.
+IsOS manages verified builds and packages, the shared v2 graph, the local workbench, and explicitly started services. EOS runs the selected deployment; EGIA runtime integration remains future work. Start with the [IsOS guide](isos/README.md) for commands, wire contracts, and migration.
 
 The [Chinese documentation](../docs_cn/README_cn.md) follows the same reading path.

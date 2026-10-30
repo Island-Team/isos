@@ -2,17 +2,12 @@
 
 [中文](../../../docs_cn/isos/maintenance/migration_cn.md)
 
-The old EOS island-launch and island-pkg tools, and EGIA bin/island combined launcher, are retained as compatibility wrappers in their source repositories. IsOS owns new stack composition. These wrappers may still support legacy-only flags while an existing deployment is being migrated.
+The legacy EOS and EGIA launchers and IsOS component graph remain compatibility paths. Current IsOS deployments use the [v2 node graph](../interfaces/node-graph-v2.md), exact build receipts, and the [independent service contract](../interfaces/services.md). There is no automatic TOML or graph v1 import and no `isos config migrate` command.
 
-1. Install IsOS with cargo install --path . and run isos doctor.
-2. Run isos config init. Keep a copy of existing EOS stack.toml, eos.toml, EGIA island.toml, and model service configuration.
-3. Replace starter graph launch commands with the corresponding installed EOS and EGIA commands. Put model servers in service nodes and hardware or simulators in backend nodes. Add consumer-to-provider edges.
-4. Select exact package versions using isos packages install or link, then record each package ID and version in its graph node.
-5. Run isos config validate <file> and isos config apply <file>.
-6. Stop the old launchers, then run isos start and isos status. Use isos eos enter for an attached diagnostic CLI.
+1. Back up the old stack, EOS, EGIA, model-service, and `<name>.json` files.
+2. Run `isos init --mode dev` or `isos init --mode product`. Existing v2 authored graphs are preserved.
+3. Build and select the exact IsOS, EOS, and IsosUI artifacts. Use `isos version check` to inspect selected and active identities. An IsOS executable activation requires the manager to be stopped.
+4. Install or link exact package versions. Preview their node sets into a v2 draft; validate and apply the graph. Keep model-like services in per-service TOML outside this graph.
+5. Stop old launchers. Start `isos serve`, then `isos run` in another terminal. Check `isos status --json` and logs. `isos deployment stop` stops only the graph; `isos stop` shuts down the manager and all owned children.
 
-IsOS does not yet import the old TOML automatically. It also does not move model weight files; service launch commands continue to reference those existing files. Do not run the old combined EGIA launcher and IsOS against the same deployment at once. The generated stack.toml is an adapter for existing EOS tooling; edit the JSON graph, not generated TOML.
-
-## Graph v1 to v2
-
-Run `isos config migrate` after backing up or committing local edits. IsOS makes a timestamped `.bak` copy, adds exact EOS/EGIA profile references, inserts a logical `eos.uds` endpoint and typed EGIA connection, and validates the result before replacing the selected graph. Unknown fields remain rejected by the strict JSON decoder; no field is silently dropped. Pin component builds and apply the migrated graph before running it.
+Do not let legacy and v2 managers own the same port or process. IsOS does not move model weights or rewrite old configuration automatically.

@@ -17,7 +17,7 @@ stop_timeout_ms = 5000
 
 [artifact]
 path = "/absolute/Island-models/launch.sh"
-sha256 = "<64 lowercase hexadecimal SHA-256 digits>"
+sha256 = "<64 hexadecimal SHA-256 digits>"
 
 [readiness]
 kind = "tcp"
@@ -51,7 +51,7 @@ The public CLI is `isos services list|validate|start <id>|stop <id>|restart <id>
 
 The adapter reads `<repo>/launch.sh --catalog-json`, requires schema version 1 and the requested alias, then runs `--only <alias> --preflight-json`. It requires `ready:true` before returning the absolute `launch.sh --managed --only <alias>` command. IsOS does not edit Island-models or adopt its processes by port. Keep the local service definition pinned to the launcher digest; rerun validation when updating that repository. The adapter reports missing artifacts and errors from preflight, but does not expose environment values.
 
-`isos services adapter models <absolute-repo> <alias>` performs this check and prints the managed command before writing a service file.
+`isos services adapter models <absolute-repo> <alias>` performs this check and prints the managed command. It does not write a service file; the operator creates and pins the TOML definition explicitly.
 
 ## Errors
 

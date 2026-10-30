@@ -2,23 +2,29 @@
 
 [English](../../../docs/isos/usage/get-started.md)
 
-安装 IsOS 和 Aether Rust 可执行文件。构建 MuJoCo C++ 仿真器、设置 `MUJOCO_ROOT`，并用 MuJoCo 仓库的 `tools/build-backend-bundle.py` 制作包。链接精确版本后初始化图：
+安装 IsOS 后初始化开发环境。`init` 只在配置和起始图不存在时创建它们，然后退出；不会启动管理器或界面。
 
 ```sh
-isos pkg link island/mujoco-sim 2.0.0 /absolute/path/to/bundle
-isos init
+isos init --mode dev
+isos build eos
+isos version select eos <暂存提交或源码指纹>
+isos build isosui
+isos version select isosui <暂存提交>
+isos serve
 ```
 
-保持 `isos init` 在此终端运行。它负责工作台服务和进程管理器；按 Ctrl+C 会停止服务及其子进程。在第二个终端运行 `isos open` 并编辑图。
+`isos serve` 在前台运行管理器、API 和经验证的静态 IsosUI。在另一终端执行 `isos open`。仅开发前端时，使用 `isos serve --ui-live` 启动 IsosUI 源码目录中已安装依赖的 npm 服务。产品模式要求选择干净构建，无须 npm 或源码目录；详见 [README](../../../README_cn.md)。
 
-Home 展示已安装软件包、先决条件、保存与运行中修订、进程状态和日志。Build graph 编辑共享的 IsOS/EOS/EGIA/IsosUI 图。起始图包含 EOS 运行时、HTTP 桥、目录服务和调度器节点。预览已安装的 `sim-hardware` 节点集合，加入 MuJoCo 后端、相机、底盘、机械臂、相机闸门和 Vision 节点；选择场景并检查预览，然后 Validate 和 Apply。Run 启动已应用的图。对应 CLI 命令为：
+构建 MuJoCo 仿真器，用其仓库的 `tools/build-backend-bundle.py` 制作 `2.0.0` 包，并将 `MUJOCO_ROOT` 指向匹配的运行环境。链接包后在 Graph 工作台预览 `sim-hardware` 节点集合。起始图包含 EOS 进程和调度器节点，不包含硬件包。预览加入 MuJoCo 进程、相机、底盘、机械臂、闸门与 Vision 节点。选择场景、检查草稿，再执行 Validate 和 Apply。对应命令为：
 
 ```sh
+isos pkg link island/mujoco-sim 2.0.0 /absolute/path/to/bundle --manifest /absolute/path/to/bundle/release.json
+isos pkg node-sets
 isos config validate ~/.config/isos/deployments/default.nodes.json
 isos config apply ~/.config/isos/deployments/default.nodes.json
 isos run
 ```
 
-`run`、`start` 和 `restart` 会保持前台运行。按 Ctrl+C 会请求正常停止部署。部署运行时，可在另一终端执行 `status`、`logs` 或 `stop`。
+`run`、`start` 和 `restart` 保持前台运行，Ctrl+C 停止部署。在另一终端执行 `isos status --json` 查看管理器和运行中修订；`isos version check` 比较配置、选中与运行中的版本。`isos deployment stop` 只停止图部署；`isos stop` 还停止服务、界面、API 和管理器。重复停止也会成功。
 
-Run 重新校验精确软件包版本和图，先启动 EOS，再由 EOS 启动 MuJoCo；Stop 通过 EOS 终止仿真器。安装包或修改编辑器草稿不改变运行中进程；须应用并重启以激活新修订。本地链接在每次应用和运行时重新校验。参见[软件包命令](packages_cn.md)与[图字段](../interfaces/node-graph-v2_cn.md)。
+运行前会重新校验精确的图修订、可执行文件收据、软件包、场景和资源。EOS 启动并持有 MuJoCo 子进程。安装软件包、暂存构建或修改草稿都不会改变运行中的部署；需显式选择或应用并重启。参见[软件包命令](packages_cn.md)、[图字段](../interfaces/node-graph-v2_cn.md)和[独立服务契约](../interfaces/services_cn.md)。

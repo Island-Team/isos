@@ -12,4 +12,4 @@ IsOS 在校验、应用和运行时解析精确固定版本。每次解析都会
 
 ## 开发检查
 
-用新的 `ISOS_HOME`，执行 `isos pkg link island/mujoco-sim 2.0.0 <bundle>`，再依次执行 `isos config init`、`isos config validate <graph>`、`isos config apply <graph>`、`isos run`、`isos restart`、`isos logs eos` 和 `isos stop`。`MUJOCO_ROOT` 须指向已安装的 MuJoCo 运行环境，EOS 的 `aether-profile` 验证器和 Rust 可执行文件须可用。参见[节点字段](../interfaces/node-graph-v2_cn.md)和[软件包命令](../usage/packages_cn.md)。
+使用新的 `ISOS_HOME` 执行 `isos init --mode dev`，构建并选择 EOS 和 IsosUI，然后启动 `isos serve`。用 `isos pkg link island/mujoco-sim 2.0.0 <bundle> --manifest <bundle>/release.json` 链接暂存包，预览其 `sim-hardware` 节点集合，再执行 `isos config validate <graph>`、`isos config apply <graph>` 和 `isos run`。`isos deployment stop` 只停止图，`isos stop` 关闭管理器及所有所属子进程。`MUJOCO_ROOT` 须指向已安装的 MuJoCo 运行环境，EOS 的 `aether-profile` 验证器和 Rust 可执行文件须可用。参见[节点字段](../interfaces/node-graph-v2_cn.md)和[软件包命令](../usage/packages_cn.md)。
