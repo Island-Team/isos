@@ -113,6 +113,9 @@ def main():
             raise RuntimeError("isos init did not bind its control socket")
         graph_path = home / "config/deployments/default.nodes.json"
         graph = json.loads(graph_path.read_text())
+        controls = graph["cores"]["eos"]["layers"]["control"]["groups"]
+        assert set(controls) == {"manual", "primitive", "skill"}
+        assert set(controls["primitive"]["nodes"]) == {"base_velocity_0", "arm_joint_0"}
         backend = graph["cores"]["eos"]["layers"]["process"]["groups"]["backend"]["nodes"]["simulator"]["settings"]
         gui_report = root / "simulator-env.txt"
         parent_report = root / "simulator-parent.json"
@@ -225,6 +228,21 @@ def main():
                 p["pid"] for p in status["processes"] if p["id"] == "eos")
             assert gui_report.read_text() == "1", "backend GUI setting did not reach the simulator"
             assert hashlib.sha256(graph_path.read_bytes()).hexdigest() == saved_hash, "EOS changed applied graph"
+            browser_origin = f"http://127.0.0.1:{ui_port}"
+            preflight = Request(f"http://127.0.0.1:{bridge_port}/api/eos/v2/control",
+                                method="OPTIONS", headers={"Origin": browser_origin,
+                                "Access-Control-Request-Method": "POST",
+                                "Access-Control-Request-Headers": "content-type"})
+            with urlopen(preflight, timeout=3) as response:
+                assert response.status == 204
+                assert response.headers["Access-Control-Allow-Origin"] == browser_origin
+            browser_request = Request(f"http://127.0.0.1:{bridge_port}/api/eos/v2/control",
+                                      data=b'{"op":"time"}',
+                                      headers={"Origin": browser_origin,
+                                               "Content-Type": "application/json"})
+            with urlopen(browser_request, timeout=3) as response:
+                assert response.headers["Access-Control-Allow-Origin"] == browser_origin
+                assert json.load(response)["ok"]
             discovered = control({"op": "discover"}, bridge_port)
             assert len(discovered["nodes"]) >= 3
             camera = "cores/eos/layers/hardware/groups/camera/nodes/front"
@@ -245,9 +263,34 @@ def main():
                        "movement": {"type": "joint_positions", "joint_names": [f"joint{i}" for i in range(1, 7)],
                                     "joint_positions_rad": [0.0] * 6}}
             assert control(arm_cmd, bridge_port)["result"]["status"] != "Rejected"
+            manual = "cores/eos/layers/control/groups/manual/nodes/manual_0"
+            primitive = "cores/eos/layers/control/groups/primitive/nodes/arm_joint_0"
+            skill = "cores/eos/layers/control/groups/skill/nodes/demo_0"
+            manual_result = control(dict(base_cmd, op="manual", node_path=manual,
+                                         command_id="mock-manual-1"), bridge_port)["result"]
+            assert manual_result["status"] != "Rejected", manual_result
+            assert control(dict(arm_cmd, op="primitive", node_path=primitive,
+                                command_id="mock-primitive-1"), bridge_port)["result"]["status"] != "Rejected"
+            execution = control({"op": "skill_execute", "node_path": skill,
+                                 "execution_id": "mock-skill-1",
+                                 "steps": [{"movement": base_cmd["movement"]},
+                                           {"movement": arm_cmd["movement"]}]}, bridge_port)
+            assert execution["execution"]["status"] in ("queued", "running", "failed", "completed")
+            for _ in range(100):
+                outcome = control({"op": "skill_result", "execution_id": "mock-skill-1"}, bridge_port)
+                if outcome["execution"]["status"] in ("failed", "completed"):
+                    break
+                time.sleep(0.01)
+            else:
+                raise AssertionError("skill did not reach a terminal state")
+            assert outcome["execution"]["status"] == "failed", "mock lacks a physical completion signal"
+            assert len(outcome["execution"]["results"]) == 1
+            assert control({"op": "skill_cancel", "execution_id": "mock-skill-1"}, bridge_port)["execution"]["status"] == "failed"
+            assert control({"op": "manual_stop", "node_path": manual}, bridge_port)["ok"]
             assert control({"op": "stop", "node_path": base}, bridge_port)["ok"]
             assert control({"op": "stop", "node_path": arm}, bridge_port)["ok"]
             print("OPERATIONS discovery, camera capture, base/manipulator observation and command, safe stop: PASS")
+            print("OPERATIONS manual, primitive, skill failure and safe stop: PASS")
             samples = []
             for _ in range(200):
                 start = time.perf_counter()

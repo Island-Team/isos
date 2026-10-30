@@ -129,6 +129,71 @@ output = "manipulator_command"
 node = "cores/egia/layers/common/groups/process/nodes/guard"
 output = "request"
 
+# Control nodes produce typed requests. The dispatcher remains the sole route
+# to an actuator; these references grant no direct hardware command edge.
+[cores.eos.layers.control.groups.manual.nodes.manual_0]
+id = "manual_0"
+node_type = "eos.control.manual@v1.0"
+label = "Manual base control"
+description = "Interactive base command source"
+capabilities = ["manual_control"]
+references = ["cores/eos/layers/dispatcher/groups/control/nodes/command", "cores/eos/layers/hardware/groups/base/nodes/drive"]
+[cores.eos.layers.control.groups.manual.nodes.manual_0.settings]
+target = "cores/eos/layers/hardware/groups/base/nodes/drive"
+[cores.eos.layers.control.groups.manual.nodes.manual_0.inputs.status]
+node = "cores/eos/layers/dispatcher/groups/control/nodes/command"
+output = "status"
+[cores.eos.layers.control.groups.manual.nodes.manual_0.inputs.base_observation]
+node = "cores/eos/layers/hardware/groups/base/nodes/drive"
+output = "observation"
+
+[cores.eos.layers.control.groups.primitive.nodes.base_velocity_0]
+id = "base_velocity_0"
+node_type = "eos.control.primitive@v1.0"
+label = "Base velocity"
+description = "Reusable body velocity command"
+capabilities = ["primitive_control"]
+references = ["cores/eos/layers/dispatcher/groups/control/nodes/command", "cores/eos/layers/hardware/groups/base/nodes/drive"]
+[cores.eos.layers.control.groups.primitive.nodes.base_velocity_0.settings]
+target = "cores/eos/layers/hardware/groups/base/nodes/drive"
+movement_type = "body_velocity"
+[cores.eos.layers.control.groups.primitive.nodes.base_velocity_0.inputs.status]
+node = "cores/eos/layers/dispatcher/groups/control/nodes/command"
+output = "status"
+[cores.eos.layers.control.groups.primitive.nodes.base_velocity_0.inputs.base_observation]
+node = "cores/eos/layers/hardware/groups/base/nodes/drive"
+output = "observation"
+
+[cores.eos.layers.control.groups.primitive.nodes.arm_joint_0]
+id = "arm_joint_0"
+node_type = "eos.control.primitive@v1.0"
+label = "Arm joint positions"
+description = "Reusable joint position command"
+capabilities = ["primitive_control"]
+references = ["cores/eos/layers/dispatcher/groups/control/nodes/command", "cores/eos/layers/hardware/groups/manipulator/nodes/arm"]
+[cores.eos.layers.control.groups.primitive.nodes.arm_joint_0.settings]
+target = "cores/eos/layers/hardware/groups/manipulator/nodes/arm"
+movement_type = "joint_positions"
+[cores.eos.layers.control.groups.primitive.nodes.arm_joint_0.inputs.status]
+node = "cores/eos/layers/dispatcher/groups/control/nodes/command"
+output = "status"
+[cores.eos.layers.control.groups.primitive.nodes.arm_joint_0.inputs.manipulator_observation]
+node = "cores/eos/layers/hardware/groups/manipulator/nodes/arm"
+output = "observation"
+
+[cores.eos.layers.control.groups.skill.nodes.demo_0]
+id = "demo_0"
+node_type = "eos.control.skill@v1.0"
+label = "Base and arm demo"
+description = "Ordered base and arm primitives"
+capabilities = ["skill_sequence"]
+references = ["cores/eos/layers/dispatcher/groups/control/nodes/command", "cores/eos/layers/control/groups/primitive/nodes/base_velocity_0", "cores/eos/layers/control/groups/primitive/nodes/arm_joint_0"]
+[cores.eos.layers.control.groups.skill.nodes.demo_0.settings]
+steps = ["cores/eos/layers/control/groups/primitive/nodes/base_velocity_0", "cores/eos/layers/control/groups/primitive/nodes/arm_joint_0"]
+[cores.eos.layers.control.groups.skill.nodes.demo_0.inputs.status]
+node = "cores/eos/layers/dispatcher/groups/control/nodes/command"
+output = "status"
+
 # IsOS resolves the simulator executable and scene from the pinned package.
 # Replace the remaining absolute executable, graph, and journal paths for your host.
 # EOS owns this backend process; IsOS owns the EOS component process.

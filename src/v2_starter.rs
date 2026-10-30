@@ -185,4 +185,46 @@ mod tests {
         assert_eq!(init(&paths, "robot-a").unwrap(), path);
         assert_eq!(fs::read_to_string(path).unwrap(), "authored");
     }
+
+    #[test]
+    fn starter_declares_typed_controls_without_direct_actuator_edges() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        paths.prepare().unwrap();
+        let graph = draft(&paths, "robot-a").unwrap();
+        let controls = &graph["cores"]["eos"]["layers"]["control"]["groups"];
+        assert_eq!(
+            controls["manual"]["nodes"]["manual_0"]["settings"]["target"],
+            "cores/eos/layers/hardware/groups/base/nodes/drive"
+        );
+        assert_eq!(
+            controls["primitive"]["nodes"]["arm_joint_0"]["settings"]["movement_type"],
+            "joint_positions"
+        );
+        assert_eq!(
+            controls["skill"]["nodes"]["demo_0"]["settings"]["steps"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            controls["manual"]["nodes"]["manual_0"]["inputs"]["status"]["output"],
+            "status"
+        );
+        assert_eq!(
+            controls["primitive"]["nodes"]["arm_joint_0"]["inputs"]["manipulator_observation"]["output"],
+            "observation"
+        );
+        let base = &graph["cores"]["eos"]["layers"]["hardware"]["groups"]["base"]["nodes"]["drive"]
+            ["inputs"]["command"]["node"];
+        assert_eq!(
+            base,
+            "cores/eos/layers/dispatcher/groups/control/nodes/command"
+        );
+    }
 }

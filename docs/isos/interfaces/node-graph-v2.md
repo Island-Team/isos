@@ -40,4 +40,17 @@ Path: `cores/isos/layers/process/groups/component/nodes/<id>`. Type: `isos.proce
 
 The manager starts direct children in dependency order, waits for readiness, and stops process groups in reverse order with TERM then KILL after two seconds. Provider failure stops dependents before recovery. Logs are `$XDG_DATA_HOME/isos/process-logs/<deployment>/<node>.log`. Status includes saved/active revision, pinned package, process PID/restarts, and last supervisor error. The private Unix manager API retains its schema 1 envelope and uses `v2_start`, `v2_restart`, `v2_stop`, and `v2_status` operations.
 
+## EOS control nodes in the starter graph
+
+The starter graph declares `manual_0`, `base_velocity_0`, `arm_joint_0`, and `demo_0` under `cores/eos/layers/control`. Their types are `eos.control.manual@v1.0`, `eos.control.primitive@v1.0`, and `eos.control.skill@v1.0`. They describe configured command sources; runtime requests and outcomes remain separate typed data. Each control references the canonical EOS dispatcher path. Manual and primitive nodes also reference their target hardware node; a skill references its primitive steps. These references do not create an actuator route: the existing dispatcher output remains the only hardware command input.
+
+| Setting | Rust type | Unit | Purpose and validation |
+| --- | --- | --- | --- |
+| Manual `target` | `String` | canonical node path | Required base or manipulator target; must name an admitted hardware node and appear in `references`. |
+| Primitive `target` | `String` | canonical node path | Required hardware target; must name an admitted base or manipulator node and appear in `references`. |
+| Primitive `movement_type` | `String` enum | movement mode | Required `body_velocity` for base or `joint_positions` for manipulator; must be supported by the target. |
+| Skill `steps` | `Vec<String>` | ordered canonical node paths | Required ordered primitive references; each path must be present in `references` and resolve to a registered primitive node. |
+
+Manual and primitive nodes require a `status: Status` input from the dispatcher and a typed observation input from their target: `base_observation: BaseObservation` or `manipulator_observation: ManipulatorObservation`. Skill nodes require `status: Status` from the dispatcher. Manual and primitive nodes expose `request: ControlRequest` and `outcome: CommandOutcome` outputs; skill nodes expose `outcome: SkillOutcome`. The node ID is the final type name plus an index by default, such as `manual_0` or `demo_0`; it is a graph identity, not a movement payload.
+
 See [backend package design](../design/backend-v2.md) and [local API](local-api.md).
