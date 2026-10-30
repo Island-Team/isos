@@ -24,6 +24,8 @@ Product mode requires an exact selected IsOS executable. With the manager stoppe
 
 In the second terminal:
 
+`isos open` requires a running `isos serve` manager. It prints the UI URL and launches the browser without forwarding desktop toolkit diagnostics to the terminal.
+
 ```sh
 isos open
 isos pkg link island/mujoco-sim 2.0.0 /absolute/path/to/bundle --manifest /absolute/path/to/bundle/release.json
