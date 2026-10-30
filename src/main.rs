@@ -921,12 +921,17 @@ struct Frontend(Child);
 
 impl Frontend {
     fn spawn(source: &Path) -> Result<Self> {
+        let port = http::ui_port()?;
+        ensure!(
+            TcpStream::connect(("127.0.0.1", port)).is_err(),
+            "IsosUI port 127.0.0.1:{port} is already in use"
+        );
         let mut command = Command::new("npm");
         command
             .arg("start")
             .current_dir(source)
             .env("ISOSUI_HOST", "127.0.0.1")
-            .env("ISOSUI_PORT", http::ui_port()?.to_string())
+            .env("ISOSUI_PORT", port.to_string())
             .env("ISOSUI_API_ORIGIN", http::local_origin())
             .stdin(Stdio::null());
         let parent_pid = std::process::id();
@@ -957,7 +962,7 @@ impl Frontend {
                 return Ok(());
             }
             if INTERRUPTED.load(Ordering::SeqCst) {
-                bail!("IsosUI startup interrupted");
+                return Ok(());
             }
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -993,7 +998,7 @@ fn serve_foreground(paths: config::Paths, name: String) -> Result<()> {
     let manager = std::thread::spawn(move || daemon(&api_paths, listener));
     let http_server = std::thread::spawn(move || http::serve(paths, name));
     let mut result = frontend.ready(port);
-    if result.is_ok() {
+    if result.is_ok() && !INTERRUPTED.load(Ordering::SeqCst) {
         println!("{}", http::ui_url()?);
         println!("IsOS API: {}", http::local_origin());
         println!("IsOS workbench is running; press Ctrl+C to stop it.");
