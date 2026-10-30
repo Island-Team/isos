@@ -3,7 +3,7 @@ use crate::{
     component,
     config::{self, Paths},
     graph::Deployment,
-    isosui, lifecycle, v2_process,
+    isosui, lifecycle, packages, v2_process,
 };
 use anyhow::{Context, Result};
 use axum::{
@@ -313,6 +313,79 @@ async fn backends(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult 
     ok(json!({"backends":crate::v2_backend::installed(&app.paths)}))
 }
 
+async fn package_list(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
+    authorized(&app, &headers)?;
+    let installed = packages::list(&app.paths)
+        .map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR, error))?;
+    ok(json!({"installed":installed}))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PackageRequest {
+    id: String,
+    version: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PackageLinkRequest {
+    id: String,
+    version: String,
+    path: PathBuf,
+}
+
+async fn package_install(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(request): Json<PackageRequest>,
+) -> ApiResult {
+    authorized(&app, &headers)?;
+    packages::package_path(&app.paths, &request.id, &request.version)
+        .map_err(|error| err(StatusCode::BAD_REQUEST, error))?;
+    let paths = app.paths.clone();
+    let installed = tokio::task::spawn_blocking(move || -> Result<PathBuf> {
+        let release = packages::catalog_release(&request.id, &request.version)?;
+        anyhow::ensure!(
+            release.id == request.id && release.version == request.version,
+            "catalog returned a different package identity"
+        );
+        packages::install(&paths, &release, false, None)
+    })
+    .await
+    .map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR, error))?
+    .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
+    ok(
+        json!({"path":installed,"installed":packages::list(&app.paths).map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR,error))?}),
+    )
+}
+
+async fn package_link(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(request): Json<PackageLinkRequest>,
+) -> ApiResult {
+    authorized(&app, &headers)?;
+    packages::package_path(&app.paths, &request.id, &request.version)
+        .map_err(|error| err(StatusCode::BAD_REQUEST, error))?;
+    if !request.path.is_absolute() {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "package link path must be absolute",
+        ));
+    }
+    let paths = app.paths.clone();
+    let linked = tokio::task::spawn_blocking(move || {
+        packages::link(&paths, &request.id, &request.version, &request.path)
+    })
+    .await
+    .map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR, error))?
+    .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
+    ok(
+        json!({"path":linked,"installed":packages::list(&app.paths).map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR,error))?}),
+    )
+}
+
 async fn setup_status(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
     authorized(&app, &headers)?;
     let graph_path = app.paths.v2_node_graph(&app.deployment);
@@ -611,6 +684,18 @@ fn router(app: Arc<App>) -> Router {
         )
         .route("/api/isos/v2/backends", get(backends).options(preflight))
         .route(
+            "/api/isos/v2/packages",
+            get(package_list).options(preflight),
+        )
+        .route(
+            "/api/isos/v2/packages/install",
+            post(package_install).options(preflight),
+        )
+        .route(
+            "/api/isos/v2/packages/link",
+            post(package_link).options(preflight),
+        )
+        .route(
             "/api/isos/v2/setup-status",
             get(setup_status).options(preflight),
         )
@@ -733,6 +818,48 @@ mod tests {
                 assert!(body["data"]["issues"].as_array().unwrap().len() >= 2);
             }
         }
+    }
+
+    #[tokio::test]
+    async fn package_link_is_listed_and_rejects_duplicate_version() {
+        let temp = tempfile::tempdir().unwrap();
+        let bundle = temp.path().join("bundle");
+        fs::create_dir(&bundle).unwrap();
+        let app = Arc::new(App {
+            paths: Paths {
+                config: temp.path().join("config"),
+                data: temp.path().join("data"),
+                runtime: temp.path().join("run"),
+            },
+            deployment: "default".into(),
+            web: None,
+            pin_cache: Mutex::new(PinCache::default()),
+        });
+        app.paths.prepare().unwrap();
+        let body = json!({"id":"island/mujoco-sim","version":"2.0.0","path":bundle});
+        for expected in [StatusCode::OK, StatusCode::UNPROCESSABLE_ENTITY] {
+            let request = Request::builder()
+                .method(Method::POST)
+                .uri("/api/isos/v2/packages/link")
+                .header(header::HOST, "127.0.0.1:16000")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap();
+            assert_eq!(
+                router(app.clone()).oneshot(request).await.unwrap().status(),
+                expected
+            );
+        }
+        let request = Request::builder()
+            .uri("/api/isos/v2/packages")
+            .header(header::HOST, "127.0.0.1:16000")
+            .body(Body::empty())
+            .unwrap();
+        let response = router(app).oneshot(request).await.unwrap();
+        let bytes = to_bytes(response.into_body(), 1_000_000).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["data"]["installed"][0]["version"], "2.0.0");
+        assert_eq!(body["data"]["installed"].as_array().unwrap().len(), 1);
     }
 
     #[tokio::test]
