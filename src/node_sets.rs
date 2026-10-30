@@ -218,6 +218,13 @@ pub fn compose_with_migration(
     replace_legacy_mujoco: bool,
 ) -> Result<Value> {
     let release = installed_release(paths, id, version)?;
+    let contributed_types: BTreeSet<_> = release
+        .node_contributions
+        .as_ref()
+        .into_iter()
+        .flat_map(|contributions| contributions.node_types.iter())
+        .filter_map(|node_type| node_type["id"].as_str())
+        .collect();
     let set: &NodeSet = release
         .node_contributions
         .as_ref()
@@ -276,13 +283,23 @@ pub fn compose_with_migration(
         substitute(&mut profile, &parameters)?;
         resolve_refs(&mut profile, &paths_by_ref)?;
         let package = json!({"id":id,"version":version});
-        ensure!(
-            profile
-                .get("package")
-                .is_none_or(|current| current == &package),
-            "node package pin differs"
-        );
-        profile["package"] = package;
+        let node_type = profile["node_type"]
+            .as_str()
+            .context("node profile requires node_type")?;
+        if contributed_types.contains(node_type) {
+            ensure!(
+                profile
+                    .get("package")
+                    .is_none_or(|current| current == &package),
+                "node package pin differs"
+            );
+            profile["package"] = package;
+        } else {
+            ensure!(
+                profile.get("package").is_none(),
+                "built-in node type cannot carry package pin"
+            );
+        }
         let segments: Vec<_> = path.split('/').collect();
         let core = draft["cores"]
             .as_object_mut()
@@ -328,11 +345,16 @@ mod tests {
             "schema_version":4,"id":"test/sim","kind":"backend","version":"2.0.0",
             "source_commit":"a".repeat(40),
             "assets":[{"os":"linux","arch":"x86_64","url":"https://github.com/test/sim/releases/download/v2.0.0/sim.tar.gz","size_bytes":1,"sha256":"b".repeat(64)}],
-            "node_contributions":{"node_types":[],"safety_adapters":[],"node_sets":[{
+            "node_contributions":{"node_types":[
+                {"id":"eos.process.mujoco@v1.0","core":"eos","layer":"process","group":"mujoco","kind":"software","lifecycle":"process","capabilities":[],"settings":[],"inputs":[],"outputs":[]},
+                {"id":"eos.hardware.mujoco_camera@v1.0","core":"eos","layer":"hardware","group":"mujoco","kind":"camera","lifecycle":"adapter","capabilities":[],"settings":[],"inputs":[],"outputs":[]}
+            ],"safety_adapters":[],"data_types":[{"id":"test.vision.frame@v1.0","media_type":"application/json","codec":"json_v1","schema":{"type":"object"},"max_payload_bytes":65536}],"node_sets":[{
                 "id":"hardware","parameters":{"socket":{"type":"string"}},
                 "nodes":[
                     {"ref":"simulator","core":"eos","layer":"process","group":"mujoco","profile":{"id":"simulator","node_type":"eos.process.mujoco@v1.0","settings":{"socket":"${socket}"}}},
-                    {"ref":"front","core":"eos","layer":"hardware","group":"mujoco","profile":{"id":"front","node_type":"eos.hardware.mujoco_camera@v1.0","references":["@simulator"],"adapter":{"settings":{"backend":"@simulator","socket_path":"${socket}"}}}}
+                    {"ref":"front","core":"eos","layer":"hardware","group":"mujoco","profile":{"id":"front","node_type":"eos.hardware.mujoco_camera@v1.0","references":["@simulator"],"adapter":{"settings":{"backend":"@simulator","socket_path":"${socket}"}}}},
+                    {"ref":"gate","core":"eos","layer":"interface","group":"gate","profile":{"id":"gate","node_type":"eos.interface.camera_gate@v1.0","inputs":{"frame":{"node":"@front","output":"frame"}}}},
+                    {"ref":"vision","core":"isosui","layer":"system","group":"ui","profile":{"id":"vision","node_type":"isosui.system.vision@v1.0","inputs":{"preview":{"node":"@gate","output":"preview"}}}}
                 ]}]}
         });
         fs::write(&manifest, serde_json::to_vec(&release).unwrap()).unwrap();
@@ -353,12 +375,14 @@ mod tests {
         let graph = json!({"version":"2.0.0","robot":{"id":"robot","name":"Robot"},"cores":{}});
         let values = BTreeMap::from([("socket".to_owned(), "/tmp/sim.sock".to_owned())]);
         let preview = compose(&paths, "test/sim", "2.0.0", "hardware", &graph, &values).unwrap();
-        assert_eq!(preview["added_paths"].as_array().unwrap().len(), 2);
+        assert_eq!(preview["added_paths"].as_array().unwrap().len(), 4);
         assert_eq!(
             preview["graph"]["cores"]["eos"]["layers"]["hardware"]["groups"]["mujoco"]["nodes"]["front"]
                 ["adapter"]["settings"]["backend"],
             "cores/eos/layers/process/groups/mujoco/nodes/simulator"
         );
+        assert!(preview["graph"]["cores"]["eos"]["layers"]["interface"]["groups"]["gate"]["nodes"]["gate"].get("package").is_none());
+        assert!(preview["graph"]["cores"]["isosui"]["layers"]["system"]["groups"]["ui"]["nodes"]["vision"].get("package").is_none());
         assert_eq!(
             preview["graph"]["cores"]["eos"]["layers"]["hardware"]["groups"]["mujoco"]["nodes"]["front"]
                 ["package"]["version"],

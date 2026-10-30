@@ -11,7 +11,7 @@ isos init
 
 Leave `isos init` running in this terminal. It owns the workbench server and process manager; Ctrl+C stops both and their children. In a second terminal, run `isos open` and edit the graph.
 
-Home shows the package, scene choices, prerequisites, saved revision, active revision, process status, and logs. Graph edits the one shared IsOS/EOS/EGIA graph. The starter graph has a backend process, EOS runtime, HTTP bridge, catalog, camera, base, manipulator, dispatcher, and a design-only EGIA guard. Select the scene and inspect executable paths, then Validate and Apply. CLI equivalents are:
+Home shows installed packages, prerequisites, saved and active revisions, process status, and logs. Build graph edits the shared IsOS/EOS/EGIA/IsosUI graph. The starter graph has EOS runtime, HTTP bridge, catalog, and dispatcher nodes. Preview the installed `sim-hardware` node set to add the MuJoCo backend, camera, base, manipulator, camera gate, and Vision node; choose the scene and inspect the preview, then Validate and Apply. Run starts the applied graph. CLI equivalents are:
 
 ```sh
 isos config validate ~/.config/isos/deployments/default.nodes.json

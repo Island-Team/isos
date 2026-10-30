@@ -40,7 +40,7 @@ Path: `cores/isos/layers/process/groups/component/nodes/<id>`. Type: `isos.proce
 | `max_restarts` | `u32` | attempts | Automatic restart cap, maximum 10. |
 | `depends_on` | `Vec<String>` | canonical node paths | Prerequisites; unique, existing, and acyclic. |
 
-The manager starts direct children in dependency order, waits for readiness, and stops process groups in reverse order with TERM then KILL after two seconds. Provider failure stops dependents before recovery. Logs are `$XDG_DATA_HOME/isos/process-logs/<deployment>/<node>.log`. Status includes saved/active revision, pinned package, process PID/restarts, and last supervisor error. The private Unix manager API retains its schema 1 envelope and uses `v2_start`, `v2_restart`, `v2_stop`, and `v2_status` operations.
+The manager starts direct children in dependency order, waits for readiness, and stops process groups in reverse order with TERM then KILL after two seconds. Provider failure stops dependents before recovery. Categorized rotating logs are `$XDG_DATA_HOME/isos/logs/<deployment>/<source>.log`; legacy raw process logs remain at `$XDG_DATA_HOME/isos/process-logs/<deployment>/<node>.log`. Status includes saved/active revision, pinned package, process PID/restarts, and last supervisor error. The private Unix manager API retains its schema 1 envelope and uses `v2_start`, `v2_restart`, `v2_stop`, and `v2_status` operations.
 
 ## Optional EOS control nodes
 

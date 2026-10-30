@@ -6,7 +6,7 @@ IsOS 管理共享 Aether v2 图、后端软件包、本地工作台 API 和直�
 
 从 v2 `master` 源码目录运行 `./install.sh` 以替换已安装的 IsOS 命令。安装程序会停止旧部署及旧版 `isos-server.service`，删除已废弃的 UI 令牌，并强制安装当前源码构建的可执行文件。随后用 `isos --version` 确认版本为 `2.0.0`。`isos stop` 也能停止残留的旧版 IsOS 服务。v2 的 `isos init` 服务在当前终端运行，按 Ctrl+C 退出。
 
-构建并安装 IsOS 及 Aether Rust 可执行文件（`aether-profile`、`aether-runtime`、`aether-http-bridge`、`aether-config-server`）。先在相邻的 IsosUI 仓库执行一次 `npm ci`；随后 `isos init` 会启动其 `npm start` 服务。将 Aether 可执行文件放在 `isos` 旁边或 `PATH` 中，或者在运行 `isos init` 前把 `ISOS_AETHER_BIN_DIR` 设为其绝对构建目录。如果 IsosUI 不在 `../IsosUI`，设置 `ISOSUI_REPO_PATH`；IsOS 也会读取命令工作目录下 `.env` 中的设置。在 MuJoCo 仓库构建仿真器，并用 `tools/build-backend-bundle.py` 制作 v2 包。把 `MUJOCO_ROOT` 指向已安装的 MuJoCo 运行环境，然后执行：
+构建并安装 IsOS 及 Aether Rust 可执行文件（`aether-profile`、`aether-runtime`、`aether-http-bridge`、`aether-config-server`）。先在相邻的 IsosUI 仓库执行一次 `npm ci`；随后 `isos init` 会启动其 `npm start` 服务。将 Aether 可执行文件放在 `isos` 旁边或 `PATH` 中，或者设置绝对路径 `ISOS_AETHER_BIN_DIR`。将 [config.example.toml](config.example.toml) 复制到 `~/.config/isos/config.toml`，按需填写绝对路径；环境变量覆盖配置文件值。`ISOS_CONFIG` 可指定其他绝对配置路径。IsOS 不再从命令工作目录读取 `.env`。在 MuJoCo 仓库构建仿真器，并用 `tools/build-backend-bundle.py` 制作 v2 包，然后执行：
 
 ```sh
 isos pkg link island/mujoco-sim 2.0.0 /absolute/path/to/bundle --manifest /absolute/path/to/bundle/release.json

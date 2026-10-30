@@ -1,0 +1,17 @@
+# Copy to ~/.config/isos/config.toml or set ISOS_CONFIG to its absolute path.
+# Environment variables with matching names override these values.
+[server]
+http_port = 16000
+ui_port = 16001
+
+[paths]
+ui_repo = "/absolute/path/to/IsosUI"
+aether_bin_dir = "/absolute/path/to/Island-eos/target/debug"
+mujoco_root = "/absolute/path/to/mujoco"
+
+[deployment]
+name = "default"
+
+[logging]
+max_bytes = 1048576
+backups = 3

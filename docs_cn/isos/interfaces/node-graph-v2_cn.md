@@ -40,7 +40,7 @@ IsOS 将已验证的可执行文件、场景路径和 MuJoCo 库路径传给 EOS
 | `max_restarts` | `u32` | 次数 | 自动重启上限，最多 10。 |
 | `depends_on` | `Vec<String>` | 规范节点路径 | 前置进程，须存在、唯一且无环。 |
 
-管理器按依赖顺序启动直接子进程，等待就绪；停止时逆序向进程组发送 TERM，两秒后发送 KILL。提供者故障时先停止依赖者再恢复。日志位于 `$XDG_DATA_HOME/isos/process-logs/<deployment>/<node>.log`。状态包含已保存/运行中修订、固定软件包、PID、重启次数和最近管理错误。私有 Unix 管理器 API 保留 schema 1 封装，使用 `v2_start`、`v2_restart`、`v2_stop`、`v2_status` 操作。
+管理器按依赖顺序启动直接子进程，等待就绪；停止时逆序向进程组发送 TERM，两秒后发送 KILL。提供者故障时先停止依赖者再恢复。分类轮转日志位于 `$XDG_DATA_HOME/isos/logs/<deployment>/<source>.log`；旧原始进程日志仍位于 `$XDG_DATA_HOME/isos/process-logs/<deployment>/<node>.log`。状态包含已保存/运行中修订、固定软件包、PID、重启次数和最近管理错误。私有 Unix 管理器 API 保留 schema 1 封装，使用 `v2_start`、`v2_restart`、`v2_stop`、`v2_status` 操作。
 
 ## 可选的 EOS 控制节点
 

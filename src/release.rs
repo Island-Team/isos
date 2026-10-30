@@ -42,7 +42,19 @@ pub struct NodeContributions {
     #[serde(default)]
     pub safety_adapters: Vec<Value>,
     #[serde(default)]
+    pub data_types: Vec<DataType>,
+    #[serde(default)]
     pub node_sets: Vec<NodeSet>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DataType {
+    pub id: String,
+    pub media_type: String,
+    pub codec: String,
+    pub schema: Value,
+    pub max_payload_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -212,6 +224,34 @@ impl Release {
             }
         }
         if let Some(contributions) = &self.node_contributions {
+            let mut data_ids = std::collections::BTreeSet::new();
+            for data_type in &contributions.data_types {
+                ensure!(
+                    data_type.id.contains("@v") && data_ids.insert(&data_type.id),
+                    "invalid or duplicate data type {}",
+                    data_type.id
+                );
+                ensure!(
+                    !data_type.media_type.trim().is_empty(),
+                    "{}: media_type is required",
+                    data_type.id
+                );
+                ensure!(
+                    !data_type.codec.trim().is_empty(),
+                    "{}: codec is required",
+                    data_type.id
+                );
+                ensure!(
+                    data_type.schema.is_object(),
+                    "{}: schema must be an object",
+                    data_type.id
+                );
+                ensure!(
+                    (1..=100_000_000).contains(&data_type.max_payload_bytes),
+                    "{}: max_payload_bytes must be 1..100000000",
+                    data_type.id
+                );
+            }
             let mut type_ids = std::collections::BTreeSet::new();
             for node_type in &contributions.node_types {
                 let id = node_type
@@ -237,6 +277,36 @@ impl Release {
                         node_type.get(field).is_some(),
                         "{id}: node type requires {field}"
                     );
+                }
+                for port in ["inputs", "outputs"]
+                    .into_iter()
+                    .flat_map(|key| node_type[key].as_array().into_iter().flatten())
+                {
+                    if let Some(rate) = port.get("expected_rate_hz") {
+                        ensure!(
+                            rate.as_f64()
+                                .is_some_and(|value| value.is_finite() && value > 0.0),
+                            "{id}: expected_rate_hz must be positive"
+                        );
+                    }
+                    if let Some(transport) = port.get("transport").and_then(Value::as_str) {
+                        ensure!(
+                            matches!(
+                                transport,
+                                "in_process" | "unix_socket" | "websocket" | "ros2"
+                            ),
+                            "{id}: invalid port transport"
+                        );
+                    }
+                    if let Some(class) = port.get("data_class").and_then(Value::as_str) {
+                        ensure!(
+                            matches!(
+                                class,
+                                "image" | "observation" | "command" | "event" | "state" | "opaque"
+                            ),
+                            "{id}: invalid port data_class"
+                        );
+                    }
                 }
             }
             let mut adapter_ids = std::collections::BTreeSet::new();
