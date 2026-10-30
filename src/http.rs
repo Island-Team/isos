@@ -21,7 +21,6 @@ use sha2::{Digest, Sha256};
 use std::{
     fs,
     net::SocketAddr,
-    os::unix::fs::PermissionsExt,
     path::PathBuf,
     sync::{Arc, Mutex},
     time::SystemTime,
@@ -30,7 +29,6 @@ use std::{
 struct App {
     paths: Paths,
     deployment: String,
-    token: String,
     web: Option<PathBuf>,
     pin_cache: Mutex<PinCache>,
 }
@@ -53,7 +51,6 @@ fn local_origin() -> String {
     format!("http://127.0.0.1:{}", local_port().unwrap_or(16000))
 }
 const HOSTED_ORIGINS: [&str; 2] = ["https://www.os-island.com", "https://os-island.com"];
-const HOSTED_EDITOR: &str = "https://www.os-island.com/en/isos";
 
 type ApiResult = std::result::Result<Json<Value>, (StatusCode, Json<Value>)>;
 fn err(status: StatusCode, message: impl ToString) -> (StatusCode, Json<Value>) {
@@ -68,28 +65,19 @@ fn ok(data: Value) -> ApiResult {
     ))
 }
 fn authorized(
-    state: &App,
+    _state: &App,
     headers: &HeaderMap,
 ) -> std::result::Result<(), (StatusCode, Json<Value>)> {
-    // Browsers identify the editor's origin. Keep bearer authentication for
-    // non-browser clients and older editor builds.
     if headers
-        .get(header::ORIGIN)
+        .get("sec-fetch-site")
         .and_then(|value| value.to_str().ok())
-        .is_some_and(allowed_origin)
-        || (!headers.contains_key(header::ORIGIN)
-            && headers
-                .get("sec-fetch-site")
-                .and_then(|value| value.to_str().ok())
-                == Some("same-origin"))
+        == Some("cross-site")
+        && !headers.contains_key(header::ORIGIN)
     {
-        return Ok(());
-    }
-    let bearer = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|h| h.to_str().ok());
-    if bearer != Some(format!("Bearer {}", state.token).as_str()) {
-        return Err(err(StatusCode::UNAUTHORIZED, "invalid bearer token"));
+        return Err(err(
+            StatusCode::FORBIDDEN,
+            "cross-site request requires Origin",
+        ));
     }
     Ok(())
 }
@@ -127,12 +115,9 @@ async fn cors(request: Request<Body>, next: Next) -> Response {
         if let Some(names) = headers
             .get(header::ACCESS_CONTROL_REQUEST_HEADERS)
             .and_then(|h| h.to_str().ok())
-            && names.split(',').any(|name| {
-                !matches!(
-                    name.trim().to_ascii_lowercase().as_str(),
-                    "authorization" | "content-type"
-                )
-            })
+            && names
+                .split(',')
+                .any(|name| !matches!(name.trim().to_ascii_lowercase().as_str(), "content-type"))
         {
             return err(StatusCode::FORBIDDEN, "invalid preflight headers").into_response();
         }
@@ -158,7 +143,7 @@ async fn cors(request: Request<Body>, next: Next) -> Response {
         );
         response.headers_mut().insert(
             header::ACCESS_CONTROL_ALLOW_HEADERS,
-            HeaderValue::from_static("Authorization, Content-Type"),
+            HeaderValue::from_static("Content-Type"),
         );
         response.headers_mut().insert(
             header::ACCESS_CONTROL_MAX_AGE,
@@ -570,38 +555,25 @@ fn cached_pin(app: &App) -> Result<Option<PathBuf>> {
     }
     Ok(cache.directory.clone())
 }
-fn token(paths: &Paths) -> Result<String> {
-    let path = paths.runtime.join("ui-token");
-    if path.exists() {
-        return Ok(fs::read_to_string(path)?.trim().to_owned());
-    }
-    let mut bytes = [0u8; 32];
-    use std::io::Read;
-    fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
-    let value = hex::encode(bytes);
-    config::atomic_write(&path, value.as_bytes())?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-    Ok(value)
+fn local_web_dist() -> Option<PathBuf> {
+    std::env::var_os("ISOS_WEB_DIST")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("ISOSUI_REPO_PATH").map(|root| PathBuf::from(root).join("dist/local"))
+        })
+        .filter(|path| path.join("index.html").is_file())
 }
 pub fn open_url(paths: &Paths) -> Result<String> {
-    let local = std::env::var_os("ISOS_WEB_DIST")
-        .map(PathBuf::from)
-        .is_some_and(|p| p.join("index.html").is_file())
-        || isosui::pinned_dir(paths)?.is_some();
-    let base = if local {
-        return Ok(format!("{}/en/isos", local_origin()));
-    } else {
-        HOSTED_EDITOR
-    };
-    Ok(base.to_owned())
+    anyhow::ensure!(
+        local_web_dist().is_some() || isosui::pinned_dir(paths)?.is_some(),
+        "local IsosUI build is missing; set ISOS_WEB_DIST or ISOSUI_REPO_PATH to a built IsosUI checkout, or pin a local build"
+    );
+    Ok(format!("{}/en/isos", local_origin()))
 }
 pub fn serve(paths: Paths, deployment: String) -> Result<()> {
     paths.prepare()?;
-    let web = std::env::var_os("ISOS_WEB_DIST")
-        .map(PathBuf::from)
-        .filter(|path| path.join("index.html").is_file());
+    let web = local_web_dist();
     let app = Arc::new(App {
-        token: token(&paths)?,
         paths,
         deployment,
         web,
@@ -698,7 +670,6 @@ mod tests {
                 runtime: PathBuf::from("/tmp/isos-test/run"),
             },
             deployment: "default".into(),
-            token: "test-secret".into(),
             web: None,
             pin_cache: Mutex::new(PinCache::default()),
         }))
@@ -714,7 +685,6 @@ mod tests {
                 runtime: temp.path().join("run"),
             },
             deployment: "default".into(),
-            token: "test-secret".into(),
             web: None,
             pin_cache: Mutex::new(PinCache::default()),
         });
@@ -742,7 +712,6 @@ mod tests {
                 runtime: temp.path().join("run"),
             },
             deployment: "default".into(),
-            token: "test-secret".into(),
             web: None,
             pin_cache: Mutex::new(PinCache::default()),
         });
@@ -767,14 +736,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn trusted_browser_origins_connect_without_bearer() {
+    async fn loopback_and_trusted_browser_origins_connect_without_token() {
         let request = Request::builder()
             .method(Method::OPTIONS)
             .uri("/api/isos/v2/version")
             .header(header::HOST, "127.0.0.1:16000")
             .header(header::ORIGIN, "https://www.os-island.com")
             .header(header::ACCESS_CONTROL_REQUEST_METHOD, "GET")
-            .header(header::ACCESS_CONTROL_REQUEST_HEADERS, "authorization")
+            .header(header::ACCESS_CONTROL_REQUEST_HEADERS, "content-type")
             .body(Body::empty())
             .unwrap();
         let response = test_router().oneshot(request).await.unwrap();
@@ -788,7 +757,6 @@ mod tests {
             .uri("/api/isos/v2/version")
             .header(header::HOST, "127.0.0.1:16000")
             .header(header::ORIGIN, "https://www.os-island.com")
-            .header(header::AUTHORIZATION, "Bearer test-secret")
             .body(Body::empty())
             .unwrap();
         let response = test_router().oneshot(request).await.unwrap();
@@ -835,7 +803,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             test_router().oneshot(request).await.unwrap().status(),
-            StatusCode::UNAUTHORIZED
+            StatusCode::OK
         );
         let request = Request::builder()
             .uri("/api/isos/v2/version")
@@ -845,7 +813,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             test_router().oneshot(request).await.unwrap().status(),
-            StatusCode::UNAUTHORIZED
+            StatusCode::FORBIDDEN
         );
     }
 
@@ -859,7 +827,6 @@ mod tests {
                 .uri("/api/isos/v2/version")
                 .header(header::HOST, host)
                 .header(header::ORIGIN, origin)
-                .header(header::AUTHORIZATION, "Bearer test-secret")
                 .body(Body::empty())
                 .unwrap();
             let response = test_router().oneshot(request).await.unwrap();

@@ -968,6 +968,9 @@ fn v2_call_revision(
 }
 
 fn main_run() -> Result<()> {
+    if std::path::Path::new(".env").is_file() {
+        dotenvy::from_path(".env")?;
+    }
     let cli = Cli::parse();
     if let Some(shell) = cli.generate_completion {
         generate(shell, &mut Cli::command(), "isos", &mut std::io::stdout());

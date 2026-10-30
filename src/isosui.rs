@@ -278,11 +278,7 @@ mod tests {
             runtime: temporary.path().join("run"),
         };
         paths.prepare().unwrap();
-        assert!(
-            crate::http::open_url(&paths)
-                .unwrap()
-                .eq("https://www.os-island.com/en/isos")
-        );
+        assert!(crate::http::open_url(&paths).is_err());
         let commit = "a".repeat(40);
         let directory = build_root(&paths).join(&commit);
         fs::create_dir_all(&directory).unwrap();

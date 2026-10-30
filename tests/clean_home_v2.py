@@ -250,6 +250,10 @@ def main():
                 raise AssertionError(f"managed child {pid} survived init Ctrl+C")
             assert not (home / "run/manager.sock").exists()
             init_log.close()
+            init_output = (root / "init.log").read_text()
+            assert f"http://127.0.0.1:{isos_port}/en/isos" in init_output
+            assert "#token=" not in init_output
+            assert not (home / "run/ui-token").exists()
             print("ISOS INIT Ctrl+C stopped foreground server: PASS")
 
 
