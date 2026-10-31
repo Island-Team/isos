@@ -13,8 +13,6 @@ New package-contributed MuJoCo process nodes use `eos.process.mujoco@v1.0` at `e
 
 | Setting | Rust type | Unit | Purpose and validation |
 | --- | --- | --- | --- |
-| `package` | `String` | package ID | Required exact ID, initially `island/mujoco-sim`. |
-| `version` | `String` | package version | Required exact installed or linked version, initially `2.0.0`. |
 | `scene` | `String` | scene ID | Required ID from the descriptor; selects one XML scene. |
 | `socket` | `PathBuf` | Unix path | Required owner-only socket under IsOS runtime, absolute and at most 107 bytes. EOS adapters must use this path. |
 | `env` | `BTreeMap<String,String>` | environment | Optional runtime values passed only to the simulator child. `MUJOCO_ROOT` locates the library; `MUJOCO_GUI=1` requests the simulator's visible window on a graphical host. Keys are ASCII alphanumeric or `_`, values exclude NUL. |
