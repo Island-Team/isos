@@ -39,7 +39,7 @@ fn probe(path: &Path, binary: &str, features: &[&str]) -> Result<()> {
     })?;
     ensure!(
         info.binary == binary
-            && info.product_version == "1.0.0"
+            && info.product_version == "0.2.0"
             && info.graph_version == "1.0.0"
             && info.node_type_version == "1.0",
         "{binary} at {} has incompatible Aether versions; build EOS and configure ISOS_AETHER_BIN_DIR",
@@ -133,7 +133,7 @@ mod tests {
     fn capability_probe_rejects_stale_runtime() {
         let temporary = tempfile::tempdir().unwrap();
         let binary = temporary.path().join("aether-runtime");
-        fs::write(&binary, "#!/bin/sh\nprintf '%s\\n' '{\"product_version\":\"1.0.0\",\"graph_version\":\"1.0.0\",\"node_type_version\":\"1.0\",\"binary\":\"aether-runtime\",\"features\":[\"log-dir\",\"node-types\"]}'\n").unwrap();
+        fs::write(&binary, "#!/bin/sh\nprintf '%s\\n' '{\"product_version\":\"0.2.0\",\"graph_version\":\"1.0.0\",\"node_type_version\":\"1.0\",\"binary\":\"aether-runtime\",\"features\":[\"log-dir\",\"node-types\"]}'\n").unwrap();
         fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
         probe(&binary, "aether-runtime", &["log-dir", "node-types"]).unwrap();
         assert!(probe(&binary, "aether-runtime", &["primitive-binding"]).is_err());

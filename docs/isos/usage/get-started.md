@@ -10,10 +10,10 @@ isos
 
 Build EOS, EGIA, and IsosUI in their owning repositories, then set `paths.aether_bin_dir`, `paths.egia_bin_dir`, and `paths.ui_dist` in `config/isos.toml`. `isos version check` reports whether each configured core can run; use `--json` for scripts. MuJoCo remains an external IsOS package. `isos serve` starts the workbench without opening a browser; `isos open` starts it if needed. Use `isos serve --ui-live` only when developing the frontend from an IsosUI checkout with npm dependencies installed. `isos build` and `isos version select` provide migration guidance instead of building or selecting cores.
 
-Build the MuJoCo simulator and stage a `2.0.0` bundle with its repository's `tools/build-backend-bundle.py`; set `MUJOCO_ROOT` to the matching runtime. Link the bundle and preview its `sim-hardware` node set in the Graph workbench. The starter graph contains EOS process and dispatcher nodes but no hardware package. The preview adds the MuJoCo process, camera, base, manipulator, gate, and Vision nodes. Choose a scene, inspect the draft, then Validate and Apply. CLI equivalents are:
+Build the MuJoCo simulator and stage a `0.1.1` bundle with its repository's `tools/build-backend-bundle.py`; set `MUJOCO_ROOT` to the matching runtime. Link the bundle and preview its `sim-hardware` node set in the Graph workbench. The starter graph contains EOS process and dispatcher nodes but no hardware package. The preview adds the MuJoCo process, camera, base, manipulator, gate, and Vision nodes. Choose a scene, inspect the draft, then Validate and Apply. CLI equivalents are:
 
 ```sh
-isos pkg link island/mujoco-sim 2.0.0 /absolute/path/to/bundle --manifest /absolute/path/to/bundle/release.json
+isos pkg link island/mujoco-sim 0.1.1 /absolute/path/to/bundle --manifest /absolute/path/to/bundle/release.json
 isos pkg node-sets
 isos config validate ~/.config/isos/deployments/default.nodes.json
 isos config apply ~/.config/isos/deployments/default.nodes.json

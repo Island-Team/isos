@@ -64,7 +64,7 @@ Related: [deployment graph](node-graph-v1.md), [package operations](../usage/pac
 
 ## Package node contributions
 
-The `1.0.1` asset snippet above illustrates the release envelope and is historical. A v2 MuJoCo node package uses `island/mujoco-sim@2.0.0` and the contribution fields below.
+The `1.0.1` asset snippet above illustrates the release envelope and is historical. A v2 MuJoCo node package uses `island/mujoco-sim@0.1.1` and the contribution fields below.
 
 Any v4 package kind may declare `node_contributions`. `node_types` and `safety_adapters` use EOS v1.0 registry JSON. `data_types` declares package-specific data IDL entries. IsOS snapshots these arrays with the exact `{id,version}` package pin into `node-types.json` beside the receipt; EOS loads that sidecar through repeatable `--node-types` options. Each data type requires `id` (versioned `namespace.name@vM.m` string), `version` (`M.m` string matching the ID suffix), `purpose` (nonempty human-readable string), `media_type` (nonempty MIME string), `codec` (nonempty registered runtime codec ID, such as `json_v1`), `schema` (JSON Schema object), and `max_payload_bytes` (positive integer bytes). The EOS runtime admits a custom data type only when its codec is compiled and registered. Contributed actuator types need a registered safety adapter with stop support. A linked bundle uses `isos pkg link ID VERSION BUNDLE --manifest release.json`; IsOS validates and snapshots the full v4 manifest. Old links without a manifest remain valid but contribute no node sets.
 

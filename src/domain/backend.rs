@@ -287,7 +287,7 @@ pub fn installed(paths: &Paths) -> Vec<serde_json::Value> {
     if let Ok(receipts) = packages::list(paths) {
         for receipt in receipts
             .into_iter()
-            .filter(|r| r.id == "island/mujoco-sim" && r.version.starts_with("2."))
+            .filter(|r| r.id == "island/mujoco-sim" && r.version == "0.1.1")
         {
             let root = receipt
                 .local_link
@@ -350,7 +350,7 @@ mod tests {
         fs::set_permissions(bundle.join("bin/sim"), fs::Permissions::from_mode(0o755)).unwrap();
         fs::write(bundle.join("assets/scene.xml"), "<mesh file=\"mesh.stl\"/>").unwrap();
         fs::write(bundle.join("assets/mesh.stl"), "mesh-a").unwrap();
-        let descriptor = serde_json::json!({"schema_version":"2.0.0","package":{"id":"island/mujoco-sim","version":"2.0.0"},"entrypoint":"bin/sim","protocol":"mujoco-v2","scenes":[{"id":"default","path":"assets/scene.xml"}],"devices":{"camera":"cam-0","base":"base-0","manipulator":"arm-0"},"runtime":{"mujoco_version":"3.16.0","environment_variable":"MUJOCO_ROOT","library":"lib/libmujoco.so.3.16.0"}});
+        let descriptor = serde_json::json!({"schema_version":"2.0.0","package":{"id":"island/mujoco-sim","version":"0.1.1"},"entrypoint":"bin/sim","protocol":"mujoco-v2","scenes":[{"id":"default","path":"assets/scene.xml"}],"devices":{"camera":"cam-0","base":"base-0","manipulator":"arm-0"},"runtime":{"mujoco_version":"3.16.0","environment_variable":"MUJOCO_ROOT","library":"lib/libmujoco.so.3.16.0"}});
         fs::write(
             bundle.join("backend-v2.json"),
             serde_json::to_vec(&descriptor).unwrap(),
@@ -359,14 +359,14 @@ mod tests {
         let mj = temp.path().join("mujoco");
         fs::create_dir_all(mj.join("lib")).unwrap();
         fs::write(mj.join("lib/libmujoco.so.3.16.0"), "stub").unwrap();
-        packages::link(&paths, "island/mujoco-sim", "2.0.0", &bundle).unwrap();
+        packages::link(&paths, "island/mujoco-sim", "0.1.1", &bundle).unwrap();
         let env = BTreeMap::from([("MUJOCO_ROOT".into(), mj.to_string_lossy().into_owned())]);
-        let first = resolve(&paths, "island/mujoco-sim", "2.0.0", "default", &env).unwrap();
+        let first = resolve(&paths, "island/mujoco-sim", "0.1.1", "default", &env).unwrap();
         assert_eq!(first.descriptor.devices["camera"], "cam-0");
         assert!(first.environment["LD_LIBRARY_PATH"].starts_with(mj.join("lib").to_str().unwrap()));
-        assert!(resolve(&paths, "island/mujoco-sim", "2.0.0", "unknown", &env).is_err());
+        assert!(resolve(&paths, "island/mujoco-sim", "0.1.1", "unknown", &env).is_err());
         fs::write(bundle.join("assets/mesh.stl"), "mesh-b").unwrap();
-        let second = resolve(&paths, "island/mujoco-sim", "2.0.0", "default", &env).unwrap();
+        let second = resolve(&paths, "island/mujoco-sim", "0.1.1", "default", &env).unwrap();
         assert_ne!(first.fingerprint, second.fingerprint);
         fs::create_dir(bundle.join("assets/nested")).unwrap();
         fs::write(
@@ -380,24 +380,24 @@ mod tests {
             "<include file=\"nested/child.xml\"/>",
         )
         .unwrap();
-        let nested = resolve(&paths, "island/mujoco-sim", "2.0.0", "default", &env).unwrap();
+        let nested = resolve(&paths, "island/mujoco-sim", "0.1.1", "default", &env).unwrap();
         fs::write(bundle.join("assets/nested/part.stl"), "nested-b").unwrap();
-        let changed = resolve(&paths, "island/mujoco-sim", "2.0.0", "default", &env).unwrap();
+        let changed = resolve(&paths, "island/mujoco-sim", "0.1.1", "default", &env).unwrap();
         assert_ne!(nested.fingerprint, changed.fingerprint);
         fs::write(bundle.join("assets/scene.xml"), "<mesh file=\"mesh.stl\"/>").unwrap();
         fs::remove_file(bundle.join("assets/mesh.stl")).unwrap();
-        assert!(resolve(&paths, "island/mujoco-sim", "2.0.0", "default", &env).is_err());
+        assert!(resolve(&paths, "island/mujoco-sim", "0.1.1", "default", &env).is_err());
         fs::remove_file(bundle.join("bin/sim")).unwrap();
-        assert!(resolve(&paths, "island/mujoco-sim", "2.0.0", "default", &env).is_err());
-        let graph = serde_json::json!({"cores":{"eos":{"layers":{"process":{"groups":{"backend":{"nodes":{"simulator":{"settings":{"package":"island/mujoco-sim","version":"2.0.0"}}}}}}}}}});
+        assert!(resolve(&paths, "island/mujoco-sim", "0.1.1", "default", &env).is_err());
+        let graph = serde_json::json!({"cores":{"eos":{"layers":{"process":{"groups":{"backend":{"nodes":{"simulator":{"settings":{"package":"island/mujoco-sim","version":"0.1.1"}}}}}}}}}});
         crate::config::atomic_write(
             &paths.node_graph_path("default"),
             &serde_json::to_vec(&graph).unwrap(),
         )
         .unwrap();
-        assert!(packages::remove(&paths, "island/mujoco-sim", "2.0.0").is_err());
+        assert!(packages::remove(&paths, "island/mujoco-sim", "0.1.1").is_err());
         fs::remove_file(paths.node_graph_path("default")).unwrap();
-        assert!(packages::remove(&paths, "island/mujoco-sim", "2.0.0").is_ok());
+        assert!(packages::remove(&paths, "island/mujoco-sim", "0.1.1").is_ok());
 
         fs::write(bundle.join("bin/sim"), "#!/bin/sh\nexit 0\n").unwrap();
         fs::set_permissions(bundle.join("bin/sim"), fs::Permissions::from_mode(0o755)).unwrap();
@@ -413,9 +413,9 @@ mod tests {
         let bytes = fs::read(&archive).unwrap();
         let platform = crate::release::Platform::current();
         let release: crate::release::Release = serde_json::from_value(serde_json::json!({
-            "schema_version":4,"id":"island/mujoco-sim","kind":"backend","version":"2.0.0",
+            "schema_version":4,"id":"island/mujoco-sim","kind":"backend","version":"0.1.1",
             "source_commit":"0123456789012345678901234567890123456789",
-            "assets":[{"os":platform.os,"arch":platform.arch,"url":"https://github.com/Island-Team/isos-mujoco/releases/download/v2.0.0/bundle.tar.gz","size_bytes":bytes.len(),"sha256":hex::encode(Sha256::digest(&bytes))}]
+            "assets":[{"os":platform.os,"arch":platform.arch,"url":"https://github.com/Island-Team/isos-mujoco/releases/download/v0.1.1/bundle.tar.gz","size_bytes":bytes.len(),"sha256":hex::encode(Sha256::digest(&bytes))}]
         })).unwrap();
         let mut altered = bytes.clone();
         *altered.last_mut().unwrap() ^= 1;
@@ -423,6 +423,6 @@ mod tests {
         assert!(packages::install(&paths, &release, true, Some(&archive)).is_err());
         fs::write(&archive, &bytes).unwrap();
         packages::install(&paths, &release, true, Some(&archive)).unwrap();
-        assert!(resolve(&paths, "island/mujoco-sim", "2.0.0", "default", &env).is_ok());
+        assert!(resolve(&paths, "island/mujoco-sim", "0.1.1", "default", &env).is_ok());
     }
 }

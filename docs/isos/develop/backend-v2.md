@@ -67,7 +67,7 @@ The [source layout](source-layout.md) now separates CLI commands, manager protoc
 
 ## Single-runtime and first-public-contract verification (2026-10-31)
 
-IsOS uses the `1.0.0` graph, `/api/isos/v1`, setup schema 1, and one direct-child manager. EOS and EGIA report product/graph/setup v1; the MuJoCo package, EOS HTTP control API, and simulator socket retain their independent v2 contracts. The removed CLI/API routes return command errors or HTTP 404, and obsolete graph files are left in place with conversion guidance.
+IsOS uses the `1.0.0` graph, `/api/isos/v1`, setup schema 1, and one direct-child manager. EOS and EGIA report their own product versions while graph and setup contracts remain v1; the MuJoCo package, EOS HTTP control API, and simulator socket retain their independent v2 contracts. The removed CLI/API routes return command errors or HTTP 404, and obsolete graph files are left in place with conversion guidance.
 
 The reproducible local checks used `ISOS_BIN=target/debug/isos`, `AETHER_BIN_DIR=../Island-eos/target/debug`, `ISOSUI_DIST_DIR=../IsosUI/dist/local`, and the staged `island/mujoco-sim@2.0.0` bundle. Results are in ignored `logs/test/20261031-single-runtime-v1/`:
 
@@ -80,3 +80,7 @@ The reproducible local checks used `ISOS_BIN=target/debug/isos`, `AETHER_BIN_DIR
 On an already applied v1 graph, `isos init` or `isos config init` validates the saved graph and current configured core binaries, then atomically regenerates the core setup files and executable digests. The graph bytes and revision stay unchanged. A fresh draft remains unapplied. Run or explicitly Restart to use a changed binary; a running deployment is not restarted by `init`. An older `2.0.0` graph is left untouched and requires manual migration as described in the [migration guide](../maintenance/migration.md).
 
 Checks: `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `cargo build`, and `ISOS_BIN=target/debug/isos AETHER_BIN_DIR=../Island-eos/target/debug ISOSUI_DIST_DIR=../IsosUI/dist/local python3 tests/clean_home.py`. The integration test changes a configured EOS executable after Apply, confirms readiness is blocked, runs `isos init`, confirms readiness and unchanged graph bytes, then exercises Run, Restart, Stop, failure recovery, and child shutdown. Complete output is in ignored `logs/test/20261031-init-core-refresh/`.
+
+## Product version alignment (2026-10-31)
+
+IsOS reports `0.1.0`, expects EOS `0.2.0`, and recognizes the MuJoCo package `0.1.1`. The graph remains `1.0.0` and the IsOS API remains `/api/isos/v1`. `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, and `cargo build` passed. `tests/clean_home.py` and `tests/real_home.py` passed with the new EOS binaries and staged MuJoCo bundle, including Vision frames, movement, restart, and shutdown. Logs are in ignored `logs/test/20261031-version-alignment/`.

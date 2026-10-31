@@ -27,7 +27,7 @@ In the second terminal:
 
 ```sh
 isos open
-isos pkg link island/mujoco-sim 2.0.0 /absolute/path/to/bundle --manifest /absolute/path/to/bundle/release.json
+isos pkg link island/mujoco-sim 0.1.1 /absolute/path/to/bundle --manifest /absolute/path/to/bundle/release.json
 isos pkg node-sets
 
 # Add the installed MuJoCo node set in the Graph workbench, then Validate and Apply.
@@ -44,6 +44,6 @@ New graphs contain EOS process nodes and the dispatcher; the operator adds insta
 
 IsOS uses `~/.config/isos/deployments/<name>.nodes.json`, `~/.local/share/isos/packages/`, and `$XDG_RUNTIME_DIR/isos/` by default. `ISOS_HOME` creates isolated `config/`, `data/`, and `run/` directories for testing. Owner-only rotating JSON logs live under `~/.local/share/isos/logs/<deployment>/`; `GET /api/isos/v1/logs` and the UI show the unified stream by default. `[logging]` in `config/isos.toml` controls the default source, recording level, per-file rotation, backup count, and source-file cap. The UI defaults to displaying `info` and higher. Service TOML files and their CLI contract are described in [services](docs/isos/interfaces/services.md).
 
-To use an archive instead of a local link, run `isos pkg verify <manifest> <asset>` and `isos pkg install --manifest <manifest> --asset <asset> --allow-unapproved` for a local candidate. Approved catalog packages can use `isos pkg install island/mujoco-sim --version 2.0.0` when published. `isos pkg remove` rejects packages referenced by an applied graph.
+To use an archive instead of a local link, run `isos pkg verify <manifest> <asset>` and `isos pkg install --manifest <manifest> --asset <asset> --allow-unapproved` for a local candidate. Approved catalog packages can use `isos pkg install island/mujoco-sim --version 0.1.1` when published. `isos pkg remove` rejects packages referenced by an applied graph.
 
 See [backend design](docs/isos/design/backend-v2.md), [graph interface](docs/isos/interfaces/node-graph-v1.md), [local API](docs/isos/interfaces/local-api.md), and [Chinese README](README_cn.md). Development checks are `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test`; save integration output under `logs/test/<run-id>/`.

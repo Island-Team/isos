@@ -81,7 +81,7 @@ def main():
         (bundle / "assets/scene.xml").write_text("<mujoco/>")
         (bundle / "assets/scenes/navigation/scene.xml").write_text("<mujoco/>")
         descriptor = {
-            "schema_version": "2.0.0", "package": {"id": "island/mujoco-sim", "version": "2.0.0"},
+            "schema_version": "2.0.0", "package": {"id": "island/mujoco-sim", "version": "0.1.1"},
             "entrypoint": "bin/eos-mujoco-sim", "protocol": "mujoco-v2",
             "scenes": [{"id": "default", "path": "assets/scene.xml"},
                        {"id": "navigation", "path": "assets/scenes/navigation/scene.xml"}],
@@ -95,9 +95,9 @@ def main():
         module_spec.loader.exec_module(module)
         manifest = bundle / "release.json"
         manifest.write_text(json.dumps({
-            "schema_version": 4, "id": "island/mujoco-sim", "kind": "backend", "version": "2.0.0",
+            "schema_version": 4, "id": "island/mujoco-sim", "kind": "backend", "version": "0.1.1",
             "source_commit": "a" * 40, "node_contributions": module.contributions(),
-            "assets": [{"os": "linux", "arch": "x86_64", "url": "https://github.com/Island-Team/isos-mujoco-sim/releases/download/v2.0.0/mock.tar.gz", "size_bytes": 1, "sha256": "b" * 64}],
+            "assets": [{"os": "linux", "arch": "x86_64", "url": "https://github.com/Island-Team/isos-mujoco-sim/releases/download/v0.1.1/mock.tar.gz", "size_bytes": 1, "sha256": "b" * 64}],
         }))
         library = root / "mujoco/lib"
         library.mkdir(parents=True)
@@ -114,7 +114,7 @@ def main():
         env = dict(os.environ, ISOS_HOME=str(home), MUJOCO_ROOT=str(library.parent),
                    ISOS_HTTP_PORT=str(isos_port), ISOSUI_PORT=str(ui_port), ISOSUI_DIST_DIR=str(ui_dist),
                    ISOS_AETHER_BIN_DIR=str(configured_bins))
-        run("pkg", "link", "island/mujoco-sim", "2.0.0", str(bundle), "--manifest", str(manifest), env=env)
+        run("pkg", "link", "island/mujoco-sim", "0.1.1", str(bundle), "--manifest", str(manifest), env=env)
         run("init", "--mode", "dev", env=env)
         graph_path = home / "config/deployments/default.nodes.json"
         initial_graph = graph_path.read_bytes()
@@ -139,12 +139,12 @@ def main():
         assert "hardware" not in graph["cores"]["eos"]["layers"]
         values_path = root / "node-values.json"
         values_path.write_text(json.dumps({"scene": "default", "socket": str(home / "run/default-mujoco.sock")}))
-        graph = json.loads(run("pkg", "preview-set", "island/mujoco-sim", "2.0.0", "sim-hardware", str(graph_path), "--values", str(values_path), env=env).stdout)["graph"]
+        graph = json.loads(run("pkg", "preview-set", "island/mujoco-sim", "0.1.1", "sim-hardware", str(graph_path), "--values", str(values_path), env=env).stdout)["graph"]
         hardware_groups = graph["cores"]["eos"]["layers"]["hardware"]["groups"]
         mujoco_nodes = {kind: hardware_groups[kind]["nodes"][name] for kind, name in
                         [("camera", "front"), ("base", "drive"), ("manipulator", "arm")]}
         assert all(node.get("package") is None for node in mujoco_nodes.values())
-        assert all(node["adapter"]["package"] == {"id": "island/mujoco-sim", "version": "2.0.0"}
+        assert all(node["adapter"]["package"] == {"id": "island/mujoco-sim", "version": "0.1.1"}
                    for node in mujoco_nodes.values())
         gate = graph["cores"]["eos"]["layers"]["interface"]["groups"]["gate"]["nodes"]["front-preview"]
         vision = graph["cores"]["isos"]["layers"]["ui"]["groups"]["panel"]["nodes"]["vision"]
@@ -196,7 +196,7 @@ def main():
         assert "refreshed core launch inputs" in run("config", "init", env=env).stdout
         assert graph_path.read_bytes() == applied_graph
         print("ISOS init refreshed rebuilt core without changing applied graph: PASS")
-        assert run("pkg", "remove", "island/mujoco-sim", "2.0.0", env=env, expect=False).returncode != 0
+        assert run("pkg", "remove", "island/mujoco-sim", "0.1.1", env=env, expect=False).returncode != 0
         saved_hash = hashlib.sha256(graph_path.read_bytes()).hexdigest()
         try:
             def isos_api(path, method="GET", data=None, timeout=30):
@@ -266,7 +266,7 @@ def main():
                     diagnostic = ROOT / "logs/test/20261031-configured-core-final/failed-mock"
                     diagnostic.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(graph_path, diagnostic / "graph.json")
-                    shutil.copy2(home / "data/packages/island/mujoco-sim/2.0.0/node-types.json", diagnostic / "node-types.json")
+                    shutil.copy2(home / "data/packages/island/mujoco-sim/0.1.1/node-types.json", diagnostic / "node-types.json")
                     raise RuntimeError(f"isos run exited {run_process.returncode}: {(root / 'run.log').read_text()}\nchild logs: {child_logs}")
                 time.sleep(0.05)
             else:
@@ -281,7 +281,7 @@ def main():
                 assert result["started"][0] == "eos"
                 startups.append((time.perf_counter() - start) * 1000)
             status = json.loads(run("status", "--json", env=env).stdout)
-            assert status["state"] == "running" and status["package"]["version"] == "2.0.0"
+            assert status["state"] == "running" and status["package"]["version"] == "0.1.1"
             assert {p["id"] for p in status["processes"]} == {"eos", "bridge", "config"}
             assert json.loads(parent_report.read_text())["parent_pid"] == next(
                 p["pid"] for p in status["processes"] if p["id"] == "eos")

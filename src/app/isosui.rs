@@ -140,7 +140,7 @@ mod tests {
         fs::write(bundle.join("index.html"), "<html></html>").unwrap();
         let identity = Manifest {
             schema_version: 1,
-            version: "1.0.0".into(),
+            version: "0.1.0".into(),
             source_commit: "a".repeat(40),
             api_schema_version: 1,
             build_target: "local".into(),
