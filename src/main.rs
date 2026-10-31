@@ -1026,13 +1026,13 @@ fn api_call(
                     "saved graph revision changed; reload before restart"
                 );
             }
+            let specs = v2_process::project_with_packages(paths, &source)?;
+            v2_build::preflight_processes(paths, &specs)?;
             core_setup::prepare_run(paths, &name, &revision)?;
             ensure!(
                 v2_starter::revision(&path)? == revision,
                 "saved graph revision changed during core setup; reload before restart"
             );
-            let specs = v2_process::project_with_packages(paths, &source)?;
-            v2_build::preflight_processes(paths, &specs)?;
             let started = restart_v2_processes(paths, managers, &name, &revision, &specs)?;
             Ok(json!({"started":started,"active_revision":revision}))
         }
@@ -1047,13 +1047,13 @@ fn api_call(
                     "saved graph revision changed; reload before run"
                 );
             }
+            let specs = v2_process::project_with_packages(paths, &source)?;
+            v2_build::preflight_processes(paths, &specs)?;
             core_setup::prepare_run(paths, &name, &revision)?;
             ensure!(
                 v2_starter::revision(&path)? == revision,
                 "saved graph revision changed during core setup; reload before run"
             );
-            let specs = v2_process::project_with_packages(paths, &source)?;
-            v2_build::preflight_processes(paths, &specs)?;
             let manager = if let Some(active) = managers.get_mut(&name) {
                 ensure!(
                     active.active_revision == revision,
