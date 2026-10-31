@@ -16,6 +16,8 @@ isos
 
 `isos` and `isos serve` host the configured IsosUI bundle at `http://127.0.0.1:16001/en/isos` and the API at `http://127.0.0.1:16000/api/isos/v2`. IsOS reserves ports 16000–16019, EOS 16020–16059 (control 16020, runtime catalog 16021), and EGIA 16060–16099 (northbound 16060). Explicit listener overrides are supported; collisions are rejected before graph launch. Product mode serves the configured verified static UI and requires compatible core binaries. Ctrl+C or `isos stop` stops the UI, API, deployment, explicitly started services, and manager. `isos deployment stop` stops the graph only.
 
+Keep the `isos serve` terminal open while using the workbench. Save and Run, Restart, and a rejected graph launch control the deployment only; the workbench stays available without a systemd user service.
+
 An optional systemd user unit runs that same product command: after `isos init --mode product` and configuring verified core and UI paths, run `./install.sh --install-user-service` to install the CLI and enable and start the unit, or run `tools/user-service.sh install` when the CLI is already installed. Run `tools/user-service.sh remove` to disable it. CLI commands and shell completion work without the unit.
 
 

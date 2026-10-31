@@ -56,3 +56,7 @@ The Rust suite passed 77 unit tests and five CLI tests. The mock route covered A
 ## Saved setup status recovery (2026-10-31)
 
 The saved MuJoCo graph was reapplied with `isos config apply` after the current EOS profile accepted its adapter family. A successful Apply now clears the previous setup failure; readiness identifies cores absent from the saved graph as not enabled. `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test` passed (78 unit tests and five CLI tests). Full output and the graph backup are in ignored `logs/test/20261031-stale-setup-recovery/`.
+
+## Setup contract and foreground lifecycle (2026-10-31)
+
+`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, and `python3 tests/clean_home_v2.py` passed with output in ignored `logs/test/20261031-setup-contract-lifecycle/`. The Rust suite passed 80 unit tests and four CLI tests. The clean-home route verified that a changed EOS binary rejects Run with HTTP 422 while the foreground `isos serve` process, graph API, and static IsosUI remain available. It also covered Apply, Run, Restart, mock MuJoCo controls, deployment stop, and workbench Ctrl+C shutdown.

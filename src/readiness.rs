@@ -23,6 +23,10 @@ pub fn report(paths: &Paths, name: &str, active: Option<&Value>) -> Value {
     } else {
         None
     };
+    let endpoints = graph
+        .is_object()
+        .then(|| core_setup::endpoints(paths, name, &graph))
+        .transpose();
     let cores: Vec<Value> = ["eos", "egia"]
         .into_iter()
         .map(|core| {
@@ -90,12 +94,23 @@ pub fn report(paths: &Paths, name: &str, active: Option<&Value>) -> Value {
             } else {
                 None
             };
-            let ready =
-                compatible && graph_configured && inputs_issue.is_none() && !running_changed;
-            let reason = reason.or(inputs_issue).or_else(|| {
+            let endpoint_issue = endpoints.as_ref().err().map(ToString::to_string);
+            let ready = compatible
+                && graph_configured
+                && inputs_issue.is_none()
+                && endpoint_issue.is_none()
+                && !running_changed;
+            let reason = reason.or(inputs_issue).or(endpoint_issue).or_else(|| {
                 running_changed.then(|| {
                     "running from an earlier configured build; restart to use the saved build"
                         .into()
+                })
+            });
+            let configured_endpoint = endpoints.as_ref().ok().and_then(|endpoints| {
+                endpoints.as_ref().and_then(|value| match core {
+                    "eos" => value.get("eos_control"),
+                    "egia" => value.get("egia_northbound"),
+                    _ => None,
                 })
             });
             let action = if !enabled {
@@ -115,7 +130,8 @@ pub fn report(paths: &Paths, name: &str, active: Option<&Value>) -> Value {
             };
             json!({"core":core,"path":path,"version":version,"compatible":compatible,
                 "configured":explicit || path.is_some(),"enabled":enabled,"graph_configured":graph_configured,
-                "running":running,"ready":ready,"reason":reason,"action":action})
+                "running":running,"ready":ready,"reason":reason,"action":action,
+                "configured_endpoint":configured_endpoint})
         })
         .collect();
     let ui = match isosui::bundle_for_serve(paths) {

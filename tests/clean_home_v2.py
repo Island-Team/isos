@@ -340,9 +340,22 @@ def main():
                 assert "changed since graph Apply" in failure["error"]
             runtime.write_bytes(original_runtime)
             assert isos_api("process-status")["state"] == "stopped"
+            assert serve_process.poll() is None
+            assert isos_api("node-graph")["revision"] == saved_hash
+            with urlopen(f"http://127.0.0.1:{ui_port}/en/isos", timeout=2) as response:
+                assert b"<html" in response.read().lower()
             print("FAILURE changed EOS binary returned API 422 without degraded startup: PASS")
             api_run = isos_api("process-control", "POST", {"schema_version": 2, "operation": "run", "revision": saved_hash})
             assert api_run["started"][0] == "eos"
+            try:
+                isos_api("process-control", "POST", {"schema_version": 2, "operation": "restart", "revision": "stale"})
+                raise AssertionError("stale revision restart was accepted")
+            except HTTPError as error:
+                assert error.code == 422
+            assert isos_api("process-status")["state"] == "running"
+            assert serve_process.poll() is None
+            with urlopen(f"http://127.0.0.1:{ui_port}/en/isos", timeout=2) as response:
+                assert b"<html" in response.read().lower()
             assert isos_api("process-logs/eos?lines=5")["node"] == "eos"
             categorized = isos_api("logs?source=eos&limit=5")
             assert isinstance(categorized["lines"], list) and isinstance(categorized["next_cursor"], str)
