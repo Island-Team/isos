@@ -14,7 +14,7 @@ API 只绑定 `127.0.0.1`，不提供前端文件。IsosUI 通过地址和端口
 | `GET /api/isos/v2/node-types` | `{types:[...]}` | 由 `aether-profile` 提供节点类型目录。 |
 | `GET /api/isos/v2/node-options` | `{adapter_families,primitive_bindings,targets}` | 已保存图的适配器、原语绑定与目标选项。 |
 | `POST /api/isos/v2/node-options` | `{schema_version:2,graph}` → `{adapter_families,primitive_bindings,targets}` | 未应用草稿的选择器选项。 |
-| `GET /api/isos/v2/build-binaries` | `{selected:receipt|null}` | 已暂存的精确 Rust EOS 二进制集合。 |
+| `GET /api/isos/v2/build-binaries` | `{selected:receipt|null,source_current:boolean,stale_reason:string|null}` | 已选且摘要校验通过的 EOS 程序及源码状态。源码漂移作为状态返回，不导致 HTTP 错误；未选择时 `source_current:false` 且 `stale_reason:null`。 |
 | `POST /api/isos/v2/build-binaries` | `{schema_version:2,target:"eos",install_deps:false}` → `{receipt,suggested_graph}` | 构建并暂存 Rust EOS 程序，不改变已选构建；预览建议图后调用选择接口。 |
 | `POST /api/isos/v2/build-binaries/select` | `{schema_version:2,selector,revision}` → `{receipt,graph:{revision,graph}}` | 选择已校验的 EOS 暂存构建；仅当图修订仍匹配时应用三个进程命令。 |
 | `GET /api/isos/v2/node-sets` | `{sets:[{package,id,parameters,nodes}]}` | 已安装软件包提供的节点集合。 |
@@ -61,6 +61,8 @@ IsOS 会读取存在的 `~/.config/isos/config.toml`（或 `ISOS_HOME/config/con
 ## Rust 程序与选择器契约
 
 `receipt` 包含 `schema_version`（整数 2）、`component`（`eos`）、`product_version`（`2.0.0`）、`source_commit`（完整 Git SHA）、`source_dirty`（源码有修改或未跟踪文件时为 true）、`source_fingerprint`（提交和源码文件的 SHA-256）、`source_root`（用于开发环境漂移检查的可选绝对源码路径）、`binaries`（按程序名索引的绝对路径）和 `sha256`（文件摘要）。构建会将五个 Aether 程序作为同一集合放入 IsOS 私有数据目录，但不会改变已选构建。产品模式仅接纳干净且带源码指纹的收据。Run 会探测 EOS、bridge、config 与 profile 的精确能力；程序过旧或图指向其他程序时直接报错。`suggested_graph` 为 `{revision,graph}` 或 null，不会自动应用。CLI `isos build eos` 使用同一构建服务；选择接口或 `isos version select eos <selector>` 校验图修订后再应用三个程序路径和固定选择。选择器接受唯一的提交前缀、产品版本或源码指纹前缀；同一提交有多个构建时使用指纹。
+
+在开发模式下，EOS 源码变化后，图编辑与校验继续使用摘要校验通过的已选 `aether-profile`。选择暂存构建时，先使用候选构建的 `aether-profile` 校验建议图，再更新图和固定选择；Run 仍要求源码与所选构建一致。版本检查使用 `match.eos_source`（布尔值；未选择时为 null）和 `eos_source_diagnostic`（字符串或 null）报告源码漂移。
 
 IsOS 和 IsosUI 构建使用独立的不可变收据，并记录相同的源码身份字段。`isos build isos` 暂存 release 可执行文件；`isos version select isos <commit>` 要求先停止管理器，再激活该程序。IsosUI 收据还将目录摘要绑定到清单；产品模式仅从已选择且校验通过的目录提供页面。
 

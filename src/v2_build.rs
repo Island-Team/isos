@@ -539,6 +539,16 @@ pub fn build_eos(paths: &Paths) -> Result<BuildReceipt> {
 }
 
 pub fn selected(paths: &Paths) -> Result<Option<BuildReceipt>> {
+    let receipt = selected_verified(paths)?;
+    if let Some(receipt) = &receipt {
+        verify_source(paths, receipt)?;
+    }
+    Ok(receipt)
+}
+
+/// Read the pinned, digest-verified executable set for editing and validation.
+/// Source drift is enforced separately at Run admission.
+pub fn selected_verified(paths: &Paths) -> Result<Option<BuildReceipt>> {
     let pin = paths.config.join("pins/eos.json");
     let path = if pin.exists() {
         pin
@@ -550,7 +560,6 @@ pub fn selected(paths: &Paths) -> Result<Option<BuildReceipt>> {
     }
     let receipt: BuildReceipt = serde_json::from_slice(&fs::read(path)?)?;
     verify(&receipt)?;
-    verify_source(paths, &receipt)?;
     Ok(Some(receipt))
 }
 
@@ -618,7 +627,11 @@ pub fn select_eos(
     );
     let graph: serde_json::Value = serde_json::from_slice(&previous)?;
     let suggested = suggest_graph(&graph, &receipt)?;
-    crate::v2_process::validate_value(paths, &suggested)?;
+    crate::v2_process::validate_value_with_profile(
+        paths,
+        &suggested,
+        &receipt.binaries["aether-profile"],
+    )?;
     let pin = paths.config.join("pins/eos.json");
     let old_pin = fs::read(&pin).ok();
     config::atomic_write(&pin, &serde_json::to_vec_pretty(&receipt)?)?;
@@ -695,6 +708,111 @@ pub fn suggest_graph(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fake_receipt(root: &Path, source_root: Option<PathBuf>) -> BuildReceipt {
+        fs::create_dir_all(root).unwrap();
+        let mut binaries = BTreeMap::new();
+        let mut sha256 = BTreeMap::new();
+        for name in EOS_BINARIES {
+            let binary = root.join(name);
+            fs::write(&binary, b"#!/bin/sh\nexit 0\n").unwrap();
+            fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+            sha256.insert(name.to_owned(), digest(&binary).unwrap());
+            binaries.insert(name.to_owned(), binary);
+        }
+        BuildReceipt {
+            schema_version: 2,
+            component: "eos".into(),
+            product_version: "2.0.0".into(),
+            source_commit: "a".repeat(40),
+            source_dirty: false,
+            source_fingerprint: "b".repeat(64),
+            source_root,
+            binaries,
+            sha256,
+        }
+    }
+
+    #[test]
+    fn verified_selection_survives_source_drift_but_run_selection_rejects_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        paths.prepare().unwrap();
+        paths.set_mode("dev").unwrap();
+        let source = temp.path().join("source");
+        fs::create_dir_all(&source).unwrap();
+        let output = Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&source)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let receipt = fake_receipt(temp.path(), Some(source));
+        config::atomic_write(
+            &paths.config.join("pins/eos.json"),
+            &serde_json::to_vec(&receipt).unwrap(),
+        )
+        .unwrap();
+        assert!(selected_verified(&paths).unwrap().is_some());
+        assert!(selected(&paths).is_err());
+        assert!(preflight_processes(&paths, &[]).is_err());
+    }
+
+    #[test]
+    fn candidate_selection_recovers_from_stale_old_pin() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        paths.prepare().unwrap();
+        paths.set_mode("dev").unwrap();
+        let source = temp.path().join("source");
+        fs::create_dir_all(&source).unwrap();
+        assert!(
+            Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(&source)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let old = fake_receipt(&temp.path().join("old"), Some(source));
+        config::atomic_write(
+            &paths.config.join("pins/eos.json"),
+            &serde_json::to_vec(&old).unwrap(),
+        )
+        .unwrap();
+        let stage = paths.data.join("builds/eos/candidate");
+        let mut candidate = fake_receipt(&stage, None);
+        candidate.source_commit = "c".repeat(40);
+        config::atomic_write(
+            &stage.join("receipt.json"),
+            &serde_json::to_vec(&candidate).unwrap(),
+        )
+        .unwrap();
+        let graph_path = crate::v2_starter::init(&paths, "default").unwrap();
+        let revision = crate::v2_starter::revision(&graph_path).unwrap();
+        let selected = select_eos(&paths, "default", &"c".repeat(12), &revision).unwrap();
+        assert_eq!(selected.source_commit, candidate.source_commit);
+        let graph: serde_json::Value =
+            serde_json::from_slice(&fs::read(graph_path).unwrap()).unwrap();
+        assert_eq!(
+            graph
+                .pointer("/cores/isos/layers/process/groups/component/nodes/eos/settings/command/0")
+                .and_then(serde_json::Value::as_str),
+            Some(candidate.binaries["aether-runtime"].to_str().unwrap())
+        );
+        assert_eq!(
+            selected_verified(&paths).unwrap().unwrap().source_commit,
+            candidate.source_commit
+        );
+    }
 
     #[test]
     fn fingerprint_selects_one_build_when_commit_is_shared() {

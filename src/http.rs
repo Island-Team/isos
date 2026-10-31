@@ -388,9 +388,14 @@ async fn build_binaries(
 
 async fn build_binaries_status(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
     authorized(&app, &headers)?;
-    let selected = v2_build::selected(&app.paths)
+    let selected = v2_build::selected_verified(&app.paths)
         .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
-    ok(json!({"selected":selected}))
+    let stale_reason = selected
+        .as_ref()
+        .and_then(|receipt| v2_build::verify_source(&app.paths, receipt).err())
+        .map(|error| error.to_string());
+    let source_current = selected.is_some() && stale_reason.is_none();
+    ok(json!({"selected":selected,"source_current":source_current,"stale_reason":stale_reason}))
 }
 
 #[derive(Deserialize)]
@@ -1007,6 +1012,32 @@ mod tests {
         let body: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["data"]["revision"], "");
         assert_eq!(body["data"]["graph"]["version"], "2.0.0");
+    }
+
+    #[tokio::test]
+    async fn build_status_reports_unselected_state_without_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = Arc::new(App {
+            paths: Paths {
+                config: temp.path().join("config"),
+                data: temp.path().join("data"),
+                runtime: temp.path().join("run"),
+            },
+            deployment: "default".into(),
+        });
+        let request = Request::builder()
+            .uri("/api/isos/v2/build-binaries")
+            .header(header::HOST, "127.0.0.1:16000")
+            .header(header::ORIGIN, "https://www.os-island.com")
+            .body(Body::empty())
+            .unwrap();
+        let response = router(app).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), 1_000_000).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["data"]["selected"], Value::Null);
+        assert_eq!(body["data"]["source_current"], false);
+        assert_eq!(body["data"]["stale_reason"], Value::Null);
     }
 
     #[tokio::test]
