@@ -2,6 +2,8 @@
 
 [English](../../../docs/isos/interfaces/local-api.md)
 
+**实现状态：**路由表与当前选择器说明对应已实现行为；末尾 `0.x` 扩展是目标，使用前须实现。`/api/isos/v1` 路径与 schema-1 封装是兼容身份，并非产品 `1.0.0` 声明。
+
 `isos init --mode dev|product` 在缺少配置或初始图时创建它们。若图曾应用，则校验已保存的 v1 图，并根据已配置的程序目录刷新生成的核心配置和程序摘要；不会修改图或启动进程。旧版图或不兼容核心会中止刷新并给出指引，图文件保持原样。`isos serve` 默认在 `127.0.0.1:16000` 启动 IsOS API（`ISOS_HTTP_PORT` 可调整端口），在 `127.0.0.1:16001` 提供已配置的预构建 IsosUI 文件（`ISOSUI_PORT` 可调整端口），并在 `$XDG_RUNTIME_DIR/isos/`（或 `ISOS_HOME/run/`）下创建仅所有者可访问的 Unix 管理套接字。`isos serve --ui-live` 才会管理 Webpack。运行目录权限为 `0700`，管理套接字为 `0600`。HTTP 响应封装为 `{schema_version:1,ok,data,error}`；内部单行 Unix 封装仍为 schema 1。
 
 API 只绑定 `127.0.0.1`，不提供前端文件。IsosUI 通过地址和端口直接调用 API，无需 URL 或 bearer 令牌。API `Host` 必须匹配其环回地址和配置的端口。浏览器请求可来自 UI 来源 `127.0.0.1:16001`（或配置的 `ISOSUI_PORT`）、API 自身来源，或托管 IsosUI 来源 `https://www.os-island.com`、`https://os-island.com`；其他 Origin 会被拒绝。跨域预检允许 GET、POST、PUT 和 Content-Type。Ctrl+C 或 `isos stop` 会停止两个服务、部署、显式启动的服务以及管理器。
@@ -81,3 +83,36 @@ IsOS 在 `aether-profile setup --json` 或 `egia-config setup --json` 上发送 
 请在 EOS、EGIA 和 IsosUI 所属仓库构建，再在 IsOS 中配置路径。重建已配置的核心后执行 `isos init`（或 `isos config init`），刷新已应用图的启动输入，再 Run 或显式 Restart。运行中的进程在重启前继续使用原有程序。尚未应用的图仍需 Save graph；`init` 不会暗中应用。IsOS 不根据 Git 提交推断选择。
 
 `adapter_families` 包含 `id`（稳定适配器 ID）、`device_kinds`（设备类别）、可选精确版本 `package:{id,version}`、布尔值 `compiled`／`available`、字符串 `transport`／`description`、可选 `supported_primitives` 及不可用时的 `reason`。`primitive_bindings` 包含 `node_type`、`device_kind`、`movement_types`、`available`、`reason`、以及具有精确名称、版本、运动类型和描述的 `primitives`。`targets` 包含四段式 `path`、`node_type`、`device_kind`、`adapter_type`、`movement_types`、`available`、`reason`。`GET /node-types` 同时透传 EOS 的 `primitive_specs` 与有类型的 `data_types`。
+
+## 发行目标：设置选项——尚未实现
+
+保留现有 `GET` 与 `POST /api/isos/v1/node-options` 封装；在 `data` 中增加 `setting_options`，不删除 `adapter_families`、`primitive_bindings` 或 `targets`。`GET` 解析已保存图；`POST` 解析草稿而不保存。IsOS 从注册类型的 `Setting.selector` 取得描述，只从精确且已验证的 `{id,version}` 收据解析包选项。只返回 ID 和可用性，不返回可执行文件或资源路径。包版本、类型或依赖设置变化后重新计算；Apply 与 Run 再次验证包。
+
+| 字段 | JSON 类型／单位 | 用途与所有者 | 默认值与校验 | 兼容 |
+| --- | --- | --- | --- | --- |
+| `setting_options` | 数组／— | IsOS 选项组，每个草稿注册选择器一组 | 无选择器时空数组；按节点路径和设置排序 | 响应新增字段 |
+| `setting_options[].node` | 字符串／四段规范路径 | 实例身份 | 必需且节点存在 | 路径稳定，不用索引 |
+| `setting_options[].setting` | 字符串／设置键 | 注册设置身份 | 必需且属于该类型 | 键稳定 |
+| `setting_options[].selected` | 字符串或 null／稳定选项 ID | 回显单选草稿值 | 未设置为 null；无效当前值仍回显 | 不暗中替换 |
+| `setting_options[].options` | 数组／— | 候选项 | 无候选时空数组；组内 ID 唯一 | 可增加选项 |
+| `options[].value` | 字符串／稳定 ID | 图设置中存的值 | 必需非空；包资源 ID 在描述文件内有作用域 | 不得为绝对路径 |
+| `options[].label` | 字符串／— | 人类显示名 | 必需非空 | 改显示名不迁移图 |
+| `options[].description` | 字符串／— | 说明资源和效果 | 必需非空 | 改进文字不改变 ID |
+| `options[].available` | 布尔值／— | 草稿能否用该值 Apply | 必需；收据、资源、codec 或目标不可用时为 false | 不从标签推断 |
+| `options[].reason` | 字符串或 null／— | 不可用时的操作提示 | 不可用时必需非空，否则 null | 诊断文字可扩展 |
+
+目标 `POST` 成功响应：
+
+```json
+{"schema_version":1,"ok":true,"data":{"adapter_families":[],"primitive_bindings":[],"targets":[],"setting_options":[{"node":"eos/process/mujoco/sim","setting":"scene","selected":"warehouse","options":[{"value":"warehouse","label":"Warehouse","description":"Warehouse simulation scene","available":true,"reason":null}]}]},"error":null}
+```
+
+若 `selected` 不在已验证目录，响应需附加一个同值、不可用、带可读标签和原因的选项，编辑器继续显示，Apply 拒绝。请求格式错误返回 HTTP 400 和 schema-1 错误封装。有效草稿中未知类型、非法选择器、缺少包固定版本或资源不兼容，在图校验中返回 HTTP 422 及字段诊断；选项响应本身仍可返回 200 供编辑器修复。`PUT /node-graph` 修订过期返回 409，不修改已保存字节。例如：
+
+```json
+{"schema_version":1,"ok":false,"data":null,"error":"selected scene warehouse is unavailable for eos/process/mujoco/sim.settings.scene"}
+```
+
+## 发行目标：支持版本身份——尚未实现
+
+setup 适配器 `identity` 保留 `core`、`product_version`、`setup_schema_version`，增加 `supported_graph_versions` 与 `supported_node_type_versions` 数组，表示可读取版本而不是单一写入版本。旧 `graph_version` 和 `node_type_version` 保留为兼容旧 IsOS 读取器的标量别名。Apply／Run 前 IsOS 对比图实际版本、每个注册类型 ID、精确包固定版本、API schema 和核心程序能力。不匹配时指出具体值及所有者，不猜测升级也不调用其他程序。`isos version check --json` 提供同样的机器可读原因。新写入器使用图 `0.1.0` 和新类型 `@v0.1`；读取器显式声明旧 `1.0.0` 和受支持 `@v1.*`。见[配置与日志契约](configuration_cn.md)。

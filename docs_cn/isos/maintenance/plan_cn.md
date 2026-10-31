@@ -2,7 +2,7 @@
 
 [English](../../../docs/isos/maintenance/plan.md)
 
-本文记录当前 IsOS 边界。[v2 图](../interfaces/node-graph-v1_cn.md)、[服务契约](../interfaces/services_cn.md)、[发行清单](../interfaces/releases_cn.md)和[本地 API](../interfaces/local-api_cn.md)定义正在使用的接口。
+本文记录当前 IsOS 边界。[v2 图](../interfaces/node-graph_cn.md)、[服务契约](../interfaces/services_cn.md)、[发行清单](../interfaces/releases_cn.md)和[本地 API](../interfaces/local-api_cn.md)定义正在使用的接口。
 
 ## 当前职责
 
@@ -20,4 +20,4 @@ EOS、EGIA 和 IsosUI 各自负责构建。IsOS 为每个核心使用一个已�
 
 ## 待完成工作
 
-在各支持目标上验证真实 MuJoCo 与 Island-models 部署；发布批准的发行资产；建立跨仓库 API 与服务契约的标签兼容性；完成 EGIA 运行时集成。以后添加有类型的图日志节点和版本化 IPC 日志契约；目前仅所有者可访问的 `log_append` 操作用于提交选定事件。未来的图设计可以表示服务，但当前服务管理器须独立于 EOS 和 EGIA 节点依赖。保留旧版组件命令作为兼容入口，直到其调用方迁移完成。
+[0.x 架构 TODO](../design/system_cn.md#按依赖顺序的实现-todo)按依赖顺序列出图兼容、包选择器、配置／版本／日志契约、EOS–EGIA–MuJoCo 集成、UI、清理和发行验证。现有仅所有者可访问的 `log_append` 是提交选定事件的小型本地接口；目标统一事件通过可选字段扩展，旧调用方仍有效。发布获批资产前须在支持目标上验证真实 MuJoCo 和 Island-models 部署。服务保持独立，不成为 EOS／EGIA 图的隐式依赖。

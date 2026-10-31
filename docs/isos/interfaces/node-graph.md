@@ -1,6 +1,8 @@
-# Shared v1 graph and IsOS process nodes
+# Shared node graph and IsOS process nodes
 
-[中文](../../../docs_cn/isos/interfaces/node-graph-v1_cn.md)
+[中文](../../../docs_cn/isos/interfaces/node-graph_cn.md)
+
+**Implementation status:** The `1.0.0` graph and `@v1.*` types below are implemented. The `0.1.0`/`@v0.1` contract and compatibility reader in the final sections are the release target, not current behavior. Product versions, graph versions, node type IDs, HTTP paths, and simulator socket protocol are independent.
 
 One `1.0.0` graph at `~/.config/isos/deployments/<name>.nodes.json` (or `ISOS_HOME/config/deployments/`) configures IsOS, EOS, and the design-only EGIA nodes. A node type declares its core, layer, group, fields, and ports; an instance supplies its ID and settings. Node type versions are independent; the IsOS managed process type is `v1.1` and current EOS hardware types are `v1.0`. Run `aether-profile validate --file <graph>` before apply and again before run. IsOS validates the package projection after registry admission. The graph SHA-256 is the saved revision; an active process set retains its revision until restart.
 
@@ -53,9 +55,49 @@ An authored graph may declare `manual_0`, `base_velocity_0`, `arm_joint_0`, and 
 
 Manual and primitive nodes require a `status: Status` input from the dispatcher and a typed observation input from their target: `base_observation: BaseObservation` or `manipulator_observation: ManipulatorObservation`. Skill nodes require `status: Status` from the dispatcher. Manual and primitive nodes expose `request: ControlRequest` and `outcome: CommandOutcome` outputs; skill nodes expose `outcome: SkillOutcome`. The node ID is the final type name plus an index by default, such as `manual_0` or `demo_0`; it is a graph identity, not a movement payload.
 
-See [backend package design](../design/backend-v2.md) and [local API](local-api.md).
+See [backend package design](../design/backend.md) and [local API](local-api.md).
 
 ## Canonical node paths and primitive bindings
 
 
 `eos.dispatcher.primitive_base@v1.0` and `eos.dispatcher.primitive_manipulator@v1.0` are binding nodes. Their `settings` identify `primitive_name`, `primitive_version`, and `movement_type` (strings). Hardware `inputs.command` is an array of `{node,output}` edges from bindings; each binding output must reach one compatible hardware node. The adapter implementation is selected on the hardware instance through `adapter.type`, independently of its generic hardware node type. The IsOS Vision profile is `isos.ui.vision@v1.0` under `isos/ui/panel`; it is an internal UI node, not a supervised process.
+
+## Release target: graph `0.1.0` and compatible reads — not implemented
+
+Newly authored graphs write `version: "0.1.0"`; new type registrations use `@v0.1`. Existing saved `1.0.0` graphs and their registered `@v1.0`/`@v1.1` types remain readable for the safe behavior they already provide. There is no blanket conversion of type IDs: a legacy graph retains its exact IDs, and an unavailable type reports a path-specific migration diagnostic. In particular, the old arbitrary-command `isos.process.component@v1.0` is never executed. Its replacement is a role-selected `isos.process.component@v0.1` with `role` and bounded `args` as above. Historical wire routes, protobuf packages, release-manifest schema v4, and MuJoCo socket protocol `2.0.0` do not change.
+
+| Graph field | JSON type / unit | Owner and purpose | Default and validation | Compatible extension |
+| --- | --- | --- | --- | --- |
+| `version` | string / graph format | IsOS selects parser and writer | Required `0.1.0` for new drafts; reader also accepts `1.0.0` | No implicit rewrite of saved legacy bytes |
+| `robot.id`, `robot.name` | strings / — | Operator identity and display name | Required nonblank strings | Additive metadata only |
+| `cores` | object keyed by core ID / — | IsOS graph root; each core owns its subtree | Required, registered keys; unknown core fails admission | New core requires registered owner |
+| `layers`, `groups`, `nodes` | nested objects keyed by path segment / — | Core owns placement; type registry validates it | Registered segments; unique four-part `core/layer/group/node` path | New registered placements may be added |
+| `node.id` | string / path segment | Instance identity; equals its `nodes` key | Required valid segment | Never silently rename |
+| `node.node_type` | string / versioned ID | Registry selects behavior | Required registered ID at declared placement | Existing IDs retain meaning |
+| `node.label`, `node.description` | strings / — | Operator-facing instance title and function | Required; description may be empty on legacy instances but new nodes require nonblank text | Existing descriptions preserved |
+| `node.package`, `node.adapter.package` | `{id,version}` / exact package pin | IsOS resolves contributed type or adapter | Required for a contributed type or selected package adapter; ID is `namespace/name`, version numeric `x.y.z` | Pin changes require Apply |
+| `node.settings` | object / type-specific | Node type owner declares settings; IsOS validates package selectors | Empty object when no settings; unknown settings rejected by type contract | Optional setting additions have defaults |
+| `node.inputs` | object of port names to source or source array / — | Registry validates typed connections | Empty when no inputs; each source must resolve to a compatible output, cardinality must match | Optional edge metadata below |
+| `node.references` | string array / canonical paths | Owner declares non-data dependencies | Empty by default; paths exist, unique where type requires | Additive references must not create actuator routes |
+| `node.adapter`, `capabilities`, `health_timing`, `observation`, `movement`, `frame_id`, `joint_names` | typed objects/arrays/strings / type-specific | EOS hardware profile fields | Follow the [EOS hardware interface](https://github.com/Island-Team/Aether-EOS-R/blob/master/docs/eos/interfaces/hardware.md); IsOS forwards without inventing hardware meaning | EOS defines compatible defaults |
+
+The registered **type** has a separate, nonblank `description` for new `@v0.1` types. It explains function, inputs, outputs, and operator-visible effects. Old verified sidecars lacking this field receive a generated catalog-only fallback; IsOS and EOS never modify the sidecar bytes. A setting's optional `selector` is defined by the [EOS node contribution contract](https://github.com/Island-Team/Aether-EOS-R/blob/master/docs/eos/interfaces/node-contributions.md); IsOS owns the [resolved options response](local-api.md#release-target-setting-options--not-implemented).
+
+Each `node.inputs.<port>` source adds optional scheduling metadata:
+
+| Source field | JSON type / unit | Purpose | Default and validation | Compatibility |
+| --- | --- | --- | --- | --- |
+| `node` | string / canonical node path | Output owner | Required existing source node | Unchanged |
+| `output` | string / port name | Output port | Required registered output compatible with destination data type | Unchanged |
+| `priority` | integer / Linux nice scale | Weighted delivery order | 0; inclusive `-20..19`, lower number has higher priority | Absent legacy value normalizes to 0 |
+| `frequency_hz` | number / Hz | Maximum delivered update rate on this edge | Absent means no edge cap; if present finite and `>0` | Absent legacy edge remains uncapped |
+
+Example **source-object fragment** for a compatible input port (target JSON, not yet accepted by current binaries):
+
+```json
+{"node":"eos/dispatcher/base/velocity","output":"command","priority":5,"frequency_hz":15.0}
+```
+
+Place this object inside a compatible destination's `inputs.command` array after the source binding is declared; the [current starter template](../../../templates/generic-graph.toml) shows a complete graph without target edge fields. The producer's `expected_rate_hz` is a registry hint, independent of this edge cap. EOS, as the route owner, uses a monotonic token bucket per active edge and weighted fair delivery over bounded queues. Observation overflow increments a visible counter and emits a rate-limited warning; a command that cannot be admitted is explicitly rejected or reported uncertain, never silently dropped. Stopping a route discards non-command queued work and invokes dispatcher stop for actuators. Scheduling priority never changes command authorization: actuator data still passes the dispatcher. IsOS stores and validates edge metadata; it does not schedule hardware itself. IsosUI renders both values on a wire and identifies design-only edges that have no runtime route.
+
+Reader algorithm: select the parser from `version`; validate its original type IDs and safe semantics; normalize missing optional fields in memory; calculate the revision from the **original saved bytes**; validate packages and routes; render generated configuration without rewriting the graph. `Apply` on a newly authored graph writes normalized `0.1.0` JSON only after a matching revision. A separate explicit migration operation must preview a diff, require the old revision, write atomically, and return the new revision; it never changes the active revision until Restart. Unknown future graph versions fail with a supported-version diagnostic. See the [architecture algorithm](../design/system.md).

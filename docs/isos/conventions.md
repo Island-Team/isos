@@ -1,6 +1,6 @@
 # IsOS development conventions
 
-IsOS follows [Island coding conventions v1.2.0](https://github.com/Island-Team/Island-eos/blob/main/docs/island/conventions.v1.2.0.md), adapted to this Rust manager. This page is the local rule for the repository; update its [Chinese companion](../../docs_cn/isos/conventions_cn.md) in the same change.
+IsOS follows [Island coding conventions v1.2.0](https://github.com/Island-Team/Island-eos/blob/main/docs/island/conventions.v1.3.0.md), adapted to this Rust manager. This page is the local rule for the repository; update its [Chinese companion](../../docs_cn/isos/conventions_cn.md) in the same change.
 
 Introduce IsOS, EOS, EGIA, packages, and specialized terms before a reader must use them. Keep operator guides under usage, wire contracts under interfaces, and release or migration work under maintenance. Interface pages identify owner, caller, transport, input, output, lifecycle, and observable errors with small valid request and response examples. Keep English and Chinese reading paths aligned.
 

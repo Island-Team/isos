@@ -18,4 +18,4 @@ isos run
 
 发行归档可用 `isos pkg verify <manifest> <asset>` 检查平台、大小和 SHA-256，再用 `isos pkg install --manifest <manifest> --asset <asset> --allow-unapproved` 安装本地候选包。正式发布后可用 `isos pkg install island/mujoco-sim --version 0.1.1` 安装已批准版本。`isos pkg list` 查看安装情况。Apply 和 Run 重新校验链接内容、可执行文件、所选场景及其资源、设备 ID 和 `MUJOCO_ROOT`。若已应用或运行中的图引用版本，`isos pkg remove island/mujoco-sim 0.1.1` 会拒绝删除。
 
-参见[后端设计](../design/backend-v2_cn.md)和[发行元数据](../interfaces/releases_cn.md)。
+参见[后端设计](../design/backend_cn.md)和[发行元数据](../interfaces/releases_cn.md)。

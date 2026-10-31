@@ -1,6 +1,8 @@
-# 共享 v1 图与 IsOS 进程节点
+# 共享节点图与 IsOS 进程节点
 
-[English](../../../docs/isos/interfaces/node-graph-v1.md)
+[English](../../../docs/isos/interfaces/node-graph.md)
+
+**实现状态：**上文 `1.0.0` 图与 `@v1.*` 类型为当前行为；末尾的 `0.1.0`／`@v0.1` 契约及兼容读取器是发行目标。产品、图、节点类型、HTTP 路径和仿真器协议各自版本化。
 
 位于 `~/.config/isos/deployments/<name>.nodes.json`（或 `ISOS_HOME/config/deployments/`）的 `1.0.0` 图同时配置 IsOS、EOS 与仅供设计的 EGIA 节点。节点类型声明 core、layer、group、字段与端口；节点实例提供 ID 和设置。节点类型独立版本化；IsOS 托管进程类型为 `v1.1`，当前 EOS 硬件类型为 `v1.0`。应用前以及运行前都执行 `aether-profile validate --file <graph>`；IsOS 随后校验软件包进程投影。图的 SHA-256 是保存修订号，运行中的进程保持其修订号直到重启。
 
@@ -53,9 +55,47 @@ IsOS 将已验证的可执行文件、场景路径和 MuJoCo 库路径传给 EOS
 
 手动和原语节点必须从调度器接收 `status: Status` 输入，并从目标硬件接收 `base_observation: BaseObservation` 或 `manipulator_observation: ManipulatorObservation` 输入；技能节点必须从调度器接收 `status: Status`。手动和原语节点提供 `request: ControlRequest` 与 `outcome: CommandOutcome` 输出端口；技能节点提供 `outcome: SkillOutcome`。节点 ID 默认由最终类型名和序号组成，例如 `manual_0` 或 `demo_0`；它是图身份，不是运动数据结构。
 
-另见[后端软件包设计](../design/backend-v2_cn.md)和[本地 API](local-api_cn.md)。
+另见[后端软件包设计](../design/backend_cn.md)和[本地 API](local-api_cn.md)。
 
 ## 标准节点路径与原语绑定
 
 
 `eos.dispatcher.primitive_base@v1.0` 与 `eos.dispatcher.primitive_manipulator@v1.0` 是绑定节点。其 `settings` 用字符串 `primitive_name`、`primitive_version`、`movement_type` 指定原语。硬件 `inputs.command` 是来自绑定节点的 `{node,output}` 边数组；每个绑定输出必须连接到一个兼容硬件节点。适配器实现由硬件实例的 `adapter.type` 选择，与通用硬件节点类型独立。IsOS Vision 配置为 `isos.ui.vision@v1.0`，放在 `isos/ui/panel` 下，是内部 UI 节点，不作为进程监管。
+
+## 发行目标：图 `0.1.0` 与兼容读取——尚未实现
+
+**状态：**上文 `1.0.0` 图和 `@v1.*` 类型已实现；本节为目标，不可按当前命令使用。产品、图、节点类型、HTTP 路由和仿真器协议独立版本化。新图写 `version:"0.1.0"`，新类型用 `@v0.1`。读取器继续接受已有安全 `1.0.0` 图及已注册 `@v1.0`／`@v1.1` 类型，不批量替换类型 ID。未注册类型按路径给出迁移诊断；旧任意命令 `isos.process.component@v1.0` 绝不执行。新 `isos.process.component@v0.1` 按上述 `role` 与有界 `args` 选择程序。既有 HTTP 路径、protobuf 包名、发行清单 schema 4 和 MuJoCo socket 协议 `2.0.0` 不改。
+
+| 图字段 | JSON 类型／单位 | 所有者与用途 | 默认值和校验 | 兼容扩展 |
+| --- | --- | --- | --- | --- |
+| `version` | 字符串／图格式 | IsOS 选择解析器与写入器 | 新草稿必填 `0.1.0`；读取器也接受 `1.0.0` | 不暗中改写旧字节 |
+| `robot.id`、`robot.name` | 字符串／— | 操作员身份与显示名 | 必需非空 | 仅增加元数据 |
+| `cores` | 核心 ID 到对象／— | IsOS 图根，各核心拥有子树 | 必需已注册键；未知核心拒绝 | 新核心需注册所有者 |
+| `layers`、`groups`、`nodes` | 分层键对象／— | 核心位置，由类型注册表校验 | 已注册段；唯一四段 `core/layer/group/node` 路径 | 可新增已注册位置 |
+| `node.id` | 字符串／路径段 | 实例身份，等于 `nodes` 键 | 必需合法路径段 | 不暗中改名 |
+| `node.node_type` | 字符串／版本化 ID | 注册表选择行为 | 必需已注册且位置相符 | 旧 ID 保持原义 |
+| `node.label`、`node.description` | 字符串／— | 操作员可读实例标题与功能 | 必需；旧实例可有空说明，新实例说明不可空 | 保留原说明 |
+| `node.package`、`node.adapter.package` | `{id,version}`／精确版本 | IsOS 解析贡献类型或适配器 | 包贡献类型／适配器必需；ID 为 `namespace/name`，版本为数字 `x.y.z` | 改版本需 Apply |
+| `node.settings` | 对象／类型专用 | 类型所有者声明设置，IsOS 校验包选择器 | 无设置时空对象；未知设置按类型契约拒绝 | 可选新设置须有默认值 |
+| `node.inputs` | 端口名到来源或来源数组／— | 注册表校验有类型连接 | 无输入时空对象；来源解析到兼容输出且基数匹配 | 可选边元数据见下表 |
+| `node.references` | 规范路径字符串数组／— | 所有者声明非数据依赖 | 默认空；按类型要求存在且唯一 | 新引用不得增加执行器旁路 |
+| `node.adapter`、`capabilities`、`health_timing`、`observation`、`movement`、`frame_id`、`joint_names` | 类型专用对象／数组／字符串 | EOS 硬件配置 | 由 [EOS 硬件接口](https://github.com/Island-Team/Aether-EOS-R/blob/master/docs/eos/interfaces/hardware.md)定义；IsOS 不臆造硬件含义 | EOS 定义兼容默认值 |
+
+注册**类型**另有非空 `description`，说明功能、输入、输出和操作员可见效果。旧已验证侧车缺此字段时，仅在目录中生成回退说明，不修改侧车字节。新设置可选 `selector` 由 [EOS 节点贡献契约](https://github.com/Island-Team/Aether-EOS-R/blob/master/docs/eos/interfaces/node-contributions.md)定义；IsOS 拥有[解析选项响应](local-api_cn.md#发行目标设置选项尚未实现)。
+
+| `node.inputs.<port>` 来源字段 | JSON 类型／单位 | 用途 | 默认值与校验 | 兼容 |
+| --- | --- | --- | --- | --- |
+| `node` | 字符串／规范节点路径 | 输出所有者 | 必需且存在 | 不变 |
+| `output` | 字符串／端口名 | 输出端口 | 必需且有类型兼容 | 不变 |
+| `priority` | 整数／Linux nice 标度 | 加权投递顺序 | 默认 0；`-20..19`，数值越低优先级越高 | 旧边缺省归一为 0 |
+| `frequency_hz` | 数字／Hz | 此边最高投递频率 | 缺省无边限速；存在时须有限且 `>0` | 旧边无上限 |
+
+兼容输入端口的目标 JSON **来源对象片段**（当前程序尚不接受新增边字段）：
+
+```json
+{"node":"eos/dispatcher/base/velocity","output":"command","priority":5,"frequency_hz":15.0}
+```
+
+声明来源绑定节点后，将此对象放入兼容目的节点的 `inputs.command` 数组；[当前起始模板](../../../templates/generic-graph.toml)给出不带目标边字段的完整图。端口 `expected_rate_hz` 是生产者提示，独立于边限速。EOS 对运行时边使用单调时钟 token bucket 和有界队列的加权公平投递。观测溢出增加可见计数并限速告警；不能准入的命令须明确拒绝或报告不确定结果，绝不可暗中丢弃。停止路由时丢弃非命令排队工作，并通过调度器停止执行器。优先级不改变命令授权，执行器数据仍通过调度器。IsOS 存储和校验边元数据，不调度硬件；IsosUI 显示两个值并标明仅供设计的连线。
+
+读取算法：按 `version` 选解析器，按原始类型 ID 校验安全语义，只在内存规范化可选字段，按**原始保存字节**计算修订，校验包与路由，生成配置而不改图。新图 Apply 只在修订匹配后写规范化 `0.1.0` JSON。显式迁移须预览差异、检查旧修订、原子写入并返回新修订；活动修订直到 Restart 才改变。未知未来版本应列出支持版本。见[架构算法](../design/system_cn.md)。

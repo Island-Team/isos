@@ -1,6 +1,6 @@
 # IsOS 开发约定
 
-IsOS 采用 [Island 编码约定 v1.2.0](https://github.com/Island-Team/Island-eos/blob/main/docs_cn/island/conventions.v1.2.0_cn.md)，并根据 Rust 管理器做适配。修改本页时，请同步更新 [英文版](../../docs/isos/conventions.md)。
+IsOS 采用 [Island 编码约定 v1.2.0](https://github.com/Island-Team/Island-eos/blob/main/docs_cn/island/conventions.v1.3.0_cn.md)，并根据 Rust 管理器做适配。修改本页时，请同步更新 [英文版](../../docs/isos/conventions.md)。
 
 在首次使用之前介绍 IsOS、EOS、EGIA、软件包及专门术语。操作指南放在 usage，接口契约放在 interfaces，发行和迁移工作放在 maintenance。接口文档说明拥有方、调用方、传输、输入、输出、生命周期和可观察错误，并给出有效的请求、响应示例。英文与中文目录应保持对应。
 
