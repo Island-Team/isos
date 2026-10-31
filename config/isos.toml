@@ -5,6 +5,12 @@
 http_port = 16000
 ui_port = 16001
 
+[paths]
+# Prebuilt artifacts from each owning repository; build there before running IsOS.
+aether_bin_dir = "../Island-eos/target/debug"
+egia_bin_dir = "../Island-egia/bin"
+ui_dist = "../IsosUI/dist/local"
+
 [deployment]
 name = "default"
 

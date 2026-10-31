@@ -2,7 +2,7 @@
 
 [English](../../../docs/isos/interfaces/local-api.md)
 
-`isos init --mode dev|product` 创建配置和初始图后退出。`isos serve` 默认在 `127.0.0.1:16000` 启动 IsOS API（`ISOS_HTTP_PORT` 可调整端口），在 `127.0.0.1:16001` 提供静态 IsosUI（`ISOSUI_PORT` 可调整端口），并在 `$XDG_RUNTIME_DIR/isos/`（或 `ISOS_HOME/run/`）下创建仅所有者可访问的 Unix 管理套接字。开发模式下，`isos serve` 会从本地源码构建缺失或过期的界面；`isos serve --ui-live` 才会管理 Webpack。运行目录权限为 `0700`，管理套接字为 `0600`。HTTP 响应封装为 `{schema_version:2,ok,data,error}`；内部单行 Unix 封装仍为 schema 1。
+`isos init --mode dev|product` 创建配置和初始图后退出。`isos serve` 默认在 `127.0.0.1:16000` 启动 IsOS API（`ISOS_HTTP_PORT` 可调整端口），在 `127.0.0.1:16001` 提供已配置的预构建 IsosUI 文件（`ISOSUI_PORT` 可调整端口），并在 `$XDG_RUNTIME_DIR/isos/`（或 `ISOS_HOME/run/`）下创建仅所有者可访问的 Unix 管理套接字。`isos serve --ui-live` 才会管理 Webpack。运行目录权限为 `0700`，管理套接字为 `0600`。HTTP 响应封装为 `{schema_version:2,ok,data,error}`；内部单行 Unix 封装仍为 schema 1。
 
 API 只绑定 `127.0.0.1`，不提供前端文件。IsosUI 通过地址和端口直接调用 API，无需 URL 或 bearer 令牌。API `Host` 必须匹配其环回地址和配置的端口。浏览器请求可来自 UI 来源 `127.0.0.1:16001`（或配置的 `ISOSUI_PORT`）、API 自身来源，或托管 IsosUI 来源 `https://www.os-island.com`、`https://os-island.com`；其他 Origin 会被拒绝。跨域预检允许 GET、POST、PUT 和 Content-Type。Ctrl+C 或 `isos stop` 会停止两个服务、部署、显式启动的服务以及管理器。
 
@@ -12,14 +12,13 @@ API 只绑定 `127.0.0.1`，不提供前端文件。IsosUI 通过地址和端口
 | `PUT /api/isos/v2/node-graph` | `{schema_version:2,revision,graph}` | 校验并应用图；修订过期返回 409。 |
 | `POST /api/isos/v2/node-graph/validate` | `{schema_version:2,graph}` → `{valid,diagnostics}` | 只校验注册表和软件包，不应用。 |
 | `GET /api/isos/v2/node-types` | `{types:[...]}` | 由 `aether-profile` 提供节点类型目录。 |
-| `GET /api/isos/v2/core-setup/{role}/catalog` | 含 `catalog` 的配置响应 | 查询已选 `eos` 或 `egia` 适配器，不启动核心运行时。 |
+| `GET /api/isos/v2/core-setup/{role}/catalog` | 含 `catalog` 的配置响应 | 查询已配置的 `eos` 或 `egia` 适配器，不启动核心运行时。 |
 | `POST /api/isos/v2/core-setup/{role}/validate` | `{schema_version:2,graph,revision?}` → 配置响应 | 按核心规则校验编辑草稿，不保存。 |
 | `POST /api/isos/v2/core-setup/{role}/render` | `{schema_version:2,graph,revision?}` → 配置响应 | 预览生成的核心配置；API 不写入预览。 |
 | `GET /api/isos/v2/node-options` | `{adapter_families,primitive_bindings,targets}` | 已保存图的适配器、原语绑定与目标选项。 |
 | `POST /api/isos/v2/node-options` | `{schema_version:2,graph}` → `{adapter_families,primitive_bindings,targets}` | 未应用草稿的选择器选项。 |
-| `GET /api/isos/v2/build-binaries` | `{selected:receipt|null,source_current:boolean,stale_reason:string|null}` | 已选且摘要校验通过的 EOS 程序及源码状态。源码漂移作为状态返回，不导致 HTTP 错误；未选择时 `source_current:false` 且 `stale_reason:null`。 |
-| `POST /api/isos/v2/build-binaries` | `{schema_version:2,target:"eos",install_deps:false}` → `{receipt,suggested_graph}` | 构建并暂存 Rust EOS 程序，不改变已选构建；预览建议图后调用选择接口。 |
-| `POST /api/isos/v2/build-binaries/select` | `{schema_version:2,selector,revision}` → `{receipt,graph:{revision,graph}}` | 选择已校验的 EOS 暂存构建；仅当图修订仍匹配时应用三个进程命令。 |
+| `GET /api/isos/v2/core-readiness` | `{cores,graph,isos,isosui}` | 检查已配置核心路径、兼容性、图配置与运行状态。 |
+| `GET/POST /api/isos/v2/build-binaries` 及 `POST /api/isos/v2/build-binaries/select` | HTTP 410 | 已退出的构建与选择接口，返回迁移指引。 |
 | `GET /api/isos/v2/node-sets` | `{sets:[{package,id,parameters,nodes}]}` | 已安装软件包提供的节点集合。 |
 | `POST /api/isos/v2/node-sets/preview` | `{package:{id,version},set_id,graph,values:{name:string}}` → `{graph,added_paths}` | 将集合合成到草稿，不保存；无效合成返回 422。 |
 | `GET /api/isos/v2/backends` | `{backends:[{id,version,linked,scenes,devices,ready,issues}]}` | v2 后端包选择及先决条件检查。 |
@@ -35,15 +34,15 @@ API 只绑定 `127.0.0.1`，不提供前端文件。IsosUI 通过地址和端口
 
 ### 按需核心配置适配器
 
-IsOS 按需调用已选的 `aether-profile setup --json` 或 `egia-config setup --json` 程序。标准输入为一个有界 JSON 对象：`{schema_version:2,op:"catalog"|"validate"|"render",core:"eos"|"egia",revision,graph,endpoints,packages}`。Run 时的 `revision` 是已保存图字节的 SHA-256。`graph` 是完整 v2 图，`endpoints` 包含解析后的 IsOS 与核心监听地址，`packages` 包含已校验精确包引用 `{id,version,path}`。适配器返回 `{schema_version:2,ok,diagnostics:[{path,code,message}],files:[{path,content}],catalog?}`。`render` 文件路径必须为以核心名称开头的相对路径，例如 `eos/graph.json`；文件内容为 UTF-8 文本。请求上限 1 MiB，响应上限 4 MiB，单个文件上限 1 MiB，配置超时 10 秒。适配器不绑定监听端口。
+IsOS 按需调用已配置的 `aether-profile setup --json` 或 `egia-config setup --json` 程序。标准输入为一个有界 JSON 对象：`{schema_version:2,op:"catalog"|"validate"|"render",core:"eos"|"egia",revision,graph,endpoints,packages}`。Run 时的 `revision` 是已保存图字节的 SHA-256。`graph` 是完整 v2 图，`endpoints` 包含解析后的 IsOS 与核心监听地址，`packages` 包含已校验精确包引用 `{id,version,path}`。适配器返回 `{schema_version:2,ok,diagnostics:[{path,code,message}],files:[{path,content}],catalog?}`。`render` 文件路径必须为以核心名称开头的相对路径，例如 `eos/graph.json`；文件内容为 UTF-8 文本。请求上限 1 MiB，响应上限 4 MiB，单个文件上限 1 MiB，配置超时 10 秒。适配器不绑定监听端口。
 
-Run 在启动子进程前为已启用核心生成配置。IsOS 再次检查已保存图的修订，并把接受的文件原子写入私有生成配置目录。修订过期时停止配置，且不替换图。EOS 生成的 `graph.json` 是已校验快照；当前 EOS 运行时仍直接读取已保存图。缺少 `setup` 的旧版已校验 EOS v2 程序继续使用现有直接图校验路径，直到显式重建。迁移期间保留现有 `/config/{role}/{op}` 路由。MuJoCo 是外部 IsOS 包，核心配置不会构建它。
+Apply 校验已保存修订后生成已启用核心配置；Run 和 Restart 在启动子进程前复查修订与软件包输入。IsOS 再次检查已保存图的修订，并把接受的文件原子写入私有生成配置目录。修订过期时停止配置，且不替换图。EOS 生成的 `graph.json` 是已校验快照；当前 EOS 运行时仍直接读取已保存图。缺失或不兼容的 setup 适配器会阻止启动。MuJoCo 是外部 IsOS 包，核心配置不会构建它。
 
 ## 仅所有者可访问的管理器操作
 
 Unix 套接字每行接收一个 JSON 请求：`{schema_version:1,op,deployment?,revision?,service_id?,cursor?,limit?}`，返回 `{schema_version:1,ok,data,error}`。管理器处理前检查对端 UID。`manager_identity` 返回 `pid`（进程 ID）、`start_ticks`（Linux 进程启动身份）、`mode`（`dev` 或 `product`）、`executable`（绝对路径）、`executable_sha256`（摘要）、IsOS/API/服务契约版本、`api_origin` 和 `ui_url`。用该身份区分已有的 IsOS 管理器与外部端口监听者；单凭端口号不能判定进程所有权。
 
-`manager_shutdown` 停止所有图子进程和独立服务，然后结束 API、界面及管理器。`v2_stop` 只影响指定部署。`services_list`、`services_validate`、`services_status`、`services_start`、`services_stop`、`services_restart` 和 `services_logs` 操作[独立服务定义](services_cn.md)；启动、停止、重启和日志请求需要 `service_id`，日志可带不透明的 `cursor` 及 1–200 的 `limit`。可执行文件摘要不同的 CLI 仍可请求关停，但不能启动或重启部署和服务。`isos status --json` 汇总部署状态、管理器身份和服务状态；`isos version check` 比较配置、选中与运行中的身份。
+`manager_shutdown` 停止所有图子进程和独立服务，然后结束 API、界面及管理器。`v2_stop` 只影响指定部署。`services_list`、`services_validate`、`services_status`、`services_start`、`services_stop`、`services_restart` 和 `services_logs` 操作[独立服务定义](services_cn.md)；启动、停止、重启和日志请求需要 `service_id`，日志可带不透明的 `cursor` 及 1–200 的 `limit`。可执行文件摘要不同的 CLI 仍可请求关停，但不能启动或重启部署和服务。`isos status --json` 汇总部署状态、管理器身份和服务状态；`isos version check` 报告已配置核心、图和运行状态的就绪情况。
 
 日志 `source` 可为 `all`、`isos`、`services`、`service-gateway` 等服务来源、`packages`、`graph`、`ui`、`eos`、`egia`、`mujoco`、`bridge`、`config` 或通过校验的子进程 ID。`limit` 范围为 1–200，默认为 100。每行包含 RFC 3339 UTC `timestamp`、`level`、`source`、`message`，并可包含 `event_code` 和 `pid`。IsOS 记录自身诊断及选定的结构化子进程事件，不镜像普通标准输出或标准错误。即使当前文件已读完，`next_cursor` 仍为字符串，后续可用它继续轮询。日志目录权限为 `0700`、普通文件为 `0600`；达到 `[logging].max_bytes`（默认 1 MiB）后轮转，保留 `[logging].backups`（默认 3）份。旧进程端点从统一日志读取消息。
 
@@ -61,22 +60,22 @@ IsOS 默认读取其源码目录中的 [config/isos.toml](../../../config/isos.t
 | --- | --- | --- | --- |
 | `server.http_port` | 整数 TCP 端口 | IsOS 环回 API；1024–65535 | `ISOS_HTTP_PORT` |
 | `server.ui_port` | 整数 TCP 端口 | IsosUI 环回前端；1024–65535，且不同于 HTTP 端口 | `ISOSUI_PORT` |
-| `paths.ui_repo` | 路径字符串 | 可选的 IsosUI 源码目录，用于构建或显式 `--ui-live`；默认使用 IsOS 旁的 `IsosUI`；相对路径以 IsOS 源码目录为基准 | `ISOSUI_REPO_PATH` |
-| `paths.aether_bin_dir` | 路径字符串 | Aether Rust 可执行文件目录；相对路径以 IsOS 源码目录为基准 | `ISOS_AETHER_BIN_DIR` |
+| `paths.ui_repo` | 路径字符串 | 可选 IsosUI 源码目录，仅供显式 `--ui-live` 使用；相对路径以 IsOS 源码目录为基准 | `ISOSUI_REPO_PATH` |
+| `paths.ui_dist` | 路径字符串 | 含清单的预构建 IsosUI `dist/local` 目录；相对路径以 IsOS 源码目录为基准 | `ISOSUI_DIST_DIR` |
+| `paths.aether_bin_dir` | 路径字符串 | 一套预构建 Aether Rust 程序的目录；相对路径以 IsOS 源码目录为基准 | `ISOS_AETHER_BIN_DIR` |
+| `paths.egia_bin_dir` | 路径字符串 | 包含 `egia-config` 与 `egia` 的 EGIA 启动程序目录；相对路径以 IsOS 源码目录为基准 | `ISOS_EGIA_BIN_DIR` |
 | `paths.mujoco_root` | 路径字符串 | 可选 MuJoCo 运行根目录；相对路径以 IsOS 源码目录为基准 | `MUJOCO_ROOT` |
 | `deployment.name` | slug 字符串 | 默认图与日志命名空间；需通过部署名校验 | `ISOS_DEPLOYMENT` |
 | `logging.max_bytes` | 整数，字节 | 轮转阈值 65,536–100,000,000；默认 1,048,576 | `ISOS_LOG_MAX_BYTES` |
 | `logging.backups` | 整数，份数 | 轮转副本 1–10；默认 3 | `ISOS_LOG_BACKUPS` |
 | `logging.level` | 枚举字符串 | 文件最低级别：`trace`、`debug`、`info`、`warn` 或 `error`；默认 `info` | `ISOS_LOG_LEVEL` |
 
-## Rust 程序与选择器契约
+## 已配置构建和版本就绪状态
 
-`receipt` 包含 `schema_version`（整数 2）、`component`（`eos`）、`product_version`（`2.0.0`）、`source_commit`（完整 Git SHA）、`source_dirty`（源码有修改或未跟踪文件时为 true）、`source_fingerprint`（提交和源码文件的 SHA-256）、`source_root`（用于开发环境漂移检查的可选绝对源码路径）、`binaries`（按程序名索引的绝对路径）和 `sha256`（文件摘要）。构建会将五个 Aether 程序作为同一集合放入 IsOS 私有数据目录，但不会改变已选构建。产品模式仅接纳干净且带源码指纹的收据。Run 会探测 EOS、bridge、config 与 profile 的精确能力；程序过旧或图指向其他程序时直接报错。`suggested_graph` 为 `{revision,graph}` 或 null，不会自动应用。CLI `isos build eos` 会启用新构建，并按当前图修订应用三个进程路径。API 构建接口仍只暂存；选择接口或 `isos version select eos <selector>` 可启用经检查的候选构建。选择器接受唯一的提交前缀、产品版本或源码指纹前缀；同一提交有多个构建时使用指纹。
+在 EOS、EGIA 与 IsosUI 各自的仓库构建，再设置 `paths.aether_bin_dir`、`paths.egia_bin_dir` 和 `paths.ui_dist`。IsOS 只解析已配置的产物。`isos version check` 默认输出可读的就绪报告；`isos version check --json` 为脚本返回同样状态。报告列出每个核心的程序路径、产品版本、setup 兼容性、图配置、运行状态及阻塞时的具体操作，并列出 IsOS 程序和界面文件路径。产品版本由核心报告；图修订与后端包版本是独立身份。
 
-在开发模式下，EOS 源码变化后，图编辑与校验继续使用摘要校验通过的已选 `aether-profile`。选择暂存构建时，先使用候选构建的 `aether-profile` 校验建议图，再更新图和固定选择。即使本地源码变化，Run 仍可使用经过验证的已安装构建；源码漂移仅作为信息显示。版本检查使用 `match.eos_source`（布尔值；未选择时为 null）和 `eos_source_diagnostic`（字符串或 null）报告源码漂移。
+IsOS 在 `aether-profile setup --json` 或 `egia-config setup --json` 上发送 `{schema_version:2,op:"identity",core:"eos"|"egia"}` 探测核心。成功响应为 `{schema_version:2,ok:true,diagnostics:[],files:[],identity:{core,product_version,graph_version:"2.0.0",node_type_version:"1.0",setup_schema_version:2}}`。此操作无需图或端点，也不启动运行时。Run 和 Restart 在启动硬件前拒绝缺失或不兼容的程序，复查已保存修订与软件包输入，并在输入变化时重建已启用核心的配置。
 
-开发检查：2026-10-31 执行 `cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test` 和 `cargo build` 均通过。完整的本地输出保存在 `logs/test/20261031-workbench-core-setup/`。
-
-IsOS 和 IsosUI 构建使用独立的不可变收据，并记录相同的源码身份字段。`isos build` 默认构建全部组件；成功后启用 EOS 与 IsosUI。`isos build isos` 暂存 release 可执行文件；产品模式使用 `isos version select isos <selector>` 激活时要求先停止管理器。开发模式使用磁盘上的 IsOS 程序。IsosUI 收据还将目录摘要绑定到清单；产品模式仅从已选择且校验通过的目录提供页面。
+`isos build` 和 `isos version select` 不再编译或选择 v2 核心。提示会引导用户在所属仓库构建并设置 IsOS 路径。配置的构建会一直使用到操作员修改路径并重启；IsOS 不根据 Git 提交推断选择。
 
 `adapter_families` 包含 `id`（稳定适配器 ID）、`device_kinds`（设备类别）、可选精确版本 `package:{id,version}`、布尔值 `compiled`／`available`、字符串 `transport`／`description`、可选 `supported_primitives` 及不可用时的 `reason`。`primitive_bindings` 包含 `node_type`、`device_kind`、`movement_types`、`available`、`reason`、以及具有精确名称、版本、运动类型和描述的 `primitives`。`targets` 包含四段式 `path`、`node_type`、`device_kind`、`adapter_type`、`movement_types`、`available`、`reason`。`GET /node-types` 同时透传 EOS 的 `primitive_specs` 与有类型的 `data_types`。

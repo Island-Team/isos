@@ -32,21 +32,37 @@ fn init_prints_next_steps_without_starting_manager() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("editable graph:"));
     assert!(stdout.contains("Next steps:"));
-    assert!(stdout.contains("isos build"));
+    assert!(stdout.contains("isos version check"));
     assert!(stdout.contains("isos                               # open the workbench"));
     assert!(home.join("config/deployments/default.nodes.json").exists());
     assert!(!home.join("run/manager.sock").exists());
 }
 
 #[test]
-fn product_init_mentions_isos_build_selection_without_starting_manager() {
+fn product_init_mentions_configured_builds_without_starting_manager() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("isos-home");
     let output = isos(&home, &["init", "--mode", "product"]);
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains("isos build isos"));
-    assert!(stdout.contains("isos version select isos"));
-    assert!(stdout.contains("isos version select isos 2.0.0"));
+    assert!(stdout.contains("ISOS_AETHER_BIN_DIR"));
+    assert!(stdout.contains("ISOSUI_DIST_DIR"));
+    assert!(stdout.contains("isos version check"));
     assert!(!home.join("run/manager.sock").exists());
+}
+
+#[test]
+fn version_check_defaults_to_readable_report_and_supports_json() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("isos-home");
+    let plain = isos(&home, &["version", "check"]);
+    assert!(plain.status.success());
+    let text = String::from_utf8(plain.stdout).unwrap();
+    assert!(text.contains("Graph configuration:"));
+    assert!(text.contains("Running:"));
+    let machine = isos(&home, &["version", "check", "--json"]);
+    assert!(machine.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&machine.stdout).unwrap();
+    assert_eq!(report["cores"][0]["core"], "eos");
+    assert!(report["cores"][0]["ready"].is_boolean());
 }

@@ -6,8 +6,11 @@ http_port = 16000
 ui_port = 16001
 
 [paths]
-ui_repo = "../IsosUI"
 aether_bin_dir = "../Island-eos/target/debug"
+egia_bin_dir = "../Island-egia/bin"
+ui_dist = "../IsosUI/dist/local"
+# Only for explicit `isos serve --ui-live` frontend development.
+ui_repo = "../IsosUI"
 # mujoco_root = "../mujoco"
 
 [deployment]
