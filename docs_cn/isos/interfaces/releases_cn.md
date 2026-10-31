@@ -31,7 +31,7 @@ activation.files 可指定 TOML 模板的 source 和 destination。模板里的 
 
 ## 软件包节点贡献
 
-上方 `1.0.1` 资产片段仅演示发行清单结构，属于历史示例。v2 MuJoCo 节点包使用 `island/mujoco-sim@2.0.0` 和下列贡献字段。
+上方 `1.0.1` 资产片段仅演示发行清单结构，属于历史示例。v2 MuJoCo 节点包使用 `island/mujoco-sim@0.1.1` 和下列贡献字段。
 
 任意 v4 软件包类型都可声明 `node_contributions`。`node_types` 和 `safety_adapters` 使用 EOS v1.0 注册表 JSON；`data_types` 声明软件包专用数据 IDL。IsOS 将这些数组与精确的 `{id,version}` 软件包固定版本一起保存为收据旁的 `node-types.json`；EOS 通过可重复的 `--node-types` 参数读取。每个数据类型必含 `id`（带 `@vM.m` 版本的 `namespace.name` 字符串）、`version`（与 ID 后缀一致的 `M.m` 字符串）、`purpose`（非空、供人阅读的字符串）、`media_type`（非空 MIME 字符串）、`codec`（非空且已注册的运行时编解码器 ID，例如 `json_v1`）、`schema`（JSON Schema 对象）和 `max_payload_bytes`（正整数，单位字节）。EOS 运行时仅接纳已编译并注册编解码器的数据类型。执行器节点类型必须具有支持停止的已注册安全适配器。链接包可运行 `isos pkg link ID VERSION BUNDLE --manifest release.json`；IsOS 校验并保存完整 v4 清单。没有清单的旧链接仍可使用，但不提供节点集合。
 

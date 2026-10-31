@@ -2,7 +2,7 @@
 
 [English](../../../docs/isos/design/backend-v2.md)
 
-MuJoCo 是首个 Aether 后端包：`island/mujoco-sim@2.0.0`。包内含 `backend-v2.json`、`bin/eos-mujoco-sim`、场景和资源。发行清单描述分发与归档校验；后端描述文件声明可执行文件、场景 ID、设备 ID、协议和运行依赖；共享 `1.0.0` 图配置 `eos.process.backend@v1.0` 节点。三者职责不同，安装软件包不会暗中修改部署。
+MuJoCo 是首个 Aether 后端包：`island/mujoco-sim@0.1.1`。包内含 `backend-v2.json`、`bin/eos-mujoco-sim`、场景和资源。发行清单描述分发与归档校验；后端描述文件声明可执行文件、场景 ID、设备 ID、协议和运行依赖；共享 `1.0.0` 图配置 `eos.process.backend@v1.0` 节点。三者职责不同，安装软件包不会暗中修改部署。
 
 IsOS 在校验、应用和运行时解析精确固定版本。每次解析都会重新读取本地链接；检查描述文件身份、执行权限、所选场景、场景引用资源、MuJoCo 库、规范套接字路径，以及 EOS 适配器的设备和套接字引用。描述文件、可执行文件、场景和资源的指纹能发现运行中链接的变化。用户在图中选择场景并明确应用。IsOS 启动 EOS 时传入已验证的可执行文件与场景绝对路径。EOS 读取图、启动 MuJoCo 子进程，并用有类型的相机、底盘和机械臂适配器连接套接字；EOS 不能安装软件包或修改已应用图。
 
@@ -12,6 +12,6 @@ IsOS 在校验、应用和运行时解析精确固定版本。每次解析都会
 
 ## 开发检查
 
-使用新的 `ISOS_HOME` 执行 `isos init --mode dev`，在 EOS 和 IsosUI 各自仓库构建并配置其路径，然后启动 `isos serve`。用 `isos pkg link island/mujoco-sim 2.0.0 <bundle> --manifest <bundle>/release.json` 链接暂存包，预览其 `sim-hardware` 节点集合，再执行 `isos config validate <graph>`、`isos config apply <graph>` 和 `isos run`。`isos deployment stop` 只停止图，`isos stop` 关闭管理器及所有所属子进程。`MUJOCO_ROOT` 须指向已安装的 MuJoCo 运行环境，EOS 的 `aether-profile` 验证器和 Rust 可执行文件须可用。参见[节点字段](../interfaces/node-graph-v1_cn.md)和[软件包命令](../usage/packages_cn.md)。
+使用新的 `ISOS_HOME` 执行 `isos init --mode dev`，在 EOS 和 IsosUI 各自仓库构建并配置其路径，然后启动 `isos serve`。用 `isos pkg link island/mujoco-sim 0.1.1 <bundle> --manifest <bundle>/release.json` 链接暂存包，预览其 `sim-hardware` 节点集合，再执行 `isos config validate <graph>`、`isos config apply <graph>` 和 `isos run`。`isos deployment stop` 只停止图，`isos stop` 关闭管理器及所有所属子进程。`MUJOCO_ROOT` 须指向已安装的 MuJoCo 运行环境，EOS 的 `aether-profile` 验证器和 Rust 可执行文件须可用。参见[节点字段](../interfaces/node-graph-v1_cn.md)和[软件包命令](../usage/packages_cn.md)。
 
 图运行恢复改动通过了 `cargo fmt --check`、`cargo clippy --all-targets -- -D warnings` 和 `cargo test`（69 项测试）。`cargo build && python3 tests/clean_home.py` 通过 IsOS→EOS→模拟 MuJoCo 生命周期场景。本机固定工作负载的套接字基线为每秒 98.9 次请求，中位延迟 10.102 毫秒，p99 延迟 11.210 毫秒。完整输出保存在本地忽略的 `logs/test/20261031-graph-run-recovery/` 目录中。

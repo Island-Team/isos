@@ -386,7 +386,7 @@ pub fn refresh_after_init(paths: &Paths, name: &str) -> Result<Option<String>> {
     let graph: Value = serde_json::from_slice(&bytes)?;
     ensure!(
         graph["version"] == "1.0.0",
-        "saved graph version {} cannot be refreshed by IsOS 1.0.0; back up {}, run `isos init` to create a v1 starter, then add nodes and Save graph; the old file was left untouched",
+        "saved graph version {} cannot be refreshed as graph format 1.0.0; back up {}, run `isos init` to create a v1 starter, then add nodes and Save graph; the old file was left untouched",
         graph["version"],
         graph_path.display()
     );

@@ -131,7 +131,7 @@ pub(crate) fn run() -> Result<()> {
             } else {
                 if backend::installed(&paths).is_empty() {
                     println!(
-                        "MuJoCo package missing: install or link island/mujoco-sim 2.0.0, then validate and apply the graph"
+                        "MuJoCo package missing: install or link island/mujoco-sim 0.1.1, then validate and apply the graph"
                     );
                 }
                 print_init_next_steps(paths.mode()?);

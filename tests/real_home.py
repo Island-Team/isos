@@ -159,7 +159,7 @@ def main():
                    ISOSUI_PORT=str(ui_port),
                    ISOS_AETHER_BIN_DIR=str(aether), MUJOCO_ROOT=str(mujoco),
                    ISOSUI_DIST_DIR=str(ui_dist))
-        command(isos, env, "pkg", "link", "island/mujoco-sim", "2.0.0", str(linked_bundle), "--manifest", str(linked_bundle / "release.json"))
+        command(isos, env, "pkg", "link", "island/mujoco-sim", "0.1.1", str(linked_bundle), "--manifest", str(linked_bundle / "release.json"))
         command(isos, env, "init", "--mode", "dev")
         graph_file = root / "home/config/deployments/default.nodes.json"
         graph_before = graph_file.read_bytes()
@@ -174,7 +174,7 @@ def main():
             await_condition(lambda: (root / "home/run/manager.sock").exists())
             graph_file = root / "home/config/deployments/default.nodes.json"
             graph = json.loads(graph_file.read_text())
-            graph = api(isos_port, "node-sets/preview", "POST", {"package": {"id": "island/mujoco-sim", "version": "2.0.0"}, "set_id": "sim-hardware", "graph": graph, "values": {"scene": scene, "socket": str(root / "home/run/default-mujoco.sock")}})["graph"]
+            graph = api(isos_port, "node-sets/preview", "POST", {"package": {"id": "island/mujoco-sim", "version": "0.1.1"}, "set_id": "sim-hardware", "graph": graph, "values": {"scene": scene, "socket": str(root / "home/run/default-mujoco.sock")}})["graph"]
             gates = graph["cores"]["eos"]["layers"]["interface"]["groups"]["gate"]["nodes"]
             second_gate = json.loads(json.dumps(gates["front-preview"]))
             second_gate["id"] = "alternate-preview"
@@ -213,7 +213,7 @@ def main():
                 print("MuJoCo GUI window mapped IsViewable: PASS", flush=True)
             else:
                 print("MuJoCo GUI visibility check skipped: DISPLAY or xwininfo unavailable", flush=True)
-            assert command(isos, env, "pkg", "remove", "island/mujoco-sim", "2.0.0", success=False).returncode != 0
+            assert command(isos, env, "pkg", "remove", "island/mujoco-sim", "0.1.1", success=False).returncode != 0
             assert eos(bridge_port, {"op": "discover"})["nodes"]
             camera = "eos/hardware/camera/front"
             base = "eos/hardware/base/drive"

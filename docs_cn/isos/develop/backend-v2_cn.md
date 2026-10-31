@@ -80,3 +80,7 @@ IsOS 使用 `1.0.0` 图、`/api/isos/v1`、setup schema 1 和唯一的直接子�
 对已应用的 v1 图，`isos init` 或 `isos config init` 校验已保存图和当前配置的核心程序，再原子重建核心 setup 文件及程序摘要。图内容和修订号保持不变。新草稿仍未应用。更换程序后执行 Run 或显式 Restart；`init` 不会重启运行中的部署。旧 `2.0.0` 图保持原样，需按[迁移指南](../maintenance/migration_cn.md)手动迁移。
 
 检查命令：`cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test`、`cargo build`，以及 `ISOS_BIN=target/debug/isos AETHER_BIN_DIR=../Island-eos/target/debug ISOSUI_DIST_DIR=../IsosUI/dist/local python3 tests/clean_home.py`。集成测试在 Apply 后修改已配置的 EOS 程序，确认就绪被阻止，运行 `isos init`，确认恢复就绪且图字节不变，然后验证 Run、Restart、Stop、失败恢复及子进程清理。完整输出保存在忽略 Git 的 `logs/test/20261031-init-core-refresh/`。
+
+## 产品版本对齐（2026-10-31）
+
+IsOS 报告 `0.1.0`，要求 EOS `0.2.0`，并识别 MuJoCo 软件包 `0.1.1`。图保持 `1.0.0`，IsOS API 保持 `/api/isos/v1`。`cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test` 和 `cargo build` 通过。`tests/clean_home.py` 和 `tests/real_home.py` 使用新 EOS 程序和暂存 MuJoCo 包通过，包括 Vision 帧、移动、重启和关闭。日志位于忽略 Git 的 `logs/test/20261031-version-alignment/`。

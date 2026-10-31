@@ -27,7 +27,7 @@ isos
 
 ```sh
 isos open
-isos pkg link island/mujoco-sim 2.0.0 /absolute/path/to/bundle --manifest /absolute/path/to/bundle/release.json
+isos pkg link island/mujoco-sim 0.1.1 /absolute/path/to/bundle --manifest /absolute/path/to/bundle/release.json
 isos pkg node-sets
 # 在 Graph 工作台添加已安装的 MuJoCo 节点集合，再校验并应用。
 isos config validate ~/.config/isos/deployments/default.nodes.json
@@ -43,6 +43,6 @@ isos run
 
 默认路径为 `~/.config/isos/deployments/<name>.nodes.json`、`~/.local/share/isos/packages/` 和 `$XDG_RUNTIME_DIR/isos/`。设置 `ISOS_HOME` 可创建隔离测试目录，其中有 `config/`、`data/` 和 `run/`。仅所有者可访问的轮转 JSON 日志位于 `~/.local/share/isos/logs/<deployment>/`；`GET /api/isos/v1/logs` 和界面默认显示统一日志。`config/isos.toml` 中的 `[logging]` 控制默认来源、写入级别、单文件轮转、备份数量和来源文件上限。界面默认显示 `info` 及以上级别。服务 TOML 与 CLI 契约见[服务接口](docs_cn/isos/interfaces/services_cn.md)。
 
-归档包可先执行 `isos pkg verify <manifest> <asset>`，再用 `isos pkg install --manifest <manifest> --asset <asset> --allow-unapproved` 安装本地候选包。发布后可用 `isos pkg install island/mujoco-sim --version 2.0.0` 安装已批准的软件包。已应用图仍引用软件包时，`isos pkg remove` 会拒绝删除。
+归档包可先执行 `isos pkg verify <manifest> <asset>`，再用 `isos pkg install --manifest <manifest> --asset <asset> --allow-unapproved` 安装本地候选包。发布后可用 `isos pkg install island/mujoco-sim --version 0.1.1` 安装已批准的软件包。已应用图仍引用软件包时，`isos pkg remove` 会拒绝删除。
 
 参见[后端设计](docs_cn/isos/design/backend-v2_cn.md)、[图接口](docs_cn/isos/interfaces/node-graph-v1_cn.md)、[本地 API](docs_cn/isos/interfaces/local-api_cn.md)以及[英文 README](README.md)。开发检查为 `cargo fmt --check`、`cargo clippy --all-targets -- -D warnings` 和 `cargo test`；集成输出保存到 `logs/test/<run-id>/`。

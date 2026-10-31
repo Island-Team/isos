@@ -13,7 +13,7 @@ isos
 构建 MuJoCo 仿真器，用其仓库的 `tools/build-backend-bundle.py` 制作 `2.0.0` 包，并将 `MUJOCO_ROOT` 指向匹配的运行环境。链接包后在 Graph 工作台预览 `sim-hardware` 节点集合。起始图包含 EOS 进程和调度器节点，不包含硬件包。预览加入 MuJoCo 进程、相机、底盘、机械臂、闸门与 Vision 节点。选择场景、检查草稿，再执行 Validate 和 Apply。对应命令为：
 
 ```sh
-isos pkg link island/mujoco-sim 2.0.0 /absolute/path/to/bundle --manifest /absolute/path/to/bundle/release.json
+isos pkg link island/mujoco-sim 0.1.1 /absolute/path/to/bundle --manifest /absolute/path/to/bundle/release.json
 isos pkg node-sets
 isos config validate ~/.config/isos/deployments/default.nodes.json
 isos config apply ~/.config/isos/deployments/default.nodes.json

@@ -23,7 +23,7 @@ pub fn report(paths: &Paths, name: &str, active: Option<&Value>) -> Value {
         .then(|| {
             (graph["version"] != "1.0.0").then(|| {
                 format!(
-                    "saved graph version {} is incompatible with IsOS 1.0.0",
+                    "saved graph version {} is incompatible with graph format 1.0.0",
                     graph["version"]
                 )
             })
