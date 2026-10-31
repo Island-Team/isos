@@ -2,7 +2,6 @@
 use crate::config::Paths;
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     fs,
@@ -23,7 +22,7 @@ fn manifest(dir: &Path) -> Result<Manifest> {
     let value: Manifest = serde_json::from_slice(&fs::read(dir.join("manifest.json"))?)?;
     ensure!(value.schema_version == 1, "unknown IsosUI manifest schema");
     ensure!(
-        value.api_schema_version == 2,
+        value.api_schema_version == 1,
         "IsosUI requires unsupported API schema"
     );
     ensure!(
@@ -117,20 +116,6 @@ pub fn bundle_for_serve(paths: &Paths) -> Result<PathBuf> {
     Ok(directory.canonicalize()?)
 }
 
-/// Report the configured bundle without consulting retired build pins.
-pub fn bundle_status(paths: &Paths) -> Value {
-    match bundle_for_serve(paths) {
-        Ok(directory) => match (manifest(&directory), digest(&directory)) {
-            (Ok(identity), Ok(sha256)) => json!({"status":"ready","version":identity.version,
-                "directory":directory,"sha256":sha256}),
-            (Err(error), _) | (_, Err(error)) => {
-                json!({"status":"unavailable","reason":error.to_string()})
-            }
-        },
-        Err(error) => json!({"status":"unavailable","reason":error.to_string()}),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,9 +140,9 @@ mod tests {
         fs::write(bundle.join("index.html"), "<html></html>").unwrap();
         let identity = Manifest {
             schema_version: 1,
-            version: "2.0.0".into(),
+            version: "1.0.0".into(),
             source_commit: "a".repeat(40),
-            api_schema_version: 2,
+            api_schema_version: 1,
             build_target: "local".into(),
         };
         fs::write(

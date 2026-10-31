@@ -3,7 +3,7 @@
 use crate::{
     auth,
     config::{self, Paths},
-    lifecycle::Lock,
+    lock::Lock,
     release::{self, Release},
 };
 use anyhow::{Context, Result, ensure};
@@ -509,48 +509,20 @@ pub fn remove(paths: &Paths, id: &str, version: &str) -> Result<()> {
                 })
             {
                 anyhow::bail!(
-                    "package is referenced by an applied v2 graph; remove that reference first"
+                    "package is referenced by an applied node graph; remove that reference first"
                 );
             }
         }
-        if let Ok(graph) = config::load(&deployment.path()) {
-            ensure!(
-                !graph.nodes.iter().any(|n| n
-                    .package
-                    .as_ref()
-                    .is_some_and(|p| p.id == id && p.version == version)),
-                "package is referenced by deployment {}; remove that reference first",
-                graph.name
-            );
-        }
-    }
-    for entry in fs::read_dir(&paths.runtime).into_iter().flatten().flatten() {
-        if !entry
-            .file_name()
-            .to_string_lossy()
-            .ends_with(".active.json")
-        {
-            continue;
-        }
-        let active: crate::lifecycle::ActiveState =
-            serde_json::from_slice(&fs::read(entry.path())?)?;
-        ensure!(
-            !active.graph.nodes.iter().any(|node| node
-                .package
-                .as_ref()
-                .is_some_and(|package| package.id == id && package.version == version)),
-            "package is referenced by an active deployment; stop it before removal"
-        );
     }
     if UnixStream::connect(paths.socket()).is_ok() {
-        let active = crate::manager::v2_call(paths, "default", "v2_active_packages")?;
+        let active = crate::manager::manager_call(paths, "default", "deployment_active_packages")?;
         ensure!(
             !active["packages"]
                 .as_array()
                 .is_some_and(|packages| packages
                     .iter()
                     .any(|package| package["id"] == id && package["version"] == version)),
-            "package is referenced by an active v2 deployment; stop it before removal"
+            "package is referenced by an active deployment; stop it before removal"
         );
     }
     fs::remove_dir_all(path)?;

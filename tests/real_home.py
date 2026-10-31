@@ -16,6 +16,7 @@ import struct
 import subprocess
 import tempfile
 import time
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 
@@ -36,12 +37,16 @@ def command(isos, env, *args, success=True):
 
 
 def api(isos_port, path, method="GET", data=None):
-    request = Request(f"http://127.0.0.1:{isos_port}/api/isos/v2/{path}",
+    request = Request(f"http://127.0.0.1:{isos_port}/api/isos/v1/{path}",
                       data=None if data is None else json.dumps(data).encode(),
                       method=method, headers={"Content-Type": "application/json",
                                               "Origin": f"http://127.0.0.1:{isos_port}"})
-    with urlopen(request, timeout=30) as response:
-        body = json.load(response)
+    try:
+        with urlopen(request, timeout=30) as response:
+            body = json.load(response)
+    except HTTPError as error:
+        print(f"IsOS API {method} {path}: HTTP {error.code}: {error.read().decode(errors='replace')}", flush=True)
+        raise
     if not body["ok"]:
         raise RuntimeError(body)
     return body["data"]
@@ -183,8 +188,8 @@ def main():
                 settings["args"][-1] = f"127.0.0.1:{listen}"
                 settings["ready_tcp"] = f"127.0.0.1:{listen}"
             document = await_condition(lambda: api(isos_port, "node-graph"))
-            assert api(isos_port, "node-graph/validate", "POST", {"schema_version": 2, "graph": graph})["valid"]
-            applied = api(isos_port, "node-graph", "PUT", {"schema_version": 2,
+            assert api(isos_port, "node-graph/validate", "POST", {"schema_version": 1, "graph": graph})["valid"]
+            applied = api(isos_port, "node-graph", "PUT", {"schema_version": 1,
                                                            "revision": document["revision"], "graph": graph})
             revision = applied["revision"]
             print("Graph validated and applied:", revision, flush=True)
@@ -260,7 +265,7 @@ def main():
             nested_asset.write_bytes(original_asset)
             print("Changed nested linked asset blocked active start: PASS", flush=True)
             restarted = api(isos_port, "process-control", "POST",
-                            {"schema_version": 2, "operation": "restart", "revision": revision})
+                            {"schema_version": 1, "operation": "restart", "revision": revision})
             assert restarted["started"][0] == "eos"
             assert isinstance(api(isos_port, "logs?source=eos&limit=10")["lines"], list)
             print("Real MuJoCo discovery, capture, observations, stops, restart, logs: PASS", flush=True)

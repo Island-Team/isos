@@ -5,7 +5,7 @@ IsOS 管理模型等服务进程，但不把它们表示为部署图节点。仅
 ## 定义
 
 ```toml
-version = "2.0.0"
+version = "1.0.0"
 id = "gateway"
 command = ["/absolute/Island-models/launch.sh", "--managed", "--only", "gateway"]
 cwd = "/absolute/Island-models"
@@ -31,7 +31,7 @@ alias = "gateway"
 
 | 字段 | 类型和单位 | 用途与校验 |
 | --- | --- | --- |
-| `version` | 字符串 | 必须为 `2.0.0`。 |
+| `version` | 字符串 | 必须为 `1.0.0`。 |
 | `id` | 字符串 | 1–32 位 ASCII 字母、数字、`_` 或 `-`；与文件名一致。 |
 | `artifact.path`, `artifact.sha256` | 绝对文件路径、SHA-256 十六进制 | 精确产物身份；启动前对内容计算哈希。Island-models 使用 `launch.sh`。 |
 | `adapter` | 可选带类型表 | `kind = "island_models"` 用绝对路径 `repo` 和 `alias` 检查已安装的目录与预检；结果必须与 `command` 一致。 |

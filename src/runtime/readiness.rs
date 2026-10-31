@@ -13,7 +13,7 @@ fn process_present(graph: &Value, id: &str) -> bool {
 }
 
 pub fn report(paths: &Paths, name: &str, active: Option<&Value>) -> Value {
-    let graph_path = paths.v2_node_graph(name);
+    let graph_path = paths.node_graph_path(name);
     let graph: Value = fs::read(&graph_path)
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())

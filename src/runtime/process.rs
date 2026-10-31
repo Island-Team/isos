@@ -1,4 +1,4 @@
-//! IsOS-owned process projection of the shared v2 node graph.
+//! IsOS-owned process projection of the shared v1 node graph.
 //!
 //! The graph remains the authored source. This module admits only registered
 //! IsOS process nodes and keeps direct child handles in the manager process.
@@ -81,10 +81,6 @@ struct GraphNode {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BackendSettings {
-    #[serde(default)]
-    package: Option<String>,
-    #[serde(default)]
-    version: Option<String>,
     scene: String,
     socket: PathBuf,
     #[serde(default)]
@@ -151,7 +147,7 @@ fn valid_segment(value: &str) -> bool {
 }
 
 pub fn validate_deployment_name(name: &str) -> Result<()> {
-    ensure!(valid_segment(name), "invalid v2 deployment name");
+    ensure!(valid_segment(name), "invalid deployment name");
     Ok(())
 }
 
@@ -254,7 +250,7 @@ pub fn project_with_packages(paths: &Paths, source: &str) -> Result<Vec<ProcessS
 fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>> {
     ensure!(
         source.len() as u64 <= MAX_GRAPH_BYTES,
-        "v2 graph exceeds 1 MiB"
+        "node graph exceeds 1 MiB"
     );
     let value = normalize_source(source)?;
     let sidecars = paths
@@ -262,28 +258,21 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
         .transpose()?
         .unwrap_or_default();
     let graph: Graph = serde_json::from_value(value)?;
-    ensure!(graph.version == "2.0.0", "graph version must be 2.0.0");
+    ensure!(graph.version == "1.0.0", "graph version must be 1.0.0");
     let mut specs = BTreeMap::new();
     let mut backends = BTreeMap::new();
     for (core_id, core) in &graph.cores {
         for (layer_id, layer) in &core.layers {
             for (group_id, group) in &layer.groups {
                 for (key, node) in &group.nodes {
-                    if node.node_type != "eos.process.backend@v1.0"
-                        && node.node_type != "eos.process.mujoco@v1.0"
-                    {
+                    if node.node_type != "eos.process.mujoco@v1.0" {
                         continue;
                     }
                     let path = format!("{core_id}/{layer_id}/{group_id}/{key}");
                     ensure!(
                         core_id == "eos"
                             && layer_id == "process"
-                            && group_id
-                                == if node.node_type == "eos.process.mujoco@v1.0" {
-                                    "mujoco"
-                                } else {
-                                    "backend"
-                                }
+                            && group_id == "mujoco"
                             && key == &node.id,
                         "{path}: backend has invalid placement or id"
                     );
@@ -295,20 +284,8 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
                     let package = node
                         .package
                         .as_ref()
-                        .map(|p| p.id.as_str())
-                        .or(settings.package.as_deref())
-                        .context("backend requires package identity")?;
-                    let version = node
-                        .package
-                        .as_ref()
-                        .map(|p| p.version.as_str())
-                        .or(settings.version.as_deref())
-                        .context("backend requires package version")?;
-                    ensure!(
-                        settings.package.as_deref().is_none_or(|id| id == package)
-                            && settings.version.as_deref().is_none_or(|v| v == version),
-                        "backend package pin differs"
-                    );
+                        .context("backend requires package identity and exact version")?;
+                    let (package_id, version) = (package.id.as_str(), package.version.as_str());
                     ensure!(
                         settings.socket.is_absolute()
                             && settings.socket.as_os_str().as_bytes().len() <= 107,
@@ -322,8 +299,13 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
                         (1..=120_000).contains(&settings.start_timeout_ms),
                         "{path}: start_timeout_ms must be 1..=120000"
                     );
-                    let resolved =
-                        backend::resolve(paths, package, version, &settings.scene, &settings.env)?;
+                    let resolved = backend::resolve(
+                        paths,
+                        package_id,
+                        version,
+                        &settings.scene,
+                        &settings.env,
+                    )?;
                     ensure!(
                         backends.insert(path, (resolved, settings.socket)).is_none(),
                         "duplicate backend path"
@@ -452,14 +434,10 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
             for (group_id, group) in layer.groups {
                 for (key, node) in group.nodes {
                     let path = format!("{core_id}/{layer_id}/{group_id}/{key}");
-                    if node.node_type == "eos.process.backend@v1.0"
-                        || node.node_type == "eos.process.mujoco@v1.0"
-                    {
+                    if node.node_type == "eos.process.mujoco@v1.0" {
                         continue;
                     }
-                    if node.node_type == "isos.process.component@v1.0"
-                        || node.node_type == "isos.process.component@v1.1"
-                    {
+                    if node.node_type == "isos.process.component@v1.1" {
                         ensure!(
                             core_id == "isos" && layer_id == "process" && group_id == "component",
                             "{path}: process type has invalid placement"
@@ -479,15 +457,11 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
                                 settings.role.as_deref().is_none_or(|role| role == "eos"),
                                 "{path}: role must be eos"
                             );
-                            let args = if node.node_type.ends_with("@v1.1") {
-                                ensure!(
-                                    settings.command.is_empty(),
-                                    "{path}: v1.1 must not set command"
-                                );
-                                settings.args.clone()
-                            } else {
-                                settings.command.iter().skip(1).cloned().collect()
-                            };
+                            ensure!(
+                                settings.command.is_empty(),
+                                "{path}: command is obsolete; use role and args"
+                            );
+                            let args = settings.args.clone();
                             settings.command = std::iter::once(
                                 core_bins::resolve(binary)?.to_string_lossy().into_owned(),
                             )
@@ -498,15 +472,11 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
                                 settings.role.as_deref().is_none_or(|role| role == "egia"),
                                 "{path}: role must be egia"
                             );
-                            let args = if node.node_type.ends_with("@v1.1") {
-                                ensure!(
-                                    settings.command.is_empty(),
-                                    "{path}: v1.1 must not set command"
-                                );
-                                settings.args.clone()
-                            } else {
-                                settings.command.iter().skip(1).cloned().collect()
-                            };
+                            ensure!(
+                                settings.command.is_empty(),
+                                "{path}: command is obsolete; use role and args"
+                            );
+                            let args = settings.args.clone();
                             let executable =
                                 crate::core_setup::adapter_path(paths.unwrap(), "egia")?
                                     .with_file_name("egia");
@@ -632,38 +602,39 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
     Ok(ordered)
 }
 
-/// Replace authored executable paths with logical core arguments on save.
-pub fn migrate_component_commands(graph: &mut Value) -> Result<()> {
-    let Some(nodes) = graph
-        .pointer_mut("/cores/isos/layers/process/groups/component/nodes")
-        .and_then(Value::as_object_mut)
-    else {
-        return Ok(());
-    };
-    for (id, node) in nodes {
-        if !matches!(id.as_str(), "eos" | "bridge" | "config" | "egia")
-            || node["node_type"] != "isos.process.component@v1.0"
-        {
-            continue;
+/// Reject obsolete graph shapes before delegating admission to the core registry.
+fn reject_obsolete_nodes(graph: &Value) -> Result<()> {
+    if let Some(nodes) = graph
+        .pointer("/cores/isos/layers/process/groups/component/nodes")
+        .and_then(Value::as_object)
+    {
+        for (id, node) in nodes {
+            ensure!(
+                node["node_type"] != "isos.process.component@v1.0"
+                    && node["settings"].get("command").is_none(),
+                "{id}: obsolete executable command; set node_type to isos.process.component@v1.1 and use settings.role plus settings.args, then save the graph"
+            );
         }
-        let settings = node
-            .get_mut("settings")
-            .and_then(Value::as_object_mut)
-            .with_context(|| format!("{id}: settings must be an object"))?;
-        let command = settings
-            .remove("command")
-            .and_then(|value| value.as_array().cloned())
-            .with_context(|| format!("{id}: command must be an array"))?;
-        ensure!(!command.is_empty(), "{id}: command is empty");
-        settings.insert(
-            "role".into(),
-            Value::String(if id == "egia" { "egia" } else { "eos" }.into()),
-        );
-        settings.insert(
-            "args".into(),
-            Value::Array(command.into_iter().skip(1).collect()),
-        );
-        node["node_type"] = Value::String("isos.process.component@v1.1".into());
+    }
+    if let Some(cores) = graph.get("cores").and_then(Value::as_object) {
+        for (core_id, core) in cores {
+            if let Some(layers) = core.get("layers").and_then(Value::as_object) {
+                for (layer_id, layer) in layers {
+                    if let Some(groups) = layer.get("groups").and_then(Value::as_object) {
+                        for (group_id, group) in groups {
+                            if let Some(nodes) = group.get("nodes").and_then(Value::as_object) {
+                                for (id, node) in nodes {
+                                    ensure!(
+                                        node["node_type"] != "eos.process.backend@v1.0",
+                                        "obsolete MuJoCo backend at {core_id}/{layer_id}/{group_id}/{id}; add the installed package node set to a current graph and reconnect its references"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -711,7 +682,7 @@ fn validate_listener_ports(specs: &BTreeMap<String, ProcessSpec>) -> Result<()> 
 pub fn normalize_source(source: &str) -> Result<Value> {
     ensure!(
         source.len() as u64 <= MAX_GRAPH_BYTES,
-        "v2 graph exceeds 1 MiB"
+        "node graph exceeds 1 MiB"
     );
     if source.trim_start().starts_with('{') {
         Ok(serde_json::from_str(source)?)
@@ -726,9 +697,10 @@ pub fn validate_value(paths: &Paths, graph: &Value) -> Result<()> {
 }
 
 pub fn validate_value_with_profile(paths: &Paths, graph: &Value, profile: &Path) -> Result<()> {
+    reject_obsolete_nodes(graph)?;
     paths.prepare()?;
     let mut file = tempfile::Builder::new()
-        .prefix("isos-v2-graph-")
+        .prefix("isos-graph-")
         .suffix(".json")
         .tempfile_in(&paths.runtime)?;
     serde_json::to_writer(&mut file, graph)?;
@@ -742,6 +714,8 @@ pub fn validate_value_with_profile(paths: &Paths, graph: &Value, profile: &Path)
 /// Full graph admission is delegated to EOS's node-type registry. IsOS then
 /// validates the process projection again before supervising any child.
 pub fn validate_full_graph(path: &Path) -> Result<()> {
+    let graph = normalize_source(&fs::read_to_string(path)?)?;
+    reject_obsolete_nodes(&graph)?;
     validate_with_program(path, &core_bins::resolve("aether-profile")?)
 }
 
@@ -751,20 +725,20 @@ pub fn catalog() -> Result<Value> {
     command.arg("catalog");
     let output = command
         .output()
-        .with_context(|| format!("run EOS v2 type catalog {}", Path::new(&program).display()))?;
+        .with_context(|| format!("run EOS type catalog {}", Path::new(&program).display()))?;
     ensure!(
         output.status.success(),
-        "EOS v2 catalog failed: {}",
+        "EOS catalog failed: {}",
         String::from_utf8_lossy(&output.stderr).trim()
     );
     ensure!(
         output.stdout.len() <= MAX_GRAPH_BYTES as usize,
-        "EOS v2 catalog exceeds 1 MiB"
+        "EOS catalog exceeds 1 MiB"
     );
     let mut catalog: Value = serde_json::from_slice(&output.stdout)?;
     ensure!(
         catalog.get("types").and_then(Value::as_array).is_some(),
-        "EOS v2 catalog has no types array"
+        "EOS catalog has no types array"
     );
     let mut contributed = BTreeMap::new();
     let mut contributed_data = BTreeMap::new();
@@ -886,10 +860,10 @@ fn validate_with_program(path: &Path, program: &Path) -> Result<()> {
     }
     let output = command
         .output()
-        .with_context(|| format!("run EOS v2 graph validator {}", program.display()))?;
+        .with_context(|| format!("run EOS node graph validator {}", program.display()))?;
     ensure!(
         output.status.success(),
-        "EOS v2 graph validation failed: {}",
+        "EOS node graph validation failed: {}",
         String::from_utf8_lossy(&output.stderr).trim()
     );
     Ok(())
@@ -1241,11 +1215,11 @@ mod tests {
     fn graph(settings: &str) -> String {
         let settings: Value = serde_json::from_str(settings).unwrap();
         serde_json::json!({
-            "version": "2.0.0",
+            "version": "1.0.0",
             "robot": {"id": "r", "name": "R"},
             "cores": {"isos": {"layers": {"process": {"groups": {"component": {
                 "nodes": {"eos": {
-                    "id": "eos", "node_type": "isos.process.component@v1.0",
+                    "id": "eos", "node_type": "isos.process.component@v1.1",
                     "settings": settings
                 }}
             }}}}}}
@@ -1254,44 +1228,20 @@ mod tests {
     }
 
     #[test]
-    fn migrates_legacy_component_commands_to_core_roles() {
-        let mut source: Value = serde_json::from_str(&graph(
-            r#"{"command":["/old/aether-runtime","--listen","127.0.0.1:1"]}"#,
-        ))
-        .unwrap();
-        source["cores"]["isos"]["layers"]["process"]["groups"]["component"]["nodes"]["egia"] = serde_json::json!({"id":"egia","node_type":"isos.process.component@v1.0",
-                "settings":{"command":["/old/egia","--quiet"]}});
-        migrate_component_commands(&mut source).unwrap();
-        let nodes = &source["cores"]["isos"]["layers"]["process"]["groups"]["component"]["nodes"];
-        assert_eq!(nodes["eos"]["node_type"], "isos.process.component@v1.1");
-        assert_eq!(nodes["eos"]["settings"]["role"], "eos");
-        assert_eq!(
-            nodes["eos"]["settings"]["args"],
-            serde_json::json!(["--listen", "127.0.0.1:1"])
-        );
-        assert!(nodes["eos"]["settings"].get("command").is_none());
-        assert_eq!(nodes["egia"]["settings"]["role"], "egia");
-        assert_eq!(
-            nodes["egia"]["settings"]["args"],
-            serde_json::json!(["--quiet"])
-        );
-    }
-
-    #[test]
     fn projection_rejects_wrong_type_placement_and_unbounded_launch() {
         let source = graph(r#"{"command":["/bin/sleep","1"]}"#);
         assert_eq!(project(&source).unwrap()[0].id, "eos");
-        assert!(project(&source.replace("v1.0", "v2.0")).is_err());
+        assert!(project(&source.replace("v1.1", "v2.0")).is_err());
         assert!(project(&source.replace("\"process\"", "\"hardware\"")).is_err());
         assert!(project(&graph(r#"{"command":["sleep","1"]}"#)).is_err());
         let toml = r#"
-version = "2.0.0"
+version = "1.0.0"
 [robot]
 id = "r"
 name = "R"
 [cores.isos.layers.process.groups.component.nodes.eos]
 id = "eos"
-node_type = "isos.process.component@v1.0"
+node_type = "isos.process.component@v1.1"
 label = "EOS"
 description = "runtime"
 [cores.isos.layers.process.groups.component.nodes.eos.settings]
@@ -1453,7 +1403,7 @@ command = ["/bin/sleep", "1"]
             serde_json::from_str(&graph(r#"{"command":["/bin/sleep","0.1"]}"#)).unwrap();
         source["cores"]["isos"]["layers"]["process"]["groups"]["component"]["nodes"]["egia"] = serde_json::json!({
             "id": "egia",
-            "node_type": "isos.process.component@v1.0",
+            "node_type": "isos.process.component@v1.1",
             "settings": {
                 "command": ["/bin/sleep", "30"],
                 "depends_on": ["cores/isos/layers/process/groups/component/nodes/eos"]

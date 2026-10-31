@@ -22,6 +22,6 @@ isos run
 
 `run`、`start` 和 `restart` 保持前台运行，Ctrl+C 停止部署。在另一终端执行 `isos status --json` 查看管理器和运行中修订；`isos version check` 报告已配置构建、图和运行状态的就绪情况。`isos deployment stop` 只停止图部署；`isos stop` 还停止服务、界面、API 和管理器。重复停止也会成功。
 
-运行前会重新校验精确的图修订、已配置程序、软件包、场景和资源。EOS 启动并持有 MuJoCo 子进程。安装软件包、修改已配置构建路径或编辑草稿都不会改变运行中的部署；需应用修改并显式重启。参见[软件包命令](packages_cn.md)、[图字段](../interfaces/node-graph-v2_cn.md)和[独立服务契约](../interfaces/services_cn.md)。
+运行前会重新校验精确的图修订、已配置程序、软件包、场景和资源。EOS 启动并持有 MuJoCo 子进程。安装软件包、修改已配置构建路径或编辑草稿都不会改变运行中的部署；需应用修改并显式重启。参见[软件包命令](packages_cn.md)、[图字段](../interfaces/node-graph-v1_cn.md)和[独立服务契约](../interfaces/services_cn.md)。
 
 若重启时新子进程启动失败，IsOS 会停止本次启动，并按先前的进程配置重新启动先前的运行中修订。若先前的子进程也无法恢复，状态会显示部署已降级及重启错误。

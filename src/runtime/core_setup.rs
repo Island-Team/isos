@@ -1,4 +1,4 @@
-//! Bounded, on-demand setup adapters for the saved v2 graph.
+//! Bounded, on-demand setup adapters for the saved node graph.
 use crate::{
     config::{self, Paths},
     packages,
@@ -54,21 +54,21 @@ fn selected_adapter(paths: &Paths, role: &str) -> Result<PathBuf> {
         "eos" => crate::core_bins::resolve("aether-profile"),
         "egia" => {
             let _ = paths;
-            if let Some(directory) = std::env::var_os("ISOS_EGIA_BIN_DIR") {
-                let directory = PathBuf::from(directory);
-                ensure!(
-                    directory.is_absolute(),
-                    "ISOS_EGIA_BIN_DIR must be absolute"
-                );
-                let path = directory.join("egia-config");
-                ensure!(
-                    path.is_file(),
-                    "EGIA setup adapter missing at {}",
-                    path.display()
-                );
-                return Ok(path);
-            }
-            Ok(PathBuf::from(crate::component::binary("egia")))
+            let directory = PathBuf::from(
+                std::env::var_os("ISOS_EGIA_BIN_DIR")
+                    .context("configure paths.egia_bin_dir before enabling EGIA")?,
+            );
+            ensure!(
+                directory.is_absolute(),
+                "ISOS_EGIA_BIN_DIR must be absolute"
+            );
+            let path = directory.join("egia-config");
+            ensure!(
+                path.is_file(),
+                "EGIA setup adapter missing at {}",
+                path.display()
+            );
+            Ok(path)
         }
         _ => bail!("unknown setup core {role}"),
     }
@@ -196,7 +196,7 @@ fn request(
         matches!(op, "catalog" | "validate" | "render"),
         "unknown setup operation"
     );
-    let request = json!({"schema_version":2,"op":op,"core":role,"revision":graph_revision,
+    let request = json!({"schema_version":1,"op":op,"core":role,"revision":graph_revision,
         "graph":graph,"endpoints":endpoints(paths,name,graph)?,"packages":package_refs(paths, graph)?});
     ensure!(
         serde_json::to_vec(&request)?.len() <= MAX_REQUEST,
@@ -265,7 +265,7 @@ fn invoke(program: &Path, request: &Value) -> Result<Value> {
     let reply: Value = serde_json::from_slice(&output).context("parse setup adapter response")?;
     let typed: SetupReply = serde_json::from_value(reply.clone())
         .context("setup adapter response violates schema 2")?;
-    ensure!(typed.schema_version == 2, "setup adapter schema mismatch");
+    ensure!(typed.schema_version == 1, "setup adapter schema mismatch");
     ensure!(
         typed
             .diagnostics
@@ -333,7 +333,7 @@ pub fn identity(paths: &Paths, role: &str) -> Result<Value> {
     ensure!(matches!(role, "eos" | "egia"), "unknown setup core {role}");
     let reply = invoke(
         &selected_adapter(paths, role)?,
-        &json!({"schema_version":2,"op":"identity","core":role}),
+        &json!({"schema_version":1,"op":"identity","core":role}),
     )?;
     ensure!(reply["ok"] == true, "{role} identity rejected");
     let identity = reply
@@ -341,9 +341,9 @@ pub fn identity(paths: &Paths, role: &str) -> Result<Value> {
         .context("identity reply missing identity")?;
     ensure!(
         identity["core"] == role
-            && identity["graph_version"] == "2.0.0"
+            && identity["graph_version"] == "1.0.0"
             && identity["node_type_version"] == "1.0"
-            && identity["setup_schema_version"] == 2
+            && identity["setup_schema_version"] == 1
             && identity["product_version"]
                 .as_str()
                 .is_some_and(|version| !version.is_empty()),
@@ -353,16 +353,16 @@ pub fn identity(paths: &Paths, role: &str) -> Result<Value> {
 }
 
 pub fn prepare_run(paths: &Paths, name: &str, expected_revision: &str) -> Result<()> {
-    let graph_path = paths.v2_node_graph(name);
+    let graph_path = paths.node_graph_path(name);
     let bytes = fs::read(&graph_path).with_context(|| format!("read {}", graph_path.display()))?;
-    ensure!(bytes.len() <= MAX_REQUEST, "v2 graph exceeds 1 MiB");
+    ensure!(bytes.len() <= MAX_REQUEST, "node graph exceeds 1 MiB");
     ensure!(
         revision(&bytes) == expected_revision,
         "node graph revision changed during setup"
     );
     let graph: Value = serde_json::from_slice(&bytes)?;
     let files = render_graph(paths, name, &graph, expected_revision)?;
-    let _lock = crate::lifecycle::Lock::take(paths)?;
+    let _lock = crate::lock::Lock::take(paths)?;
     ensure!(
         revision(&fs::read(&graph_path)?) == expected_revision,
         "node graph revision changed during setup"
@@ -540,16 +540,16 @@ mod tests {
     fn adapter_reply_is_bounded_and_versioned() {
         let temp = tempfile::tempdir().unwrap();
         let script = temp.path().join("adapter");
-        fs::write(&script, "#!/bin/sh\ncat >/dev/null\nprintf '{\"schema_version\":2,\"ok\":true,\"diagnostics\":[],\"files\":[]}'\n").unwrap();
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
-        let reply = invoke(&script, &json!({"schema_version":2})).unwrap();
-        assert_eq!(reply["ok"], true);
         fs::write(&script, "#!/bin/sh\ncat >/dev/null\nprintf '{\"schema_version\":1,\"ok\":true,\"diagnostics\":[],\"files\":[]}'\n").unwrap();
-        assert!(invoke(&script, &json!({"schema_version":2})).is_err());
-        fs::write(&script, "#!/bin/sh\ncat >/dev/null\nprintf '{\"schema_version\":2,\"ok\":false,\"diagnostics\":[],\"files\":[]}'\n").unwrap();
-        assert!(invoke(&script, &json!({"schema_version":2})).is_err());
-        fs::write(&script, "#!/bin/sh\ncat >/dev/null\nprintf '{\"schema_version\":2,\"ok\":true,\"diagnostics\":[],\"files\":[{\"path\":\"eos/graph.json\"}]}'\n").unwrap();
-        assert!(invoke(&script, &json!({"schema_version":2})).is_err());
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        let reply = invoke(&script, &json!({"schema_version":1})).unwrap();
+        assert_eq!(reply["ok"], true);
+        fs::write(&script, "#!/bin/sh\ncat >/dev/null\nprintf '{\"schema_version\":2,\"ok\":true,\"diagnostics\":[],\"files\":[]}'\n").unwrap();
+        assert!(invoke(&script, &json!({"schema_version":1})).is_err());
+        fs::write(&script, "#!/bin/sh\ncat >/dev/null\nprintf '{\"schema_version\":1,\"ok\":false,\"diagnostics\":[],\"files\":[]}'\n").unwrap();
+        assert!(invoke(&script, &json!({"schema_version":1})).is_err());
+        fs::write(&script, "#!/bin/sh\ncat >/dev/null\nprintf '{\"schema_version\":1,\"ok\":true,\"diagnostics\":[],\"files\":[{\"path\":\"eos/graph.json\"}]}'\n").unwrap();
+        assert!(invoke(&script, &json!({"schema_version":1})).is_err());
     }
 
     #[test]
@@ -580,13 +580,13 @@ mod tests {
         let paths = paths(temp.path());
         paths.prepare().unwrap();
         config::atomic_write(
-            &paths.v2_node_graph("default"),
-            br#"{"version":"2.0.0","robot":{},"cores":{}}"#,
+            &paths.node_graph_path("default"),
+            br#"{"version":"1.0.0","robot":{},"cores":{}}"#,
         )
         .unwrap();
         assert!(prepare_run(&paths, "default", "stale").is_err());
         assert!(!paths.generated("default").exists());
-        let revision = crate::starter::revision(&paths.v2_node_graph("default")).unwrap();
+        let revision = crate::starter::revision(&paths.node_graph_path("default")).unwrap();
         prepare_run(&paths, "default", &revision).unwrap();
     }
 }

@@ -28,14 +28,13 @@ else
   exit 127
 fi
 INSTALL_ROOT="${ISOS_INSTALL_ROOT:-${CARGO_HOME:-${HOME}/.cargo}}"
-# Stop the previous deployment before replacing its executable. Older IsOS
-# releases left the API in a transient user service after `isos init` exited.
+# Stop the current deployment before replacing its executable.
 if [[ -x "$INSTALL_ROOT/bin/isos" ]]; then
   "$INSTALL_ROOT/bin/isos" stop >/dev/null 2>&1 || true
 fi
 if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active --quiet isos-server.service; then
-  systemctl --user stop isos-server.service
-  echo "Stopped the legacy isos-server.service"
+  echo "Obsolete isos-server.service is active; stop it with: systemctl --user stop isos-server.service" >&2
+  exit 1
 fi
 RUNTIME_ROOT="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/isos"
 rm -f "$RUNTIME_ROOT/ui-token"
@@ -47,14 +46,6 @@ if [[ "$EXPECTED_VERSION" != "$INSTALLED_VERSION" ]]; then
   echo "Installed IsOS version does not match this checkout: $INSTALLED_VERSION != $EXPECTED_VERSION" >&2
   exit 1
 fi
-if [[ -n "${ISOS_HOME:-}" ]]; then
-  CONFIG_ROOT="$ISOS_HOME/config"
-else
-  CONFIG_ROOT="${XDG_CONFIG_HOME:-${HOME}/.config}/isos"
-fi
-mkdir -p "$CONFIG_ROOT"
-"$INSTALL_ROOT/bin/isos" --version | awk '{print $2}' > "$CONFIG_ROOT/isos-version"
-chmod 600 "$CONFIG_ROOT/isos-version"
 COMPLETION_ROOT="${XDG_DATA_HOME:-${HOME}/.local/share}/isos/completions"
 mkdir -p "$COMPLETION_ROOT" "${XDG_CONFIG_HOME:-${HOME}/.config}/fish/completions"
 "$INSTALL_ROOT/bin/isos" --generate-completion bash > "$COMPLETION_ROOT/isos.bash"

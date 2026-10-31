@@ -2,19 +2,14 @@
 
 [English](../../../docs/isos/develop/source-layout.md)
 
-`src/main.rs` 初始化配置、解析命令并分发。新增行为按以下职责放置：
+`src/main.rs` 声明所属模块并调用 `app/entry.rs`。新增行为放在对应职责目录：
 
-| 路径 | 职责 |
+| 目录 | 职责 |
 | --- | --- |
-| `src/cli/mod.rs`、`src/cli/commands.rs` | 对外命令语法与命令处理；调用领域模块和管理器客户端，不持有子进程。 |
-| `src/manager/mod.rs`、`src/manager/protocol.rs` | 仅所有者可访问的套接字协议、部署与服务请求分发、管理器客户端；状态变更前校验有界协议字段。 |
-| `src/foreground.rs` | 工作台界面、浏览器启动、前台生命周期与信号处理。 |
-| `src/config.rs`、`src/core_setup.rs`、`src/readiness.rs` | 运行路径与设置、核心配置文件及启动就绪检查。 |
-| `src/process.rs`、`src/backend.rs`、`src/starter.rs`、`src/core_bins.rs` | 图进程监管、已验证后端输入、起始图参数及核心程序路径。 |
-| `src/log_store.rs`、`src/manager_log.rs` | 有界结构化日志存储和管理器事件采集。 |
-| `src/http.rs` | 环回 HTTP API 和静态界面服务；调用管理器与领域接口，不监管子进程。 |
-| `src/packages.rs`、`src/services.rs`、`src/auth.rs`、`src/release.rs`、`src/node_sets.rs`、`src/node_options.rs`、`src/isosui.rs` | 软件包、服务、账号、发布、图目录及界面包领域。 |
+| `src/app/` | CLI、环回 HTTP API、前台工作台、运行配置、认证和已验证的界面包；调用领域与运行接口，但不监管图子进程。 |
+| `src/domain/` | 保存图的起始模板、节点集合与选项、软件包、发布、后端描述及独立服务；安装软件包不会启动部署。 |
+| `src/runtime/` | 直接子进程管理器和套接字协议、图进程投影与监管、核心配置、程序预检、就绪状态、锁和有界结构化日志。 |
 
-`component.rs`、`graph.rs` 和 `versions.rs` 仍支持旧组件命令。最后一个调用者替换且等效测试通过后再删除。公开图、软件包及线协议保留版本号；内部模块与测试文件按职责命名。
+保存的 `<name>.nodes.json` 是唯一部署图。`src/runtime/lock.rs` 对图、生成配置与软件包变更进行串行化。旧组件图、构建选择检查及 systemd 子进程运行时已在调用者迁移后删除。可选的 `isos.service` 与前台操作流程一样运行 `isos serve`。
 
-统一日志 API 为 `GET /api/isos/v2/logs`。`config/isos.toml` 设置默认来源与保留上限。来源文件达到 `logging.max_sources` 后，新来源的事件仍写入有界统一流。
+统一日志 API 为 `GET /api/isos/v1/logs`。`config/isos.toml` 设置默认来源与保留上限。来源文件达到 `logging.max_sources` 后，新来源的事件仍写入有界统一流。

@@ -2,19 +2,14 @@
 
 [中文](../../../docs_cn/isos/develop/source-layout_cn.md)
 
-`src/main.rs` initializes configuration, parses the command, and dispatches it. New behavior belongs with the owner below:
+`src/main.rs` declares the owned modules and calls `app/entry.rs`. Add behavior to its owner:
 
-| Path | Responsibility |
+| Directory | Responsibility |
 | --- | --- |
-| `src/cli/mod.rs`, `src/cli/commands.rs` | Public command syntax and command handlers. CLI handlers call domain modules and the manager client; they do not own child processes. |
-| `src/manager/mod.rs`, `src/manager/protocol.rs` | Owner-only socket protocol, deployment and service request dispatch, and manager client calls. Protocol fields are bounded and validated before state changes. |
-| `src/foreground.rs` | Workbench UI, browser launch, foreground process lifetime, and signal handling. |
-| `src/config.rs`, `src/core_setup.rs`, `src/readiness.rs` | Runtime paths and settings, core setup files, and launch readiness. |
-| `src/process.rs`, `src/backend.rs`, `src/starter.rs`, `src/core_bins.rs` | Graph process supervision, verified backend inputs, starter graph arguments, and configured core binary paths. |
-| `src/log_store.rs`, `src/manager_log.rs` | Bounded structured log storage and manager event capture. |
-| `src/http.rs` | Loopback HTTP API and static UI server. It calls manager and domain interfaces; it does not supervise children. |
-| `src/packages.rs`, `src/services.rs`, `src/auth.rs`, `src/release.rs`, `src/node_sets.rs`, `src/node_options.rs`, `src/isosui.rs` | Package, service, account, release, graph catalog, and UI bundle domains. |
+| `src/app/` | CLI, loopback HTTP API, foreground workbench, runtime configuration, authentication, and verified UI bundle. It calls domain and runtime interfaces but does not supervise graph children. |
+| `src/domain/` | Saved graph starter, node sets and options, packages, releases, backend descriptors, and independent services. Package installation does not start a deployment. |
+| `src/runtime/` | Direct-child manager and socket protocol, graph process projection and supervision, core setup, executable preflight, readiness, locks, and bounded structured logs. |
 
-`component.rs`, `graph.rs`, and `versions.rs` still serve legacy component commands. Remove them when the last command caller is replaced and equivalent tests pass. Keep version numbers in public graph, package, and wire contracts; internal module and test filenames describe their role.
+The saved `<name>.nodes.json` graph is the only deployment graph. `src/runtime/lock.rs` serializes graph, generated configuration, and package mutations. The old component graph, pinned-build checks, and systemd child runtime were removed after their callers migrated. The optional `isos.service` runs the same `isos serve` command as the foreground operator flow.
 
-The unified log API is `GET /api/isos/v2/logs`. `config/isos.toml` sets its default source and retention limits. New source files stop at `logging.max_sources`; events from additional sources remain in the bounded unified stream.
+The unified log API is `GET /api/isos/v1/logs`. `config/isos.toml` sets its default source and retention limits. New source files stop at `logging.max_sources`; events from additional sources remain in the bounded unified stream.

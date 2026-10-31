@@ -1,4 +1,4 @@
-//! Verify configured Rust Aether executables before launching the v2 graph.
+//! Verify configured Rust Aether executables before launching the v1 graph.
 use crate::config::Paths;
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
@@ -27,7 +27,7 @@ fn probe(path: &Path, binary: &str, features: &[&str]) -> Result<()> {
         .with_context(|| format!("probe {}", path.display()))?;
     ensure!(
         output.status.success(),
-        "{binary} at {} lacks Rust v2 capabilities; build EOS and configure ISOS_AETHER_BIN_DIR: {}",
+        "{binary} at {} lacks Rust v1 capabilities; build EOS and configure ISOS_AETHER_BIN_DIR: {}",
         path.display(),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -39,8 +39,8 @@ fn probe(path: &Path, binary: &str, features: &[&str]) -> Result<()> {
     })?;
     ensure!(
         info.binary == binary
-            && info.product_version == "2.0.0"
-            && info.graph_version == "2.0.0"
+            && info.product_version == "1.0.0"
+            && info.graph_version == "1.0.0"
             && info.node_type_version == "1.0",
         "{binary} at {} has incompatible Aether versions; build EOS and configure ISOS_AETHER_BIN_DIR",
         path.display()
@@ -55,7 +55,7 @@ fn probe(path: &Path, binary: &str, features: &[&str]) -> Result<()> {
     Ok(())
 }
 
-pub fn preflight_processes(paths: &Paths, specs: &[crate::process::ProcessSpec]) -> Result<()> {
+pub fn verify_processes(paths: &Paths, specs: &[crate::process::ProcessSpec]) -> Result<()> {
     crate::core_setup::identity(paths, "eos")?;
     if specs.iter().any(|spec| spec.id == "egia") {
         crate::core_setup::identity(paths, "egia")?;
@@ -133,7 +133,7 @@ mod tests {
     fn capability_probe_rejects_stale_runtime() {
         let temporary = tempfile::tempdir().unwrap();
         let binary = temporary.path().join("aether-runtime");
-        fs::write(&binary, "#!/bin/sh\nprintf '%s\\n' '{\"product_version\":\"2.0.0\",\"graph_version\":\"2.0.0\",\"node_type_version\":\"1.0\",\"binary\":\"aether-runtime\",\"features\":[\"log-dir\",\"node-types\"]}'\n").unwrap();
+        fs::write(&binary, "#!/bin/sh\nprintf '%s\\n' '{\"product_version\":\"1.0.0\",\"graph_version\":\"1.0.0\",\"node_type_version\":\"1.0\",\"binary\":\"aether-runtime\",\"features\":[\"log-dir\",\"node-types\"]}'\n").unwrap();
         fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
         probe(&binary, "aether-runtime", &["log-dir", "node-types"]).unwrap();
         assert!(probe(&binary, "aether-runtime", &["primitive-binding"]).is_err());

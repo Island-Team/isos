@@ -63,7 +63,7 @@ def main():
         config = home / "config/services"
         config.mkdir(parents=True)
         (config / "stub.toml").write_text(
-            f'version = "2.0.0"\nid = "stub"\ncommand = ["{script}", "{service_port}"]\n'
+            f'version = "1.0.0"\nid = "stub"\ncommand = ["{script}", "{service_port}"]\n'
             f'cwd = "{root}"\nrestart = "never"\nmax_restarts = 0\n'
             f'[artifact]\npath = "{script}"\nsha256 = "{hashlib.sha256(script.read_bytes()).hexdigest()}"\n'
             f'[readiness]\nkind = "tcp"\ntarget = "127.0.0.1:{service_port}"\n')

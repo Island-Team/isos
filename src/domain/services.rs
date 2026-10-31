@@ -16,7 +16,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub const CONTRACT_VERSION: &str = "2.0.0";
+pub const CONTRACT_VERSION: &str = "1.0.0";
 const MAX_CONFIG_BYTES: u64 = 65_536;
 
 fn valid_id(id: &str) -> bool {

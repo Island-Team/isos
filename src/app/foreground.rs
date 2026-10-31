@@ -1,4 +1,18 @@
-use super::*;
+use crate::{
+    config, http, isosui, log_store,
+    manager::{bind_daemon, daemon, manager_call},
+    manager_log, preflight, starter,
+};
+use anyhow::{Context, Result, bail, ensure};
+use serde_json::Value;
+use std::{
+    net::TcpStream,
+    os::unix::{net::UnixStream, process::CommandExt},
+    path::{Path, PathBuf},
+    process::{Child, Command, Stdio},
+    sync::atomic::{AtomicBool, Ordering},
+    time::{Duration, Instant},
+};
 
 pub(crate) static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
@@ -125,6 +139,15 @@ pub(crate) fn open_browser() -> Result<()> {
 }
 
 pub(crate) fn ensure_setup(paths: &config::Paths, name: &str) -> Result<()> {
+    let old_server = Command::new("systemctl")
+        .args(["--user", "is-active", "--quiet", "isos-server.service"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    ensure!(
+        !old_server.is_ok_and(|status| status.success()),
+        "obsolete isos-server.service is active; stop it with `systemctl --user stop isos-server.service`, then use `isos serve`"
+    );
     paths.prepare()?;
     if !paths.config.join("mode").exists() && std::env::var_os("ISOS_MODE").is_none() {
         paths.set_mode("dev")?;
@@ -141,13 +164,13 @@ pub(crate) fn serve_foreground(
     run_graph: bool,
 ) -> Result<()> {
     ensure_setup(&paths, &name)?;
-    build::verify_active_isos(&paths)?;
+    preflight::verify_active_isos(&paths)?;
     ensure!(
         !ui_live || paths.mode()? == "dev",
         "--ui-live is available only in dev mode"
     );
     if UnixStream::connect(paths.socket()).is_ok() {
-        let identity = v2_call(&paths, &name, "manager_identity")?;
+        let identity = manager_call(&paths, &name, "manager_identity")?;
         bail!("IsOS manager is already running: {identity}");
     }
     let port = http::ui_port()?;
@@ -209,9 +232,9 @@ pub(crate) fn serve_foreground(
             );
         }
         if run_graph {
-            match v2_call(&paths, &name, "v2_start") {
+            match manager_call(&paths, &name, "deployment_start") {
                 Ok(started) => {
-                    if let Err(error) = print_v2_run_startup(&paths, &name, &started) {
+                    if let Err(error) = print_run_startup(&paths, &name, &started) {
                         eprintln!("Could not display graph status: {error}");
                     }
                 }
@@ -260,11 +283,7 @@ pub(crate) fn serve_foreground(
     result
 }
 
-pub(crate) fn print_v2_run_startup(
-    paths: &config::Paths,
-    name: &str,
-    result: &Value,
-) -> Result<()> {
+pub(crate) fn print_run_startup(paths: &config::Paths, name: &str, result: &Value) -> Result<()> {
     println!("{}", serde_json::to_string_pretty(result)?);
     println!("IsosUI: {}", http::ui_url()?);
     println!("IsOS API: {}", http::local_origin());
@@ -292,12 +311,12 @@ pub(crate) fn wait_for_interrupt(paths: &config::Paths, name: &str) -> Result<()
         if INTERRUPTED.load(Ordering::SeqCst) {
             println!(
                 "{}",
-                serde_json::to_string_pretty(&v2_call(paths, name, "v2_stop")?)?
+                serde_json::to_string_pretty(&manager_call(paths, name, "deployment_stop")?)?
             );
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(200));
-        let status = v2_call(paths, name, "v2_status")?;
+        let status = manager_call(paths, name, "deployment_status")?;
         if status["state"] == "stopped" {
             return Ok(());
         }

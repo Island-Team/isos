@@ -1,4 +1,4 @@
-//! Create the editable shared graph from the generic v2 preset.
+//! Create the editable shared graph from the generic v1 preset.
 
 use crate::config::Paths;
 use anyhow::{Context, Result};
@@ -15,10 +15,10 @@ fn at<'a>(graph: &'a mut Value, pointer: &str) -> Result<&'a mut Value> {
 }
 
 pub fn draft(paths: &Paths, name: &str) -> Result<Value> {
-    let preset: toml::Value = toml::from_str(include_str!("../templates/generic-graph.toml"))?;
+    let preset: toml::Value = toml::from_str(include_str!("../../templates/generic-graph.toml"))?;
     let mut graph = serde_json::to_value(preset)?;
     at(&mut graph, "/robot/id")?.clone_from(&json!(name));
-    let graph_path = paths.v2_node_graph(name).to_string_lossy().into_owned();
+    let graph_path = paths.node_graph_path(name).to_string_lossy().into_owned();
     let eos_socket = paths
         .runtime
         .join(format!("{name}-eos.sock"))
@@ -64,8 +64,18 @@ pub fn draft(paths: &Paths, name: &str) -> Result<Value> {
 }
 
 pub fn init(paths: &Paths, name: &str) -> Result<PathBuf> {
-    let path = paths.v2_node_graph(name);
+    let path = paths.node_graph_path(name);
     if !path.exists() {
+        let obsolete = paths
+            .config
+            .join("deployments")
+            .join(format!("{name}.json"));
+        anyhow::ensure!(
+            !obsolete.exists(),
+            "obsolete component graph {} cannot run; create and review {} with the current node graph format; the old file was left untouched",
+            obsolete.display(),
+            path.display()
+        );
         let bytes = serde_json::to_vec_pretty(&draft(paths, name)?)?;
         crate::config::atomic_write(&path, &bytes)?;
     }
@@ -93,7 +103,7 @@ mod tests {
         let graph = draft(&paths, "robot-a").unwrap();
         assert!(graph.pointer("/cores/eos/layers/process").is_none());
         assert!(graph.pointer("/cores/eos/layers/hardware").is_none());
-        assert_eq!(graph["robot"]["name"], "Aether v2 deployment");
+        assert_eq!(graph["robot"]["name"], "Aether deployment");
     }
 
     #[test]
@@ -119,6 +129,25 @@ mod tests {
         fs::write(&path, "authored").unwrap();
         assert_eq!(init(&paths, "robot-a").unwrap(), path);
         assert_eq!(fs::read_to_string(path).unwrap(), "authored");
+    }
+
+    #[test]
+    fn obsolete_component_graph_is_left_untouched() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        paths.prepare().unwrap();
+        let obsolete = paths.config.join("deployments/robot-a.json");
+        fs::create_dir_all(obsolete.parent().unwrap()).unwrap();
+        fs::write(&obsolete, b"old deployment").unwrap();
+        let error = init(&paths, "robot-a").unwrap_err().to_string();
+        assert!(error.contains("obsolete component graph"));
+        assert!(error.contains("robot-a.nodes.json"));
+        assert_eq!(fs::read(&obsolete).unwrap(), b"old deployment");
+        assert!(!paths.node_graph_path("robot-a").exists());
     }
 
     #[test]

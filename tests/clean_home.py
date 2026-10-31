@@ -185,7 +185,7 @@ def main():
         try:
             def isos_api(path, method="GET", data=None, timeout=30):
                 payload = None if data is None else json.dumps(data).encode()
-                request = Request(f"http://127.0.0.1:{isos_port}/api/isos/v2/{path}",
+                request = Request(f"http://127.0.0.1:{isos_port}/api/isos/v1/{path}",
                                   data=payload, method=method,
                                   headers={"Origin": f"http://127.0.0.1:{isos_port}",
                                            "Content-Type": "application/json"})
@@ -223,14 +223,14 @@ def main():
             print("ISOS static IsosUI bundle and API split: PASS")
             assert isos_api("backends")["backends"][0]["scenes"] == ["default", "navigation"]
             assert isos_api("setup-status")["ready"]
-            assert isos_api("node-graph/validate", "POST", {"schema_version": 2, "graph": document["graph"]})["valid"]
+            assert isos_api("node-graph/validate", "POST", {"schema_version": 1, "graph": document["graph"]})["valid"]
             try:
-                isos_api("node-graph", "PUT", {"schema_version": 2, "revision": "stale", "graph": document["graph"]})
+                isos_api("node-graph", "PUT", {"schema_version": 1, "revision": "stale", "graph": document["graph"]})
             except HTTPError as error:
                 assert error.code == 409
             else:
                 raise AssertionError("stale graph revision was accepted")
-            applied = isos_api("node-graph", "PUT", {"schema_version": 2, "revision": saved_hash, "graph": document["graph"]})
+            applied = isos_api("node-graph", "PUT", {"schema_version": 1, "revision": saved_hash, "graph": document["graph"]})
             saved_hash = applied["revision"]
             assert hashlib.sha256(graph_path.read_bytes()).hexdigest() == saved_hash
             print("ISOS GRAPH UI API validation, revision conflict, and apply: PASS")
@@ -259,7 +259,7 @@ def main():
             for _ in range(4):
                 start = time.perf_counter()
                 try:
-                    result = isos_api("process-control", "POST", {"schema_version": 2, "operation": "restart"})
+                    result = isos_api("process-control", "POST", {"schema_version": 1, "operation": "restart"})
                 except HTTPError as error:
                     raise AssertionError(f"restart HTTP {error.code}: {error.read().decode()}") from error
                 assert result["started"][0] == "eos"
@@ -332,7 +332,7 @@ def main():
             original_runtime = runtime.read_bytes()
             runtime.write_bytes(original_runtime + b"x")
             try:
-                isos_api("process-control", "POST", {"schema_version": 2, "operation": "run"})
+                isos_api("process-control", "POST", {"schema_version": 1, "operation": "run"})
                 raise AssertionError("changed EOS runtime was accepted")
             except HTTPError as error:
                 assert error.code == 422
@@ -345,10 +345,10 @@ def main():
             with urlopen(f"http://127.0.0.1:{ui_port}/en/isos", timeout=2) as response:
                 assert b"<html" in response.read().lower()
             print("FAILURE changed EOS binary returned API 422 without degraded startup: PASS")
-            api_run = isos_api("process-control", "POST", {"schema_version": 2, "operation": "run", "revision": saved_hash})
+            api_run = isos_api("process-control", "POST", {"schema_version": 1, "operation": "run", "revision": saved_hash})
             assert api_run["started"][0] == "eos"
             try:
-                isos_api("process-control", "POST", {"schema_version": 2, "operation": "restart", "revision": "stale"})
+                isos_api("process-control", "POST", {"schema_version": 1, "operation": "restart", "revision": "stale"})
                 raise AssertionError("stale revision restart was accepted")
             except HTTPError as error:
                 assert error.code == 422
@@ -362,7 +362,7 @@ def main():
             assert isinstance(isos_api("logs?source=ui&limit=5")["lines"], list)
             mujoco_lines = isos_api("logs?source=mujoco&limit=5")["lines"]
             assert any("mock mujoco ready" in line["message"] for line in mujoco_lines)
-            assert isos_api("process-control", "POST", {"schema_version": 2, "operation": "stop"})["stopped"][-1] == "eos"
+            assert isos_api("process-control", "POST", {"schema_version": 1, "operation": "stop"})["stopped"][-1] == "eos"
             print("ISOS HTTP Home, graph validation, process control, status, and logs: PASS")
             missing.write_text('<mujoco><mesh file="gone.stl"/></mujoco>')
             assert run("run", env=env, expect=False).returncode != 0
@@ -370,7 +370,7 @@ def main():
             assert "gone.stl" in failed_status["last_error"]
             missing.write_text("<mujoco/>")
             print("FAILURE missing linked asset blocked run and recorded last_error: PASS")
-            assert isos_api("process-control", "POST", {"schema_version": 2, "operation": "run"})["started"][0] == "eos"
+            assert isos_api("process-control", "POST", {"schema_version": 1, "operation": "run"})["started"][0] == "eos"
             shutdown_pids = [process["pid"] for process in isos_api("process-status")["processes"]]
             print("BENCH fixed workload: 5 process starts/restarts; 200 HTTP→EOS socket time requests")
             print(f"BENCH startup median_ms={statistics.median(startups):.3f} p99_ms={percentile(startups,.99):.3f}")

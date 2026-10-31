@@ -64,3 +64,13 @@ Rust 测试通过 77 个单元测试和五个 CLI 测试。桩仿真路线覆盖
 ## 统一日志与源码布局（2026-10-31）
 
 [源码布局](source-layout_cn.md) 现在将 CLI 命令、管理器协议和前台生命周期分开。内部模块、模板及测试文件按职责命名。旧进程日志 HTTP 路由已删除；统一 `logs` 路由默认使用 `[logging].default_source = "all"`。`max_bytes = 262144`、`backups = 2` 和 `max_sources = 32` 限制新增日志文件；超出来源文件上限的事件仍可从统一流读取。`cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test`、`cargo build`、`python3 tests/clean_home.py` 和 `python3 tests/service_manager.py` 均通过。完整输出位于忽略 Git 的 `logs/test/20261031-unified-logging-layout/`。
+
+## 单一运行时与首次公开契约验证（2026-10-31）
+
+IsOS 使用 `1.0.0` 图、`/api/isos/v1`、setup schema 1 和唯一的直接子进程管理器。EOS、EGIA 报告产品／图／setup v1；MuJoCo 包、EOS HTTP 控制接口和仿真器套接字保留各自独立的 v2 契约。已移除的 CLI／API 路由返回命令错误或 HTTP 404；旧图文件保留原样并给出转换指引。
+
+本地复现使用 `ISOS_BIN=target/debug/isos`、`AETHER_BIN_DIR=../Island-eos/target/debug`、`ISOSUI_DIST_DIR=../IsosUI/dist/local` 和暂存的 `island/mujoco-sim@2.0.0` 包。结果保存在忽略 Git 的 `logs/test/20261031-single-runtime-v1/`：
+
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test`、`cargo build`、`python3 tests/test_install_user_service.py` 和 `python3 tests/service_manager.py` 均通过。
+- `python3 tests/clean_home.py` 通过隔离的 Apply／Run／Restart／Stop、修订和软件包检查、HTTP 状态和日志、失败恢复及子进程清理。固定的五次启动和 200 次请求负载测得启动中位数 5845.438 毫秒、p99 5888.129 毫秒；HTTP 到 EOS 套接字中位数 10.165 毫秒、p99 10.544 毫秒、吞吐量 98.3 次／秒。
+- `python3 tests/real_home.py` 通过真实 MuJoCo、显式请求的 GUI、Vision 取帧和来源切换、底盘和机械臂命令、重启、日志及子进程清理。本次启动为 6743.194 毫秒；20 帧取样的中位数为 374.239 毫秒、p99 400.717 毫秒、吞吐量 2.7 帧／秒。这些数值是本机基线，不是验收阈值。

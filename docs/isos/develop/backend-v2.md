@@ -64,3 +64,13 @@ The saved MuJoCo graph was reapplied with `isos config apply` after the current 
 ## Unified logging and source layout (2026-10-31)
 
 The [source layout](source-layout.md) now separates CLI commands, manager protocol, and foreground lifecycle. Internal module, template, and test harness filenames use descriptive names. The legacy process-log HTTP route has been removed; the unified `logs` route defaults to `[logging].default_source = "all"`. `max_bytes = 262144`, `backups = 2`, and `max_sources = 32` limit new log files; a source beyond that count remains available through the unified stream. `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `cargo build`, `python3 tests/clean_home.py`, and `python3 tests/service_manager.py` passed. Complete output is in ignored `logs/test/20261031-unified-logging-layout/`.
+
+## Single-runtime and first-public-contract verification (2026-10-31)
+
+IsOS uses the `1.0.0` graph, `/api/isos/v1`, setup schema 1, and one direct-child manager. EOS and EGIA report product/graph/setup v1; the MuJoCo package, EOS HTTP control API, and simulator socket retain their independent v2 contracts. The removed CLI/API routes return command errors or HTTP 404, and obsolete graph files are left in place with conversion guidance.
+
+The reproducible local checks used `ISOS_BIN=target/debug/isos`, `AETHER_BIN_DIR=../Island-eos/target/debug`, `ISOSUI_DIST_DIR=../IsosUI/dist/local`, and the staged `island/mujoco-sim@2.0.0` bundle. Results are in ignored `logs/test/20261031-single-runtime-v1/`:
+
+- `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `cargo build`, `python3 tests/test_install_user_service.py`, and `python3 tests/service_manager.py` passed.
+- `python3 tests/clean_home.py` passed the isolated Apply/Run/Restart/Stop flow, revision and package checks, HTTP status/logs, failure recovery, and child shutdown. The fixed five-start and 200-request workload measured startup median 5845.438 ms, p99 5888.129 ms; HTTP-to-EOS socket median 10.165 ms, p99 10.544 ms, throughput 98.3 requests/s.
+- `python3 tests/real_home.py` passed the real MuJoCo route, explicitly requested GUI, vision gate capture and source switching, base and arm dispatch, restart, logs, and child shutdown. In this run, startup was 6743.194 ms and 20 captures measured median 374.239 ms, p99 400.717 ms, throughput 2.7 frames/s. These numbers are local baselines, not acceptance thresholds.

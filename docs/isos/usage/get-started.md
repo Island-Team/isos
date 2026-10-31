@@ -22,6 +22,6 @@ isos run
 
 `run`, `start`, and `restart` stay attached. Ctrl+C stops the deployment. In another terminal, `isos status --json` shows the manager and active revision; `isos version check` reports configured build, graph, and running readiness. `isos deployment stop` stops only the graph, while `isos stop` also stops services, UI, API, and manager. Repeated stops succeed.
 
-Run rechecks the exact graph revision, configured executables, package, scene, and assets. EOS starts and owns its MuJoCo child. Installing a package, changing a configured build path, or editing a draft does not alter an active deployment; apply the change and restart explicitly. See [package commands](packages.md), [graph fields](../interfaces/node-graph-v2.md), and the [independent services contract](../interfaces/services.md).
+Run rechecks the exact graph revision, configured executables, package, scene, and assets. EOS starts and owns its MuJoCo child. Installing a package, changing a configured build path, or editing a draft does not alter an active deployment; apply the change and restart explicitly. See [package commands](packages.md), [graph fields](../interfaces/node-graph-v1.md), and the [independent services contract](../interfaces/services.md).
 
 If new children fail during a restart, IsOS stops that attempt and restarts the previous process specifications under the previous active revision. If the previous children cannot be restored, status reports a degraded deployment and the restart error.

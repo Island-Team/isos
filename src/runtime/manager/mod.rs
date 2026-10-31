@@ -1,18 +1,33 @@
-use super::*;
+use crate::foreground::INTERRUPTED;
+use crate::{config, core_setup, http, log_store, preflight, process, services, starter};
+use anyhow::{Context, Result, bail, ensure};
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use std::{
+    collections::BTreeMap,
+    fs,
+    io::{BufRead, BufReader, Read, Write},
+    os::unix::{
+        fs::PermissionsExt,
+        net::{UnixListener, UnixStream},
+    },
+    sync::atomic::Ordering,
+    time::Duration,
+};
 
 mod protocol;
 use protocol::*;
 
-pub(crate) struct V2Deployment {
+pub(crate) struct ActiveDeployment {
     active_revision: String,
     supervisor: process::Supervisor,
     last_error: Option<String>,
 }
-pub(crate) type V2Supervisors = BTreeMap<String, V2Deployment>;
+pub(crate) type Deployments = BTreeMap<String, ActiveDeployment>;
 
 pub(crate) fn restart_processes(
     paths: &config::Paths,
-    managers: &mut V2Supervisors,
+    managers: &mut Deployments,
     name: &str,
     revision: &str,
     specs: &[process::ProcessSpec],
@@ -68,7 +83,7 @@ pub(crate) fn restart_processes(
     };
     managers.insert(
         name.to_owned(),
-        V2Deployment {
+        ActiveDeployment {
             active_revision: revision.to_owned(),
             supervisor,
             last_error: None,
@@ -95,8 +110,8 @@ pub(crate) fn manager_identity(paths: &config::Paths) -> Result<Value> {
         "executable": executable,
         "executable_sha256": hex::encode(Sha256::digest(fs::read(executable)?)),
         "isos_version": env!("CARGO_PKG_VERSION"),
-        "api_schema_version": 2,
-        "service_contract_version": "2.0.0",
+        "api_schema_version": 1,
+        "service_contract_version": "1.0.0",
         "api_origin": http::local_origin(),
         "ui_url": http::ui_url()?,
     }))
@@ -104,7 +119,7 @@ pub(crate) fn manager_identity(paths: &config::Paths) -> Result<Value> {
 
 pub(crate) fn api_call(
     paths: &config::Paths,
-    managers: &mut V2Supervisors,
+    managers: &mut Deployments,
     service_manager: &mut services::ServiceManager,
     request: ApiRequest,
 ) -> Result<Value> {
@@ -117,7 +132,7 @@ pub(crate) fn api_call(
         "role must be eos or egia"
     );
     let name = config::deployment_name(request.deployment);
-    if request.op.starts_with("v2_") {
+    if request.op.starts_with("deployment_") {
         process::validate_deployment_name(&name)?;
     }
     match request.op.as_str() {
@@ -191,15 +206,15 @@ pub(crate) fn api_call(
             request.cursor.as_deref(),
             request.limit.unwrap_or(100),
         ),
-        "v2_active_packages" => {
+        "deployment_active_packages" => {
             let packages: Vec<_> = managers
                 .values()
                 .flat_map(|active| active.supervisor.active_packages())
                 .collect();
             Ok(json!({"packages":packages}))
         }
-        "v2_restart" => {
-            let path = paths.v2_node_graph(&name);
+        "deployment_restart" => {
+            let path = paths.node_graph_path(&name);
             process::validate_full_graph(&path)?;
             let source = fs::read_to_string(&path)?;
             let revision = starter::revision(&path)?;
@@ -211,7 +226,7 @@ pub(crate) fn api_call(
             }
             let specs = process::project_with_packages(paths, &source)?;
             core_setup::verify_launch_inputs(paths, &name)?;
-            build::preflight_processes(paths, &specs)?;
+            preflight::verify_processes(paths, &specs)?;
             core_setup::prepare_run(paths, &name, &revision)?;
             ensure!(
                 starter::revision(&path)? == revision,
@@ -220,8 +235,8 @@ pub(crate) fn api_call(
             let started = restart_processes(paths, managers, &name, &revision, &specs)?;
             Ok(json!({"started":started,"active_revision":revision}))
         }
-        "v2_start" => {
-            let path = paths.v2_node_graph(&name);
+        "deployment_start" => {
+            let path = paths.node_graph_path(&name);
             process::validate_full_graph(&path)?;
             let source = fs::read_to_string(&path)?;
             let revision = starter::revision(&path)?;
@@ -233,7 +248,7 @@ pub(crate) fn api_call(
             }
             let specs = process::project_with_packages(paths, &source)?;
             core_setup::verify_launch_inputs(paths, &name)?;
-            build::preflight_processes(paths, &specs)?;
+            preflight::verify_processes(paths, &specs)?;
             core_setup::prepare_run(paths, &name, &revision)?;
             ensure!(
                 starter::revision(&path)? == revision,
@@ -242,14 +257,14 @@ pub(crate) fn api_call(
             let manager = if let Some(active) = managers.get_mut(&name) {
                 ensure!(
                     active.active_revision == revision,
-                    "v2 graph changed while running; stop before restart"
+                    "saved graph changed while running; stop before restart"
                 );
                 active.supervisor.verify_specs(&specs)?;
                 &mut active.supervisor
             } else {
                 managers.insert(
                     name.clone(),
-                    V2Deployment {
+                    ActiveDeployment {
                         active_revision: revision.clone(),
                         supervisor: process::Supervisor::new(paths, &name)?,
                         last_error: None,
@@ -280,15 +295,15 @@ pub(crate) fn api_call(
             }
             Ok(json!({"started":started,"active_revision":revision}))
         }
-        "v2_stop" => {
+        "deployment_stop" => {
             let stopped = managers
                 .remove(&name)
                 .map_or_else(Vec::new, |mut active| active.supervisor.stop());
             Ok(json!({"stopped": stopped}))
         }
-        "v2_status" => {
-            let saved_revision = starter::revision(&paths.v2_node_graph(&name)).ok();
-            let pinned_package = fs::read(paths.v2_node_graph(&name)).ok()
+        "deployment_status" => {
+            let saved_revision = starter::revision(&paths.node_graph_path(&name)).ok();
+            let pinned_package = fs::read(paths.node_graph_path(&name)).ok()
                 .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
                 .and_then(|graph| {
                     ["mujoco", "backend"].into_iter().find_map(|group| {
@@ -327,28 +342,8 @@ pub(crate) fn api_call(
                 "running"
             };
             Ok(
-                json!({"schema_version":"2.0.0","saved_revision":saved_revision,"active_revision":active_revision,"state":state,"last_error":last_error,"package":pinned_package,"processes":processes}),
+                json!({"schema_version":"1.0.0","saved_revision":saved_revision,"active_revision":active_revision,"state":state,"last_error":last_error,"package":pinned_package,"processes":processes}),
             )
-        }
-        "status" => Ok(serde_json::to_value(lifecycle::status(
-            paths,
-            &name,
-            request.role.as_deref(),
-        )?)?),
-        "graph" => Ok(serde_json::to_value(config::load_selected(paths, &name)?)?),
-        "start" => Ok(json!({"started":lifecycle::start(paths,&name,request.role.as_deref())?})),
-        "stop" => Ok(json!({"stopped":lifecycle::stop(paths,&name,request.role.as_deref())?})),
-        "apply" => {
-            let graph = request
-                .graph
-                .ok_or_else(|| anyhow::anyhow!("apply requires graph"))?;
-            ensure!(
-                graph.name == name,
-                "graph name differs from selected deployment"
-            );
-            let _lock = lifecycle::Lock::take(paths)?;
-            config::apply(paths, &graph)?;
-            Ok(json!({"applied":name}))
         }
         _ => bail!("unknown API operation {}", request.op),
     }
@@ -356,7 +351,7 @@ pub(crate) fn api_call(
 
 pub(crate) fn handle_client(
     paths: &config::Paths,
-    managers: &mut V2Supervisors,
+    managers: &mut Deployments,
     service_manager: &mut services::ServiceManager,
     mut stream: UnixStream,
 ) -> Result<()> {
@@ -375,14 +370,19 @@ pub(crate) fn handle_client(
         .as_ref()
         .ok()
         .filter(|request| {
-            request.op.starts_with("v2_")
-                && !matches!(request.op.as_str(), "v2_status" | "v2_active_packages")
+            request.op.starts_with("deployment_")
+                && !matches!(
+                    request.op.as_str(),
+                    "deployment_status" | "deployment_active_packages"
+                )
         })
         .map(|request| config::deployment_name(request.deployment.clone()));
-    let clear_error = request
-        .as_ref()
-        .ok()
-        .is_some_and(|request| matches!(request.op.as_str(), "v2_start" | "v2_restart"));
+    let clear_error = request.as_ref().ok().is_some_and(|request| {
+        matches!(
+            request.op.as_str(),
+            "deployment_start" | "deployment_restart"
+        )
+    });
     let outcome = request
         .map_err(anyhow::Error::from)
         .and_then(|request| api_call(paths, managers, service_manager, request));
@@ -447,7 +447,7 @@ pub(crate) fn daemon(
     deployment: &str,
     listener: UnixListener,
 ) -> Result<()> {
-    let mut managers = V2Supervisors::new();
+    let mut managers = Deployments::new();
     let mut service_manager = services::ServiceManager::new(paths, deployment)?;
     println!("IsOS API listening on {}", paths.socket().display());
     while !INTERRUPTED.load(Ordering::SeqCst) {
@@ -456,9 +456,9 @@ pub(crate) fn daemon(
                 active.last_error = Some(error.to_string());
                 tracing::error!(
                     event_code = "deployment_supervisor_failed",
-                    "v2 process supervisor: {error:#}"
+                    "process supervisor: {error:#}"
                 );
-                eprintln!("v2 process supervisor: {error:#}");
+                eprintln!("process supervisor: {error:#}");
             }
         }
         if let Err(error) = service_manager.poll() {
@@ -501,25 +501,11 @@ pub(crate) fn daemon(
     Ok(())
 }
 
-pub(crate) fn v2_call(paths: &config::Paths, name: &str, op: &str) -> Result<Value> {
-    v2_call_revision(paths, name, op, None)
+pub(crate) fn manager_call(paths: &config::Paths, name: &str, op: &str) -> Result<Value> {
+    manager_call_revision(paths, name, op, None)
 }
 
-pub(crate) fn stop_legacy_server() -> Result<bool> {
-    let active = Command::new("systemctl")
-        .args(["--user", "is-active", "--quiet", "isos-server.service"])
-        .status();
-    if !active.is_ok_and(|status| status.success()) {
-        return Ok(false);
-    }
-    let stopped = Command::new("systemctl")
-        .args(["--user", "stop", "isos-server.service"])
-        .status()?;
-    ensure!(stopped.success(), "failed to stop legacy IsOS server");
-    Ok(true)
-}
-
-pub(crate) fn v2_call_revision(
+pub(crate) fn manager_call_revision(
     paths: &config::Paths,
     name: &str,
     op: &str,
@@ -527,7 +513,7 @@ pub(crate) fn v2_call_revision(
 ) -> Result<Value> {
     if matches!(
         op,
-        "v2_start" | "v2_restart" | "services_start" | "services_restart"
+        "deployment_start" | "deployment_restart" | "services_start" | "services_restart"
     ) {
         check_manager_binary(paths, name)?;
     }
@@ -536,7 +522,6 @@ pub(crate) fn v2_call_revision(
         op: op.to_owned(),
         deployment: Some(name.to_owned()),
         role: None,
-        graph: None,
         revision,
         service_id: None,
         cursor: None,
@@ -564,7 +549,7 @@ pub(crate) fn manager_request(paths: &config::Paths, request: ApiRequest) -> Res
 }
 
 pub(crate) fn check_manager_binary(paths: &config::Paths, name: &str) -> Result<()> {
-    let active = v2_call(paths, name, "manager_identity")?;
+    let active = manager_call(paths, name, "manager_identity")?;
     let own = hex::encode(Sha256::digest(fs::read(std::env::current_exe()?)?));
     ensure!(
         active["executable_sha256"] == own,
@@ -590,7 +575,6 @@ pub(crate) fn service_call(
             op: op.to_owned(),
             deployment: Some(name.to_owned()),
             role: None,
-            graph: None,
             revision: None,
             service_id: id,
             cursor: None,
@@ -615,9 +599,9 @@ mod restart_tests {
         fs::create_dir_all(&paths.runtime).unwrap();
         let stale = paths.runtime.join("default.last-error");
         fs::write(&stale, "old setup failure").unwrap();
-        clear_saved_setup_error(&paths, "default").unwrap();
+        crate::cli::clear_saved_setup_error(&paths, "default").unwrap();
         assert!(!stale.exists());
-        clear_saved_setup_error(&paths, "default").unwrap();
+        crate::cli::clear_saved_setup_error(&paths, "default").unwrap();
     }
 
     #[test]
@@ -628,14 +612,13 @@ mod restart_tests {
             data: temp.path().join("data"),
             runtime: temp.path().join("run"),
         };
-        let mut managers = V2Supervisors::new();
+        let mut managers = Deployments::new();
         let mut services = services::ServiceManager::new(&paths, "default").unwrap();
         let make_request = |source: &str| ApiRequest {
             schema_version: 1,
             op: "log_append".into(),
             deployment: Some("default".into()),
             role: None,
-            graph: None,
             revision: None,
             service_id: None,
             cursor: None,
@@ -679,7 +662,7 @@ mod restart_tests {
             package: None,
             fingerprint: None,
         };
-        let mut managers = V2Supervisors::new();
+        let mut managers = Deployments::new();
         restart_processes(&paths, &mut managers, "test", "old", &[spec("/bin/sleep")]).unwrap();
         let error = restart_processes(&paths, &mut managers, "test", "new", &[spec("/bin/false")])
             .unwrap_err();
