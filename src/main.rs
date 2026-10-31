@@ -526,7 +526,19 @@ fn apply_graph_file(
         }
         return Err(error);
     }
+    if let Err(error) = clear_saved_setup_error(paths, name) {
+        eprintln!("saved graph applied, but could not clear prior setup error: {error}");
+    }
     Ok(specs)
+}
+
+pub(crate) fn clear_saved_setup_error(paths: &config::Paths, name: &str) -> Result<()> {
+    let path = paths.runtime.join(format!("{name}.last-error"));
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn install_package(paths: &config::Paths, args: InstallArgs, kind: Option<&str>) -> Result<()> {
@@ -1774,7 +1786,9 @@ fn main_run() -> Result<()> {
                     for core in report["cores"].as_array().into_iter().flatten() {
                         let name = core["core"].as_str().unwrap_or("core");
                         let version = core["version"].as_str().unwrap_or("unknown");
-                        let state = if core["ready"] == true {
+                        let state = if core["enabled"] == false {
+                            "not enabled"
+                        } else if core["ready"] == true {
                             "ready"
                         } else {
                             "blocked"
@@ -2012,6 +2026,22 @@ fn main() {
 #[cfg(test)]
 mod restart_tests {
     use super::*;
+
+    #[test]
+    fn successful_graph_apply_clears_previous_setup_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = config::Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        fs::create_dir_all(&paths.runtime).unwrap();
+        let stale = paths.runtime.join("default.last-error");
+        fs::write(&stale, "old setup failure").unwrap();
+        clear_saved_setup_error(&paths, "default").unwrap();
+        assert!(!stale.exists());
+        clear_saved_setup_error(&paths, "default").unwrap();
+    }
 
     #[test]
     fn external_log_operation_records_selected_event_and_rejects_reserved_source() {

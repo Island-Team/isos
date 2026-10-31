@@ -316,6 +316,9 @@ async fn apply_node_graph(
         }
         return Err(err(StatusCode::INTERNAL_SERVER_ERROR, error));
     }
+    if let Err(error) = crate::clear_saved_setup_error(&app.paths, &app.deployment) {
+        tracing::warn!("saved graph applied, but could not clear prior setup error: {error}");
+    }
     record(&app, "graph", "Applied node graph revision");
     ok(json!({"revision":next_revision,"graph":graph}))
 }
