@@ -4,6 +4,7 @@
 Requires built IsOS and Aether Rust binaries. Uses a protocol stub, not MuJoCo physics.
 """
 import hashlib
+import contextlib
 import importlib.util
 import json
 import math
@@ -61,14 +62,16 @@ def free_port():
 
 
 def main():
-    build_stage = os.environ.get("ISOS_TEST_BUILD_STAGE") == "1"
     for binary in [ISOS, EOS_BIN / "aether-profile", EOS_BIN / "aether-runtime",
                    EOS_BIN / "aether-http-bridge", EOS_BIN / "aether-config-server"]:
         if not binary.is_file():
             raise RuntimeError(f"build first: {binary}")
     version = subprocess.run([str(ISOS), "--version"], text=True, capture_output=True, check=True)
     print(version.stdout.strip(), flush=True)
-    with tempfile.TemporaryDirectory(prefix="isos-v2-clean-") as temp:
+    home_context = (contextlib.nullcontext(tempfile.mkdtemp(prefix="isos-v2-clean-"))
+                    if os.environ.get("ISOS_TEST_KEEP_HOME") else
+                    tempfile.TemporaryDirectory(prefix="isos-v2-clean-"))
+    with home_context as temp:
         root = Path(temp)
         home = root / "home"
         bundle = root / "bundle"
@@ -99,35 +102,27 @@ def main():
         library = root / "mujoco/lib"
         library.mkdir(parents=True)
         (library / "libmujoco.so.3.16.0").write_bytes(b"test-only dependency stub")
-        ui_repo = root / "ui"
-        (ui_repo / "node_modules").mkdir(parents=True)
-        (ui_repo / "en/isos").mkdir(parents=True)
-        (ui_repo / "en/isos/index.html").write_text("<html><body>IsOS test workbench</body></html>")
-        (ui_repo / "package.json").write_text(json.dumps({"name": "isos-ui-stub", "version": "2.0.0", "scripts": {"start": "python3 -m http.server ${ISOSUI_PORT} --bind 127.0.0.1"}}))
+        ui_dist = Path(os.environ.get("ISOSUI_DIST_DIR", str(ROOT.parent / "IsosUI/dist/local")))
+        if not (ui_dist / "index.html").is_file():
+            raise RuntimeError(f"build IsosUI first: {ui_dist}")
+        configured_bins = root / "aether-bin"
+        configured_bins.mkdir()
+        for name in ["aether-profile", "aether-runtime", "aether-http-bridge", "aether-config-server"]:
+            shutil.copy2(EOS_BIN / name, configured_bins / name)
         isos_port = free_port()
         ui_port = free_port()
         env = dict(os.environ, ISOS_HOME=str(home), MUJOCO_ROOT=str(library.parent),
-                   ISOS_HTTP_PORT=str(isos_port), ISOSUI_PORT=str(ui_port), ISOSUI_REPO_PATH=str(ui_repo),
-                   ISOS_AETHER_BIN_DIR=str(EOS_BIN))
+                   ISOS_HTTP_PORT=str(isos_port), ISOSUI_PORT=str(ui_port), ISOSUI_DIST_DIR=str(ui_dist),
+                   ISOS_AETHER_BIN_DIR=str(configured_bins))
         run("pkg", "link", "island/mujoco-sim", "2.0.0", str(bundle), "--manifest", str(manifest), env=env)
         run("init", "--mode", "dev", env=env)
         graph_path = home / "config/deployments/default.nodes.json"
         initial_graph = graph_path.read_bytes()
         run("init", "--mode", "dev", env=env)
         assert graph_path.read_bytes() == initial_graph
-        built = subprocess.run([str(ISOS), "build", "eos"], env=env, text=True,
-                               capture_output=True, timeout=300)
-        print("$ isos build eos\n" + built.stdout.strip(), flush=True)
-        if built.stderr:
-            print(built.stderr.strip(), flush=True)
-        if built.returncode:
-            raise RuntimeError(f"isos build eos exited {built.returncode}")
-        receipts = list((home / "data/builds/eos").glob("*/receipt.json"))
-        assert len(receipts) == 1, receipts
-        staged = json.loads(receipts[0].read_text())
-        run("version", "select", "eos", staged["source_commit"], env=env)
+        run("version", "check", env=env)
         serve_log = (root / "serve.log").open("w+")
-        serve_process = subprocess.Popen([str(ISOS), "serve", "--ui-live"], env=env,
+        serve_process = subprocess.Popen([str(ISOS), "serve"], env=env,
                                          stdout=serve_log, stderr=subprocess.STDOUT, text=True)
         run_process = None
         shutdown_pids = []
@@ -161,10 +156,10 @@ def main():
                           "ISOS_TEST_PARENT_REPORT": str(parent_report)}
         bridge_port, config_port = free_port(), free_port()
         bridge = graph["cores"]["isos"]["layers"]["process"]["groups"]["component"]["nodes"]["bridge"]["settings"]
-        bridge["command"][-1] = f"127.0.0.1:{bridge_port}"
+        bridge["args"][-1] = f"127.0.0.1:{bridge_port}"
         bridge["ready_tcp"] = f"127.0.0.1:{bridge_port}"
         config = graph["cores"]["isos"]["layers"]["process"]["groups"]["component"]["nodes"]["config"]["settings"]
-        config["command"][-1] = f"127.0.0.1:{config_port}"
+        config["args"][-1] = f"127.0.0.1:{config_port}"
         config["ready_tcp"] = f"127.0.0.1:{config_port}"
         graph_path.write_text(json.dumps(graph, indent=2))
         run("config", "validate", str(graph_path), env=env)
@@ -208,16 +203,6 @@ def main():
             else:
                 raise RuntimeError("IsOS HTTP API did not appear")
             assert document["revision"] == saved_hash
-            if build_stage:
-                built = isos_api("build-binaries", "POST", {"schema_version": 2, "target": "eos", "install_deps": False}, timeout=300)
-                receipt = built["receipt"]
-                assert receipt["component"] == "eos" and len(receipt["binaries"]) == 5
-                assert isos_api("build-binaries")["selected"]["sha256"] == receipt["sha256"]
-                assert built["suggested_graph"]["revision"] == saved_hash
-                for node, binary in [("eos", "aether-runtime"), ("bridge", "aether-http-bridge"), ("config", "aether-config-server")]:
-                    command = graph["cores"]["isos"]["layers"]["process"]["groups"]["component"]["nodes"][node]["settings"]["command"]
-                    assert command[0] == receipt["binaries"][binary]
-                print("BUILD CLI/API staged exact same EOS binary set: PASS", flush=True)
             for _ in range(200):
                 try:
                     with urlopen(f"http://127.0.0.1:{ui_port}/en/isos", timeout=2) as response:
@@ -225,17 +210,17 @@ def main():
                     break
                 except OSError:
                     if serve_process.poll() is not None:
-                        raise RuntimeError("IsOS serve exited before npm frontend was ready")
+                        raise RuntimeError("IsOS serve exited before static IsosUI bundle was ready")
                     time.sleep(0.05)
             else:
-                raise RuntimeError("npm frontend did not become ready")
+                raise RuntimeError("static IsosUI bundle did not become ready")
             try:
                 urlopen(f"http://127.0.0.1:{isos_port}/en/isos", timeout=4)
             except HTTPError as error:
                 assert error.code == 404
             else:
                 raise AssertionError("backend unexpectedly served frontend")
-            print("ISOS npm frontend and API split: PASS")
+            print("ISOS static IsosUI bundle and API split: PASS")
             assert isos_api("backends")["backends"][0]["scenes"] == ["default", "navigation"]
             assert isos_api("setup-status")["ready"]
             assert isos_api("node-graph/validate", "POST", {"schema_version": 2, "graph": document["graph"]})["valid"]
@@ -261,6 +246,11 @@ def main():
                     run_log.flush()
                     logs_dir = home / "data/logs/default"
                     child_logs = {path.name: path.read_text() for path in logs_dir.glob("*.log")}
+                    print("Config args:", json.loads(graph_path.read_text())["cores"]["isos"]["layers"]["process"]["groups"]["component"]["nodes"]["config"]["settings"], flush=True)
+                    diagnostic = ROOT / "logs/test/20261031-configured-core-final/failed-mock"
+                    diagnostic.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(graph_path, diagnostic / "graph.json")
+                    shutil.copy2(home / "data/packages/island/mujoco-sim/2.0.0/node-types.json", diagnostic / "node-types.json")
                     raise RuntimeError(f"isos run exited {run_process.returncode}: {(root / 'run.log').read_text()}\nchild logs: {child_logs}")
                 time.sleep(0.05)
             else:
@@ -338,28 +328,25 @@ def main():
             assert json.loads(run("status", "--json", env=env).stdout)["state"] == "stopped"
             assert isos_api("process-status")["state"] == "stopped"
             original_graph = graph_path.read_bytes()
-            stale_runtime = root / "stale-aether-runtime"
-            stale_runtime.write_text("#!/bin/sh\necho 'unknown option: --capabilities' >&2\nexit 2\n")
-            stale_runtime.chmod(0o700)
-            stale_graph = json.loads(original_graph)
-            stale_graph["cores"]["isos"]["layers"]["process"]["groups"]["component"]["nodes"]["eos"]["settings"]["command"][0] = str(stale_runtime)
-            graph_path.write_text(json.dumps(stale_graph))
+            runtime = configured_bins / "aether-runtime"
+            original_runtime = runtime.read_bytes()
+            runtime.write_bytes(original_runtime + b"x")
             try:
                 isos_api("process-control", "POST", {"schema_version": 2, "operation": "run"})
-                raise AssertionError("stale EOS runtime was accepted")
+                raise AssertionError("changed EOS runtime was accepted")
             except HTTPError as error:
                 assert error.code == 422
                 failure = json.load(error)
-                assert ("capabilities" in failure["error"] and "isos build eos" in failure["error"]) or "staged Rust v2 build" in failure["error"]
+                assert "changed since graph Apply" in failure["error"]
+            runtime.write_bytes(original_runtime)
             assert isos_api("process-status")["state"] == "stopped"
-            graph_path.write_bytes(original_graph)
-            print("FAILURE stale EOS binary returned API 422 without degraded startup: PASS")
+            print("FAILURE changed EOS binary returned API 422 without degraded startup: PASS")
             api_run = isos_api("process-control", "POST", {"schema_version": 2, "operation": "run", "revision": saved_hash})
             assert api_run["started"][0] == "eos"
             assert isos_api("process-logs/eos?lines=5")["node"] == "eos"
             categorized = isos_api("logs?source=eos&limit=5")
             assert isinstance(categorized["lines"], list) and isinstance(categorized["next_cursor"], str)
-            assert isos_api("logs?source=ui&limit=5")["lines"]
+            assert isinstance(isos_api("logs?source=ui&limit=5")["lines"], list)
             mujoco_lines = isos_api("logs?source=mujoco&limit=5")["lines"]
             assert any("mock mujoco ready" in line["message"] for line in mujoco_lines)
             assert isos_api("process-control", "POST", {"schema_version": 2, "operation": "stop"})["stopped"][-1] == "eos"
@@ -408,7 +395,7 @@ def main():
             with socket.socket() as probe:
                 probe.settimeout(0.2)
                 assert probe.connect_ex(("127.0.0.1", ui_port)) != 0
-            print("ISOS SERVE Ctrl+C stopped API and npm frontend: PASS")
+            print("ISOS SERVE Ctrl+C stopped API and static IsosUI bundle: PASS")
 
 
 if __name__ == "__main__":

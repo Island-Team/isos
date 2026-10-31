@@ -31,7 +31,17 @@ pub struct Release {
     pub activation: Option<Activation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_contributions: Option<NodeContributions>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub adapters: Vec<AdapterLibrary>,
     pub assets: Vec<Asset>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdapterLibrary {
+    pub family: String,
+    pub library: String,
+    pub sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -222,6 +232,31 @@ impl Release {
             !self.assets.is_empty(),
             "release requires at least one asset"
         );
+        let mut adapter_families = std::collections::BTreeSet::new();
+        for adapter in &self.adapters {
+            ensure!(
+                self.kind == "backend",
+                "adapter libraries require a backend release"
+            );
+            ensure!(
+                !adapter.family.is_empty() && adapter_families.insert(&adapter.family),
+                "duplicate or empty adapter family"
+            );
+            ensure!(
+                adapter.library.ends_with(".so")
+                    && !adapter.library.starts_with('/')
+                    && adapter
+                        .library
+                        .split('/')
+                        .all(|part| !matches!(part, "" | "." | "..")),
+                "adapter library must be a safe package-relative .so path"
+            );
+            ensure!(
+                adapter.sha256.len() == 64
+                    && adapter.sha256.bytes().all(|byte| byte.is_ascii_hexdigit()),
+                "adapter library sha256 must be 64 hex characters"
+            );
+        }
         if let Some(activation) = &self.activation {
             ensure!(!activation.files.is_empty(), "activation requires files");
             let mut destinations = std::collections::BTreeSet::new();
@@ -568,6 +603,22 @@ pub fn verify_file(asset: &Asset, path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adapter_only_backend_metadata_is_valid_and_rejects_unsafe_libraries() {
+        let mut release: Release = serde_json::from_value(serde_json::json!({
+            "schema_version": 4, "id": "vendor/devices", "kind": "backend", "version": "2.0.0",
+            "source_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "adapters": [{"family": "vendor-base", "library": "lib/base.so", "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}],
+            "assets": [{"os": "linux", "arch": "x86_64", "url": "https://github.com/vendor/devices/releases/download/v2.0.0/devices.tar.gz", "size_bytes": 1, "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}]
+        })).unwrap();
+        release.validate().unwrap();
+        release.adapters[0].library = "../base.so".into();
+        assert!(release.validate().is_err());
+        release.adapters[0].library = "lib/base.so".into();
+        release.adapters.push(release.adapters[0].clone());
+        assert!(release.validate().is_err());
+    }
 
     #[test]
     fn adapter_family_requires_device_class_and_transport() {

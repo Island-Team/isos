@@ -1,7 +1,7 @@
 use std::process::Command;
 
 #[test]
-fn build_all_rejects_missing_ui_source_before_building_components() {
+fn build_all_reports_owning_repository_without_building_components() {
     let temporary = tempfile::tempdir().unwrap();
     let home = temporary.path().join("isos-home");
     let missing_ui = temporary.path().join("missing-ui");
@@ -14,6 +14,9 @@ fn build_all_rejects_missing_ui_source_before_building_components() {
         .expect("run IsOS CLI");
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.contains("IsosUI source missing"), "{stderr}");
+    assert!(
+        stderr.contains("Build all in its owning repository"),
+        "{stderr}"
+    );
     assert!(!home.join("data/builds").exists());
 }

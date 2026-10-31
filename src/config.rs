@@ -45,7 +45,9 @@ struct ServerConfig {
 #[serde(deny_unknown_fields)]
 struct RuntimePaths {
     ui_repo: Option<PathBuf>,
+    ui_dist: Option<PathBuf>,
     aether_bin_dir: Option<PathBuf>,
+    egia_bin_dir: Option<PathBuf>,
     mujoco_root: Option<PathBuf>,
 }
 
@@ -77,7 +79,9 @@ fn config_values(source: &str, repo_root: &Path) -> Result<BTreeMap<&'static str
     }
     for (path, key) in [
         (config.paths.ui_repo, "ISOSUI_REPO_PATH"),
+        (config.paths.ui_dist, "ISOSUI_DIST_DIR"),
         (config.paths.aether_bin_dir, "ISOS_AETHER_BIN_DIR"),
+        (config.paths.egia_bin_dir, "ISOS_EGIA_BIN_DIR"),
         (config.paths.mujoco_root, "MUJOCO_ROOT"),
     ] {
         if let Some(path) = path {

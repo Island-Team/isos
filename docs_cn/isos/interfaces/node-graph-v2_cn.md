@@ -26,11 +26,13 @@ IsOS 将已验证的可执行文件、场景路径和 MuJoCo 库路径传给 EOS
 
 ## 组件进程节点
 
-路径：`cores/isos/layers/process/groups/component/nodes/<id>`。类型：`isos.process.component@v1.0`。
+路径：`cores/isos/layers/process/groups/component/nodes/<id>`。当前类型：`isos.process.component@v1.1`；已保存的 `@v1.0` 节点在 Apply 时迁移。
 
 | 设置 | Rust 类型 | 单位 | 用途与校验 |
 | --- | --- | --- | --- |
-| `command` | `Vec<String>` | argv | 必填绝对可执行文件及最多 63 个有界参数；不经 shell。IsOS 检查文件存在且可执行。 |
+| `role` | `String` | 核心 ID | 托管的 `isos.process.component@v1.1` 节点必填 `eos` 或 `egia`；选择已配置的核心程序目录。 |
+| `args` | `Vec<String>` | argv 参数 | 传给 `role` 确定的程序；最多 63 个有界字符串，不经 shell，也不包含程序路径。 |
+| `command` | `Vec<String>` | argv | 仅旧版 `@v1.0` 使用；第一项为绝对可执行文件。使用已配置构建前应迁移为 `role` 和 `args`。 |
 | `cwd` | `Option<PathBuf>` | 路径 | 可选绝对工作目录。 |
 | `env` | `BTreeMap<String,String>` | 环境变量 | 可选；键仅允许 ASCII 字母、数字或 `_`，值不得含 NUL。 |
 | `ready_tcp` | `Option<String>` | host:port | TCP 就绪探针，与 `ready_unix` 互斥。 |

@@ -1,6 +1,6 @@
 //! Create the editable shared graph from the generic v2 preset.
 
-use crate::{config::Paths, v2_bins};
+use crate::config::Paths;
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::{
@@ -31,8 +31,7 @@ pub fn draft(paths: &Paths, name: &str) -> Result<Value> {
         .to_string_lossy()
         .into_owned();
     let eos = "/cores/isos/layers/process/groups/component/nodes/eos/settings";
-    at(&mut graph, &format!("{eos}/command"))?.clone_from(&json!([
-        v2_bins::draft_path("aether-runtime"),
+    at(&mut graph, &format!("{eos}/args"))?.clone_from(&json!([
         "--profile",
         graph_path,
         "--journal-dir",
@@ -43,10 +42,9 @@ pub fn draft(paths: &Paths, name: &str) -> Result<Value> {
     at(&mut graph, &format!("{eos}/ready_unix"))?.clone_from(&json!(eos_socket));
     at(
         &mut graph,
-        "/cores/isos/layers/process/groups/component/nodes/bridge/settings/command",
+        "/cores/isos/layers/process/groups/component/nodes/bridge/settings/args",
     )?
     .clone_from(&json!([
-        v2_bins::draft_path("aether-http-bridge"),
         "--socket",
         eos_socket,
         "--listen",
@@ -54,10 +52,9 @@ pub fn draft(paths: &Paths, name: &str) -> Result<Value> {
     ]));
     at(
         &mut graph,
-        "/cores/isos/layers/process/groups/component/nodes/config/settings/command",
+        "/cores/isos/layers/process/groups/component/nodes/config/settings/args",
     )?
     .clone_from(&json!([
-        v2_bins::draft_path("aether-config-server"),
         "--profile",
         graph_path,
         "--listen",

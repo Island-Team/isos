@@ -8,6 +8,7 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     fs,
     io::{Read, Write},
@@ -51,6 +52,89 @@ pub fn package_path(paths: &Paths, id: &str, version: &str) -> Result<PathBuf> {
         .join(namespace)
         .join(name)
         .join(version))
+}
+
+/// Check every adapter payload against its release metadata before accepting a package.
+pub fn verify_declared_adapter_libraries(root: &Path, release: &Release) -> Result<()> {
+    let root = root
+        .canonicalize()
+        .with_context(|| format!("package root {} is missing", root.display()))?;
+    ensure!(root.is_dir(), "adapter package root must be a directory");
+    for adapter in &release.adapters {
+        verify_adapter_file(&root, &adapter.library, &adapter.sha256).with_context(|| {
+            format!(
+                "adapter {} in {}@{}",
+                adapter.family, release.id, release.version
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn verify_adapter_file(
+    root: &Path,
+    library: &str,
+    expected_sha256: &str,
+) -> Result<(PathBuf, String)> {
+    let path = root
+        .join(library)
+        .canonicalize()
+        .with_context(|| format!("adapter library {library} is missing"))?;
+    ensure!(
+        path.starts_with(root) && path.is_file(),
+        "adapter library escapes package or is not a file"
+    );
+    let metadata = fs::metadata(&path)?;
+    ensure!(
+        metadata.len() <= 64 * 1024 * 1024,
+        "adapter library exceeds 64 MiB"
+    );
+    let mut file = fs::File::open(&path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 1024 * 1024];
+    loop {
+        let size = file.read(&mut buffer)?;
+        if size == 0 {
+            break;
+        }
+        hasher.update(&buffer[..size]);
+    }
+    let actual = hex::encode(hasher.finalize());
+    ensure!(
+        actual.eq_ignore_ascii_case(expected_sha256),
+        "adapter library SHA-256 mismatch"
+    );
+    Ok((path, actual))
+}
+
+pub fn verified_adapter_library(
+    paths: &Paths,
+    id: &str,
+    version: &str,
+    family: &str,
+) -> Result<(PathBuf, String)> {
+    let installed = package_path(paths, id, version)?;
+    let receipt: Receipt = serde_json::from_slice(&fs::read(installed.join("receipt.json"))?)?;
+    ensure!(
+        receipt.id == id && receipt.version == version,
+        "adapter package identity mismatch"
+    );
+    let release = read_manifest(&installed.join("release.json"))?;
+    ensure!(
+        release.id == id && release.version == version,
+        "adapter release identity mismatch"
+    );
+    let adapter = release
+        .adapters
+        .iter()
+        .find(|adapter| adapter.family == family)
+        .with_context(|| format!("package {id}@{version} has no {family} adapter library"))?;
+    let root = receipt
+        .local_link
+        .as_deref()
+        .unwrap_or(&installed)
+        .canonicalize()?;
+    verify_adapter_file(&root, &adapter.library, &adapter.sha256)
 }
 
 fn curl(url: &str, output: Option<&Path>) -> Result<Vec<u8>> {
@@ -191,6 +275,7 @@ pub fn install(
         let payload = staging.join("payload");
         fs::create_dir(&payload)?;
         unpack_archive(&archive, &payload)?;
+        verify_declared_adapter_libraries(&payload, release)?;
         fs::remove_file(&archive)?;
         let receipt = Receipt {
             schema_version: 1,
@@ -259,6 +344,9 @@ pub fn link_with_manifest(
         .canonicalize()
         .with_context(|| format!("source {} is missing", source.display()))?;
     ensure!(source.is_dir(), "linked source must be a directory");
+    if let Some(release) = &release {
+        verify_declared_adapter_libraries(&source, release)?;
+    }
     let target = package_path(paths, id, version)?;
     ensure!(!target.exists(), "package version is already installed");
     fs::create_dir_all(&target)?;
@@ -733,5 +821,86 @@ mod upload_tests {
                 .contains("refusing overwrite")
         );
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod adapter_library_tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    fn release(hash: &str) -> Release {
+        serde_json::from_value(serde_json::json!({
+            "schema_version": 4, "id": "vendor/devices", "kind": "backend", "version": "2.0.0",
+            "source_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "adapters": [{"family": "vendor-base", "library": "lib/base.so", "sha256": hash}],
+            "assets": [{"os": "linux", "arch": "x86_64", "url": "https://github.com/vendor/devices/releases/download/v2.0.0/devices.tar.gz", "size_bytes": 1, "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]
+        })).unwrap()
+    }
+
+    #[test]
+    fn link_verifies_adapter_library_before_writing_receipt() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        fs::create_dir_all(source.join("lib")).unwrap();
+        fs::write(source.join("lib/base.so"), b"adapter-v1").unwrap();
+        let hash = hex::encode(Sha256::digest(b"adapter-v1"));
+        let release = release(&hash);
+        fs::write(
+            source.join("release.json"),
+            serde_json::to_vec(&release).unwrap(),
+        )
+        .unwrap();
+        let paths = Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("runtime"),
+        };
+        let target = link_with_manifest(&paths, "vendor/devices", "2.0.0", &source, None).unwrap();
+        assert!(target.join("receipt.json").is_file());
+        let (path, actual) =
+            verified_adapter_library(&paths, "vendor/devices", "2.0.0", "vendor-base").unwrap();
+        assert_eq!(path, source.join("lib/base.so"));
+        assert_eq!(actual, hash);
+        fs::write(source.join("lib/base.so"), b"changed").unwrap();
+        assert!(
+            verified_adapter_library(&paths, "vendor/devices", "2.0.0", "vendor-base").is_err()
+        );
+    }
+
+    #[test]
+    fn link_rejects_missing_changed_and_escaped_libraries() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        fs::create_dir_all(source.join("lib")).unwrap();
+        let hash = hex::encode(Sha256::digest(b"adapter-v1"));
+        let release = release(&hash);
+        fs::write(
+            source.join("release.json"),
+            serde_json::to_vec(&release).unwrap(),
+        )
+        .unwrap();
+        let paths = Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("runtime"),
+        };
+        assert!(link_with_manifest(&paths, "vendor/devices", "2.0.0", &source, None).is_err());
+        assert!(
+            !package_path(&paths, "vendor/devices", "2.0.0")
+                .unwrap()
+                .exists()
+        );
+        fs::write(source.join("lib/base.so"), b"wrong").unwrap();
+        assert!(link_with_manifest(&paths, "vendor/devices", "2.0.0", &source, None).is_err());
+        fs::remove_file(source.join("lib/base.so")).unwrap();
+        fs::write(temp.path().join("outside.so"), b"adapter-v1").unwrap();
+        symlink(temp.path().join("outside.so"), source.join("lib/base.so")).unwrap();
+        assert!(link_with_manifest(&paths, "vendor/devices", "2.0.0", &source, None).is_err());
+        assert!(
+            !package_path(&paths, "vendor/devices", "2.0.0")
+                .unwrap()
+                .exists()
+        );
     }
 }
