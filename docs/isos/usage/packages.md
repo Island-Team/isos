@@ -18,4 +18,4 @@ isos run
 
 For a release archive, `isos pkg verify <manifest> <asset>` checks the platform, size, and SHA-256. `isos pkg install --manifest <manifest> --asset <asset> --allow-unapproved` installs a local candidate. An approved catalog version can be installed with `isos pkg install island/mujoco-sim --version 0.1.1` after publication. `isos pkg list` shows installed versions. Apply and Run revalidate linked content, executable, selected scene and referenced assets, device IDs, and `MUJOCO_ROOT`. `isos pkg remove island/mujoco-sim 0.1.1` rejects a version referenced by an applied or active graph.
 
-See [backend design](../design/backend-v2.md) and [release metadata](../interfaces/releases.md).
+See [backend design](../design/backend.md) and [release metadata](../interfaces/releases.md).

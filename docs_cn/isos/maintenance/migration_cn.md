@@ -2,7 +2,7 @@
 
 [English](../../../docs/isos/maintenance/migration.md)
 
-IsOS 只运行位于 `deployments/<name>.nodes.json` 的[保存节点图](../interfaces/node-graph-v1_cn.md)。旧 `<name>.json` 组件图、构建收据和版本选择不会导入或执行。IsOS 保留这些文件，并提示所需的当前图路径。没有 `isos config migrate` 命令。
+IsOS 只运行位于 `deployments/<name>.nodes.json` 的[保存节点图](../interfaces/node-graph_cn.md)。旧 `<name>.json` 组件图、构建收据和版本选择不会导入或执行。IsOS 保留这些文件，并提示所需的当前图路径。没有 `isos config migrate` 命令。
 
 1. 备份旧图、stack 和核心配置。若 `isos-server.service` 仍在运行，执行 `systemctl --user stop isos-server.service`。
 2. 运行 `isos init` 前，把旧 `<name>.json` 或版本为 `2.0.0` 的 `.nodes.json` 图手动移到备份路径；也可直接编写新的 `1.0.0` 图。只有目标图不存在时，`isos init` 才创建 v1 起始图。检查每个节点、软件包引用与连接；不会自动转换旧图。

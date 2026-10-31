@@ -2,7 +2,7 @@
 
 [中文](../../../docs_cn/isos/maintenance/migration_cn.md)
 
-IsOS runs only the [saved node graph](../interfaces/node-graph-v1.md) at `deployments/<name>.nodes.json`. Old `<name>.json` component graphs, build receipts, and pinned versions are not imported or executed. IsOS leaves those files untouched and reports the required current graph path. There is no `isos config migrate` command.
+IsOS runs only the [saved node graph](../interfaces/node-graph.md) at `deployments/<name>.nodes.json`. Old `<name>.json` component graphs, build receipts, and pinned versions are not imported or executed. IsOS leaves those files untouched and reports the required current graph path. There is no `isos config migrate` command.
 
 1. Back up the old graph, stack, and core configuration. If `isos-server.service` is active, stop it with `systemctl --user stop isos-server.service`.
 2. Move an old `<name>.json` or a `.nodes.json` graph with version `2.0.0` to a backup path before `isos init`, or author a new version `1.0.0` graph directly. `isos init` creates a v1 starter only when the destination is absent. Review every node, package reference, and connection; no automatic graph conversion occurs.

@@ -1,6 +1,6 @@
 # Develop and verify the v2 manager
 
-[中文](../../../docs_cn/isos/develop/backend-v2_cn.md)
+[中文](../../../docs_cn/isos/develop/backend_cn.md)
 
 The current chain is Rust IsOS, prebuilt Rust Aether executables from EOS, EGIA launchers, and a package-backed MuJoCo simulator owned by EOS. The generic starter graph comes from `templates/generic-graph.toml` and contains no hardware package. `src/starter.rs` fills local arguments; `src/core_setup.rs` calls each core's setup adapter; `src/backend.rs` verifies packages; `src/process.rs` supervises graph children; `src/services.rs` supervises explicitly started services outside the graph. `src/http.rs` serves the loopback API and configured static UI bundle on separate ports. Only `isos serve --ui-live` runs npm.
 

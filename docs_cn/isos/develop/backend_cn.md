@@ -1,6 +1,6 @@
 # 开发与验证 v2 管理器
 
-[English](../../../docs/isos/develop/backend-v2.md)
+[English](../../../docs/isos/develop/backend.md)
 
 当前链路由 Rust IsOS、EOS 预构建的 Rust Aether 程序、EGIA 启动程序以及 EOS 持有的软件包化 MuJoCo 仿真器组成。通用起始图来自 `templates/generic-graph.toml`，不包含硬件包。`src/starter.rs` 填写本机参数；`src/core_setup.rs` 调用各核心的 setup 适配器；`src/backend.rs` 校验软件包；`src/process.rs` 管理图子进程；`src/services.rs` 在图外管理显式启动的服务。`src/http.rs` 在不同端口提供环回 API 和已配置的静态界面。仅 `isos serve --ui-live` 运行 npm。
 

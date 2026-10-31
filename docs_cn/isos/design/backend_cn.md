@@ -1,17 +1,19 @@
 # IsOS 管理的后端软件包
 
-[English](../../../docs/isos/design/backend-v2.md)
+[English](../../../docs/isos/design/backend.md)
 
-MuJoCo 是首个 Aether 后端包：`island/mujoco-sim@0.1.1`。包内含 `backend-v2.json`、`bin/eos-mujoco-sim`、场景和资源。发行清单描述分发与归档校验；后端描述文件声明可执行文件、场景 ID、设备 ID、协议和运行依赖；共享 `1.0.0` 图配置 `eos.process.backend@v1.0` 节点。三者职责不同，安装软件包不会暗中修改部署。
+MuJoCo 是首个 Aether 后端包：`island/mujoco-sim@0.1.1`。包内含 `backend-v2.json`、`bin/eos-mujoco-sim`、场景和资源；描述文件名是当前包的兼容身份。发行清单描述分发与归档校验；后端描述文件声明可执行文件、场景 ID、设备 ID、协议和运行依赖。当前 `1.0.0` 图使用包贡献的 `eos.process.mujoco@v1.0` 节点；新 `0.1.0` 写入器将使用 `@v0.1`。三者职责不同，安装软件包不会暗中修改部署。
 
 IsOS 在校验、应用和运行时解析精确固定版本。每次解析都会重新读取本地链接；检查描述文件身份、执行权限、所选场景、场景引用资源、MuJoCo 库、规范套接字路径，以及 EOS 适配器的设备和套接字引用。描述文件、可执行文件、场景和资源的指纹能发现运行中链接的变化。用户在图中选择场景并明确应用。IsOS 启动 EOS 时传入已验证的可执行文件与场景绝对路径。EOS 读取图、启动 MuJoCo 子进程，并用有类型的相机、底盘和机械臂适配器连接套接字；EOS 不能安装软件包或修改已应用图。
 
 套接字位于仅所有者可访问的 IsOS 运行目录下。IsOS 先启动 EOS；EOS 启动 MuJoCo 并等待套接字就绪，然后才允许硬件操作。IsOS 管理 EOS、HTTP 桥和配置服务的子进程，EOS 管理仿真器子进程。停止 EOS 会终止 MuJoCo；仿真器意外退出时 EOS 失败，由 IsOS 重启整个 EOS 组件。任何已应用图仍引用精确软件包 ID 和版本时禁止删除。后续后端可复用同一进程边界；执行器类型仍需通过 EOS 安全准入。
 
+**0.x 目标：**IsOS 从已验证包元数据通过[设置选项 API](../interfaces/local-api_cn.md#发行目标设置选项尚未实现)解析稳定场景与设备 ID。EOS 内部适配器注册表保存已编译的 MuJoCo 套接字适配器；外部仿真器包仍由 IsOS 安装。即使包声明了适配器，EOS 若未编译相应实现也必须拒绝。IsOS 记录精确包版本及已验证生成配置，不把仿真器复制进 EOS，也不允许包代码添加第二条执行器路由。参见[准入、运行与停止算法](system_cn.md)。
+
 `isos init` 仅首次写入起始图。Home 展示已安装或链接的包、场景与先决条件问题、保存及运行中修订、运行状态和日志。Graph 编辑唯一的 IsOS/EOS/EGIA 共享图。EGIA common 节点目前仅用于设计。可视布局与运行配置分开保存。
 
 ## 开发检查
 
-使用新的 `ISOS_HOME` 执行 `isos init --mode dev`，在 EOS 和 IsosUI 各自仓库构建并配置其路径，然后启动 `isos serve`。用 `isos pkg link island/mujoco-sim 0.1.1 <bundle> --manifest <bundle>/release.json` 链接暂存包，预览其 `sim-hardware` 节点集合，再执行 `isos config validate <graph>`、`isos config apply <graph>` 和 `isos run`。`isos deployment stop` 只停止图，`isos stop` 关闭管理器及所有所属子进程。`MUJOCO_ROOT` 须指向已安装的 MuJoCo 运行环境，EOS 的 `aether-profile` 验证器和 Rust 可执行文件须可用。参见[节点字段](../interfaces/node-graph-v1_cn.md)和[软件包命令](../usage/packages_cn.md)。
+使用新的 `ISOS_HOME` 执行 `isos init --mode dev`，在 EOS 和 IsosUI 各自仓库构建并配置其路径，然后启动 `isos serve`。用 `isos pkg link island/mujoco-sim 0.1.1 <bundle> --manifest <bundle>/release.json` 链接暂存包，预览其 `sim-hardware` 节点集合，再执行 `isos config validate <graph>`、`isos config apply <graph>` 和 `isos run`。`isos deployment stop` 只停止图，`isos stop` 关闭管理器及所有所属子进程。`MUJOCO_ROOT` 须指向已安装的 MuJoCo 运行环境，EOS 的 `aether-profile` 验证器和 Rust 可执行文件须可用。参见[节点字段](../interfaces/node-graph_cn.md)和[软件包命令](../usage/packages_cn.md)。
 
 图运行恢复改动通过了 `cargo fmt --check`、`cargo clippy --all-targets -- -D warnings` 和 `cargo test`（69 项测试）。`cargo build && python3 tests/clean_home.py` 通过 IsOS→EOS→模拟 MuJoCo 生命周期场景。本机固定工作负载的套接字基线为每秒 98.9 次请求，中位延迟 10.102 毫秒，p99 延迟 11.210 毫秒。完整输出保存在本地忽略的 `logs/test/20261031-graph-run-recovery/` 目录中。

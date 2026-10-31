@@ -2,7 +2,7 @@
 
 [中文](../../../docs_cn/isos/maintenance/plan_cn.md)
 
-This page tracks the current IsOS boundary. The [v1 graph](../interfaces/node-graph-v1.md), [service contract](../interfaces/services.md), [release manifest](../interfaces/releases.md), and [local API](../interfaces/local-api.md) define the active interfaces.
+This page tracks the current IsOS boundary. The [v1 graph](../interfaces/node-graph.md), [service contract](../interfaces/services.md), [release manifest](../interfaces/releases.md), and [local API](../interfaces/local-api.md) define the active interfaces.
 
 ## Current ownership
 
@@ -20,4 +20,4 @@ EOS, EGIA, and IsosUI own their builds. IsOS uses one configured binary director
 
 ## Remaining work
 
-Qualify real MuJoCo and Island-models deployments on each supported target; publish approved release assets; establish tagged cross-repository API and service-contract compatibility; and complete EGIA runtime integration. Add a typed graph log node and versioned IPC logging contract later; the current owner-only `log_append` operation is a small local interface for selected events. A future graph design may represent services, but the current service manager must remain independent of EOS and EGIA node dependencies.
+The ordered [0.x architecture TODO](../design/system.md#ordered-implementation-todo) is the implementation track: graph compatibility, package selectors, configuration/version/log contract, EOS–EGIA–MuJoCo integration, UI, cleanup, and release qualification. Existing owner-only `log_append` is a small local interface for selected events; the target shared event adds optional context without breaking it. Qualify real MuJoCo and Island-models deployments on each supported target before publishing approved assets. Services remain independent of EOS and EGIA graph dependencies.
