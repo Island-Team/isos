@@ -20,4 +20,4 @@ A build stages immutable artifacts. Selection is explicit: EOS selection applies
 
 ## Remaining work
 
-Qualify real MuJoCo and Island-models deployments on each supported target; publish approved release assets; establish tagged cross-repository API and service-contract compatibility; and complete EGIA runtime integration. A future graph design may represent services, but the current service manager must remain independent of EOS and EGIA node dependencies. Keep legacy component commands as compatibility paths until their callers are retired.
+Qualify real MuJoCo and Island-models deployments on each supported target; publish approved release assets; establish tagged cross-repository API and service-contract compatibility; and complete EGIA runtime integration. Add a typed graph log node and versioned IPC logging contract later; the current owner-only `log_append` operation is a small local interface for selected events. A future graph design may represent services, but the current service manager must remain independent of EOS and EGIA node dependencies. Keep legacy component commands as compatibility paths until their callers are retired.

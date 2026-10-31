@@ -287,7 +287,7 @@ def main():
             if (root / "run.log").exists():
                 print("--- run log ---\n", (root / "run.log").read_text(), flush=True)
             for name in ["eos", "bridge", "config"]:
-                log = root / "home/data/process-logs/default" / f"{name}.log"
+                log = root / "home/data/logs/default" / f"{name}.log"
                 if log.exists():
                     print(f"--- {name} log ---\n", log.read_text(errors="replace")[-6000:], flush=True)
 

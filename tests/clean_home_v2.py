@@ -259,7 +259,7 @@ def main():
                     break
                 if run_process.poll() is not None:
                     run_log.flush()
-                    logs_dir = home / "data/process-logs/default"
+                    logs_dir = home / "data/logs/default"
                     child_logs = {path.name: path.read_text() for path in logs_dir.glob("*.log")}
                     raise RuntimeError(f"isos run exited {run_process.returncode}: {(root / 'run.log').read_text()}\nchild logs: {child_logs}")
                 time.sleep(0.05)

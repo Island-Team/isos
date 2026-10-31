@@ -63,7 +63,7 @@ struct LoggingConfig {
     level: Option<String>,
 }
 
-fn config_values(source: &str) -> Result<BTreeMap<&'static str, String>> {
+fn config_values(source: &str, repo_root: &Path) -> Result<BTreeMap<&'static str, String>> {
     let config: RuntimeConfig = toml::from_str(source)?;
     let mut values = BTreeMap::new();
     for (port, key) in [
@@ -81,7 +81,11 @@ fn config_values(source: &str) -> Result<BTreeMap<&'static str, String>> {
         (config.paths.mujoco_root, "MUJOCO_ROOT"),
     ] {
         if let Some(path) = path {
-            ensure!(path.is_absolute(), "{key} path must be absolute");
+            let path = if path.is_absolute() {
+                path
+            } else {
+                repo_root.join(path)
+            };
             values.insert(key, path.to_string_lossy().into_owned());
         }
     }
@@ -120,25 +124,31 @@ fn config_without_env_overrides(
         .collect()
 }
 
-pub fn load_runtime_config() -> Result<()> {
-    let path = if let Some(path) = std::env::var_os("ISOS_CONFIG") {
+fn runtime_config_path(
+    repo_root: &Path,
+    override_path: Option<&std::ffi::OsStr>,
+) -> Result<PathBuf> {
+    if let Some(path) = override_path {
         let path = PathBuf::from(path);
         ensure!(path.is_absolute(), "ISOS_CONFIG must be an absolute path");
-        path
+        Ok(path)
     } else {
-        Paths::discover()?.config.join("config.toml")
-    };
+        Ok(repo_root.join("config/isos.toml"))
+    }
+}
+
+pub fn load_runtime_config() -> Result<()> {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let override_path = std::env::var_os("ISOS_CONFIG");
+    let path = runtime_config_path(repo_root, override_path.as_deref())?;
     let source = match fs::read_to_string(&path) {
         Ok(source) => source,
-        Err(error)
-            if error.kind() == std::io::ErrorKind::NotFound
-                && std::env::var_os("ISOS_CONFIG").is_none() =>
-        {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && override_path.is_none() => {
             return Ok(());
         }
         Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
     };
-    for (key, value) in config_without_env_overrides(config_values(&source)?, |key| {
+    for (key, value) in config_without_env_overrides(config_values(&source, repo_root)?, |key| {
         std::env::var_os(key).is_some()
     }) {
         // This runs once before CLI parsing, threads, or child processes exist.
@@ -500,18 +510,38 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
     #[test]
     fn config_toml_maps_settings_and_rejects_invalid_values() {
-        let values = config_values("[server]\nhttp_port=16000\n[paths]\nui_repo='/tmp/ui'\n[logging]\nlevel='warn'\nmax_bytes=1048576\nbackups=3\n").unwrap();
+        let root = Path::new("/tmp/isos-source");
+        let values = config_values("[server]\nhttp_port=16000\n[paths]\nui_repo='../IsosUI'\n[logging]\nlevel='warn'\nmax_bytes=1048576\nbackups=3\n", root).unwrap();
         assert_eq!(values["ISOS_HTTP_PORT"], "16000");
-        assert_eq!(values["ISOSUI_REPO_PATH"], "/tmp/ui");
+        assert_eq!(values["ISOSUI_REPO_PATH"], "/tmp/isos-source/../IsosUI");
         assert_eq!(values["ISOS_LOG_BACKUPS"], "3");
         assert_eq!(values["ISOS_LOG_LEVEL"], "warn");
         let selected = config_without_env_overrides(values, |key| key == "ISOS_LOG_LEVEL");
         assert!(!selected.contains_key("ISOS_LOG_LEVEL"));
         assert_eq!(selected["ISOS_HTTP_PORT"], "16000");
-        assert!(config_values("[server]\nhttp_port=80\n").is_err());
-        assert!(config_values("[paths]\nui_repo='relative'\n").is_err());
-        assert!(config_values("[unknown]\nvalue=1\n").is_err());
-        assert!(config_values("[logging]\nlevel='verbose'\n").is_err());
+        assert!(config_values("[server]\nhttp_port=80\n", root).is_err());
+        assert!(config_values("[unknown]\nvalue=1\n", root).is_err());
+        assert!(config_values("[logging]\nlevel='verbose'\n", root).is_err());
+        assert_eq!(
+            runtime_config_path(root, None).unwrap(),
+            root.join("config/isos.toml")
+        );
+        assert_eq!(
+            runtime_config_path(root, Some(std::ffi::OsStr::new("/tmp/custom.toml"))).unwrap(),
+            Path::new("/tmp/custom.toml")
+        );
+        assert!(runtime_config_path(root, Some(std::ffi::OsStr::new("custom.toml"))).is_err());
+        for source in [
+            include_str!("../config/isos.toml"),
+            include_str!("../config/isos.example.toml"),
+        ] {
+            let parsed = config_values(source, root).unwrap();
+            for key in ["ISOSUI_REPO_PATH", "ISOS_AETHER_BIN_DIR", "MUJOCO_ROOT"] {
+                if let Some(path) = parsed.get(key) {
+                    assert!(Path::new(path).is_absolute());
+                }
+            }
+        }
     }
     #[test]
     fn generates_readable_stack() {

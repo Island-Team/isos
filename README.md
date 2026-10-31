@@ -6,7 +6,7 @@ IsOS owns the shared Aether v2 graph, backend packages, local workbench API, and
 
 Run `./install.sh` from the v2 `master` checkout to install the CLI. `isos init --mode dev` creates the configuration and starter graph and exits; running `isos init` again preserves the mode and authored graph. Use `isos init --mode product` to select product admission rules. `isos serve` runs the manager, API, and selected static IsosUI in the foreground; `isos serve --ui-live` explicitly uses supervised Webpack in dev mode.
 
-Copy [config.example.toml](config.example.toml) to `~/.config/isos/config.toml` and set its absolute source paths as needed; environment variables override file values. `ISOS_CONFIG` selects another absolute config path. IsOS does not load `.env` from the command directory. In dev mode, stage immutable builds and select them explicitly:
+Edit the tracked [config/isos.toml](config/isos.toml) for portable runtime defaults; [config/isos.example.toml](config/isos.example.toml) shows optional fields. Relative source paths are resolved from this IsOS checkout, regardless of the command directory. Environment variables override file values; `ISOS_CONFIG` selects another absolute config file. Private deployment graphs and build selections remain under `~/.config/isos/`. IsOS does not load `.env` from the command directory. In dev mode, stage immutable builds and select them explicitly:
 
 ```sh
 isos init --mode dev

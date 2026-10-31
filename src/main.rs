@@ -134,11 +134,14 @@ enum CommandLine {
         #[arg(long)]
         json: bool,
     },
-    /// Read recent direct-child logs for a deployment node.
+    /// Read recent unified logs for a source or all sources.
     Logs {
-        node: String,
+        #[arg(default_value = "all")]
+        source: String,
         #[arg(long, default_value_t = 100)]
         lines: u32,
+        #[arg(long, default_value = "info", value_parser = ["trace", "debug", "info", "warn", "error"])]
+        level: String,
     },
     /// Check the shared graph, package, binaries, and manager readiness.
     Doctor,
@@ -796,6 +799,17 @@ struct ApiRequest {
     cursor: Option<String>,
     #[serde(default)]
     limit: Option<usize>,
+    #[serde(default)]
+    log: Option<LogEventInput>,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct LogEventInput {
+    source: String,
+    level: String,
+    message: String,
+    #[serde(default)]
+    event_code: Option<String>,
 }
 #[derive(Deserialize, Serialize)]
 struct ApiResponse {
@@ -924,6 +938,41 @@ fn api_call(
     }
     match request.op.as_str() {
         "manager_identity" => manager_identity(paths),
+        "log_append" => {
+            v2_process::validate_deployment_name(&name)?;
+            let event = request.log.context("log is required")?;
+            ensure!(
+                !matches!(
+                    event.source.as_str(),
+                    "all" | "events" | "services" | "isos" | "browser"
+                ),
+                "reserved log source"
+            );
+            ensure!(
+                !event.message.is_empty() && event.message.len() <= 8192,
+                "log message must be 1..8192 bytes"
+            );
+            let code = event.event_code.as_deref().unwrap_or("external_event");
+            ensure!(
+                !code.is_empty()
+                    && code.len() <= 64
+                    && code.bytes().all(|byte| byte.is_ascii_lowercase()
+                        || byte.is_ascii_digit()
+                        || byte == b'_'),
+                "event_code must be 1..64 lowercase letters, digits, or underscores"
+            );
+            ensure!(
+                log_store::level_rank(&event.level).is_some(),
+                "log level must be trace, debug, info, warn, or error"
+            );
+            log_store::LogStore::new(paths, &name)?.append_event(
+                &event.source,
+                &event.level,
+                code,
+                &event.message,
+            )?;
+            Ok(json!({"accepted":true}))
+        }
         "manager_shutdown" => {
             tracing::info!(
                 event_code = "manager_shutdown",
@@ -1529,6 +1578,7 @@ fn v2_call_revision(
         service_id: None,
         cursor: None,
         limit: None,
+        log: None,
     };
     manager_request(paths, request)
 }
@@ -1582,6 +1632,7 @@ fn service_call(
             service_id: id,
             cursor: None,
             limit,
+            log: None,
         },
     )
 }
@@ -1809,17 +1860,20 @@ fn main_run() -> Result<()> {
             };
             println!("{}", serde_json::to_string_pretty(&status)?);
         }
-        CommandLine::Logs { node, lines } => {
-            v2_process::validate_deployment_name(&node)?;
-            let log = paths
-                .data
-                .join("process-logs")
-                .join(&name)
-                .join(format!("{node}.log"));
-            let source = fs::read_to_string(log)?;
-            let selected: Vec<_> = source.lines().rev().take(lines as usize).collect();
-            for line in selected.into_iter().rev() {
-                println!("{line}");
+        CommandLine::Logs {
+            source,
+            lines,
+            level,
+        } => {
+            let store = log_store::LogStore::new(&paths, &name)?;
+            for entry in store.tail_filtered(&source, lines as usize, Some(&level))? {
+                println!(
+                    "{} {} [{}] {}",
+                    entry["timestamp"].as_str().unwrap_or(""),
+                    entry["level"].as_str().unwrap_or("").to_ascii_uppercase(),
+                    entry["source"].as_str().unwrap_or(""),
+                    entry["message"].as_str().unwrap_or("")
+                );
             }
         }
         CommandLine::Doctor => {
@@ -1905,6 +1959,46 @@ fn main() {
 #[cfg(test)]
 mod restart_tests {
     use super::*;
+
+    #[test]
+    fn external_log_operation_records_selected_event_and_rejects_reserved_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = config::Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        let mut managers = V2Supervisors::new();
+        let mut services = services::ServiceManager::new(&paths, "default").unwrap();
+        let make_request = |source: &str| ApiRequest {
+            schema_version: 1,
+            op: "log_append".into(),
+            deployment: Some("default".into()),
+            role: None,
+            graph: None,
+            revision: None,
+            service_id: None,
+            cursor: None,
+            limit: None,
+            log: Some(LogEventInput {
+                source: source.into(),
+                level: "warn".into(),
+                message: "adapter unavailable".into(),
+                event_code: Some("adapter_unavailable".into()),
+            }),
+        };
+        assert_eq!(
+            api_call(&paths, &mut managers, &mut services, make_request("eos")).unwrap()["accepted"],
+            true
+        );
+        let stored = log_store::LogStore::new(&paths, "default")
+            .unwrap()
+            .read("eos", None, 10)
+            .unwrap();
+        assert_eq!(stored["lines"][0]["event_code"], "adapter_unavailable");
+        assert_eq!(stored["lines"][0]["message"], "adapter unavailable");
+        assert!(api_call(&paths, &mut managers, &mut services, make_request("isos")).is_err());
+    }
 
     #[test]
     fn failed_restart_restores_previous_revision_and_child() {

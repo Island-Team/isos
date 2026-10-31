@@ -1,0 +1,14 @@
+# Portable IsOS defaults. Relative source paths are resolved from the IsOS checkout.
+# Use ISOS_CONFIG=/absolute/path/to/file.toml to load another file.
+# Environment variables override matching values.
+[server]
+http_port = 16000
+ui_port = 16001
+
+[deployment]
+name = "default"
+
+[logging]
+level = "info"
+max_bytes = 1048576
+backups = 3

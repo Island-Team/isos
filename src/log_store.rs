@@ -5,11 +5,12 @@ use anyhow::{Context, Result, ensure};
 use chrono::{SecondsFormat, Utc};
 use serde_json::{Value, json};
 use std::{
+    collections::VecDeque,
     fs::{self, File, OpenOptions},
     io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 const DEFAULT_MAX_BYTES: u64 = 1_048_576;
@@ -19,7 +20,6 @@ const MAX_READ_BYTES: u64 = 65_536;
 #[derive(Clone)]
 pub struct LogStore {
     root: PathBuf,
-    legacy: PathBuf,
     max_bytes: u64,
     backups: u8,
     level: u8,
@@ -32,6 +32,15 @@ fn source_valid(source: &str) -> bool {
         && source
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+pub fn valid_source(source: &str) -> bool {
+    source_valid(source) && !matches!(source, "all" | "services" | "events")
+}
+
+fn shared_lock() -> Arc<Mutex<()>> {
+    static LOCK: OnceLock<Arc<Mutex<()>>> = OnceLock::new();
+    LOCK.get_or_init(|| Arc::new(Mutex::new(()))).clone()
 }
 
 pub fn level_rank(level: &str) -> Option<u8> {
@@ -76,9 +85,7 @@ impl LogStore {
             "ISOS_LOG_BACKUPS must be 1..10"
         );
         let root = paths.data.join("logs").join(deployment);
-        let legacy = paths.data.join("process-logs").join(deployment);
         private_dir(&root)?;
-        private_dir(&legacy)?;
         for source in [
             "isos", "packages", "graph", "ui", "eos", "egia", "mujoco", "bridge", "config",
         ] {
@@ -91,11 +98,10 @@ impl LogStore {
         }
         Ok(Self {
             root,
-            legacy,
             max_bytes,
             backups,
             level,
-            lock: Arc::new(Mutex::new(())),
+            lock: shared_lock(),
         })
     }
 
@@ -154,6 +160,8 @@ impl LogStore {
         event_code: &str,
         message: &str,
     ) -> Result<()> {
+        ensure!(valid_source(source), "invalid log source");
+        ensure!(source_valid(event_code), "invalid log event code");
         let rank = level_rank(level).context("invalid log level")?;
         if rank < self.level {
             return Ok(());
@@ -176,24 +184,21 @@ impl LogStore {
         Ok(())
     }
 
-    pub fn append_child(&self, source: &str, level: &str, message: &str) -> Result<()> {
-        let rank = level_rank(level).context("invalid log level")?;
-        if rank < self.level {
-            return Ok(());
-        }
-        self.append(source, level, message)?;
-        let _guard = self.lock.lock().unwrap();
-        let path = self.legacy.join(format!("{source}.log"));
-        let mut line = message.as_bytes().to_vec();
-        if line.len() > 8192 {
-            line.truncate(8192);
-        }
-        line.push(b'\n');
-        self.append_file(&path, &line)
+    pub fn read(&self, source: &str, cursor: Option<&str>, limit: usize) -> Result<Value> {
+        self.read_filtered(source, cursor, limit, None)
     }
 
-    pub fn read(&self, source: &str, cursor: Option<&str>, limit: usize) -> Result<Value> {
+    pub fn read_filtered(
+        &self,
+        source: &str,
+        cursor: Option<&str>,
+        limit: usize,
+        min_level: Option<&str>,
+    ) -> Result<Value> {
         ensure!((1..=200).contains(&limit), "log limit must be 1..200");
+        let min_rank = min_level
+            .map(|level| level_rank(level).context("invalid log level"))
+            .transpose()?;
         let path = self.path(source)?;
         let mut file =
             File::open(&path).with_context(|| format!("log source {source} is unavailable"))?;
@@ -229,7 +234,7 @@ impl LogStore {
             if size == 0 {
                 break;
             }
-            if raw.last() != Some(&b'\n') {
+            if raw.last() != Some(&b'\n') && raw.len() == 8193 {
                 break;
             }
             consumed += size as u64;
@@ -238,6 +243,12 @@ impl LogStore {
                     || value["source"]
                         .as_str()
                         .is_some_and(|name| name.starts_with("service-")))
+                && min_rank.is_none_or(|rank| {
+                    value["level"]
+                        .as_str()
+                        .and_then(level_rank)
+                        .is_some_and(|level| level >= rank)
+                })
             {
                 lines.push(value);
             }
@@ -245,42 +256,100 @@ impl LogStore {
         let next_cursor = format!("{identity}:{}", offset + consumed);
         Ok(json!({"lines":lines,"next_cursor":next_cursor,"rotated":rotated}))
     }
+
+    pub fn tail_filtered(
+        &self,
+        source: &str,
+        limit: usize,
+        min_level: Option<&str>,
+    ) -> Result<Vec<Value>> {
+        ensure!((1..=1000).contains(&limit), "log limit must be 1..1000");
+        let min_rank = min_level
+            .map(|level| level_rank(level).context("invalid log level"))
+            .transpose()?;
+        let path = self.path(source)?;
+        let file =
+            File::open(&path).with_context(|| format!("log source {source} is unavailable"))?;
+        let mut lines = VecDeque::with_capacity(limit);
+        for raw in BufReader::new(file).split(b'\n') {
+            let raw = raw?;
+            if let Ok(value) = serde_json::from_slice::<Value>(&raw)
+                && (source != "services"
+                    || value["source"]
+                        .as_str()
+                        .is_some_and(|name| name.starts_with("service-")))
+                && min_rank.is_none_or(|rank| {
+                    value["level"]
+                        .as_str()
+                        .and_then(level_rank)
+                        .is_some_and(|level| level >= rank)
+                })
+            {
+                if lines.len() == limit {
+                    lines.pop_front();
+                }
+                lines.push_back(value);
+            }
+        }
+        Ok(lines.into_iter().collect())
+    }
 }
 
 pub fn capture<R: std::io::Read + Send + 'static>(
     reader: R,
     store: LogStore,
     source: String,
-    level: &'static str,
+    _level: &'static str,
 ) {
-    std::thread::spawn(move || {
-        let mut reader = BufReader::new(reader);
-        loop {
-            let mut raw = Vec::new();
-            // Bound a child that writes a very long line without a newline.
-            match Read::by_ref(&mut reader)
-                .take(8192)
-                .read_until(b'\n', &mut raw)
-            {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {
-                    let message = String::from_utf8_lossy(&raw);
-                    let message = message.trim_end_matches(['\r', '\n']);
-                    if let Ok(record) = serde_json::from_str::<Value>(message)
-                        && let (Some(severity), Some(body)) = (
-                            record.get("level").and_then(Value::as_str),
-                            record.get("message").and_then(Value::as_str),
-                        )
-                        && level_rank(severity).is_some()
-                    {
-                        let _ = store.append_child(&source, severity, body);
-                    } else {
-                        let _ = store.append_child(&source, level, message);
+    std::thread::spawn(move || capture_stream(reader, store, source));
+}
+
+fn capture_stream<R: std::io::Read>(reader: R, store: LogStore, source: String) {
+    let mut reader = BufReader::new(reader);
+    loop {
+        let mut raw = Vec::new();
+        // Bound a child that writes a very long line without a newline.
+        match Read::by_ref(&mut reader)
+            .take(8193)
+            .read_until(b'\n', &mut raw)
+        {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {
+                if raw.last() != Some(&b'\n') {
+                    // Drain the rest of an oversized line without buffering it.
+                    loop {
+                        let mut discard = Vec::new();
+                        match Read::by_ref(&mut reader)
+                            .take(8193)
+                            .read_until(b'\n', &mut discard)
+                        {
+                            Ok(0) | Err(_) => break,
+                            Ok(_) if discard.last() == Some(&b'\n') => break,
+                            Ok(_) => {}
+                        }
                     }
+                    continue;
+                }
+                let Ok(message) = std::str::from_utf8(&raw) else {
+                    continue;
+                };
+                if let Ok(record) = serde_json::from_str::<Value>(message)
+                    && let (Some(severity), Some(body)) = (
+                        record.get("level").and_then(Value::as_str),
+                        record.get("message").and_then(Value::as_str),
+                    )
+                    && level_rank(severity).is_some()
+                {
+                    let event_code = record
+                        .get("event_code")
+                        .and_then(Value::as_str)
+                        .filter(|code| source_valid(code))
+                        .unwrap_or("message");
+                    let _ = store.append_event(&source, severity, event_code, body);
                 }
             }
         }
-    });
+    }
 }
 
 #[cfg(test)]
@@ -322,7 +391,7 @@ mod tests {
     #[test]
     fn logs_are_private_and_sources_are_checked() {
         let (_temp, store) = store();
-        store.append_child("config", "error", "failure").unwrap();
+        store.append("config", "error", "failure").unwrap();
         assert_eq!(
             fs::metadata(&store.root).unwrap().permissions().mode() & 0o777,
             0o700
@@ -342,28 +411,29 @@ mod tests {
         assert!(store.read("../secret", None, 1).is_err());
         assert!(store.read("config", None, 201).is_err());
         assert!(store.read("config", Some("bad"), 1).is_err());
-        assert_eq!(
-            fs::read_to_string(store.legacy.join("config.log")).unwrap(),
-            "failure\n"
+        assert!(
+            !store
+                .root
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("process-logs")
+                .exists()
         );
     }
 
     #[test]
-    fn severity_threshold_filters_child_and_legacy_files() {
+    fn severity_threshold_filters_child_events() {
         let (_temp, mut store) = store();
         store.level = level_rank("warn").unwrap();
-        store.append_child("eos", "info", "routine stdout").unwrap();
-        store
-            .append_child("eos", "error", "important stderr")
-            .unwrap();
+        store.append("eos", "info", "routine stdout").unwrap();
+        store.append("eos", "error", "important stderr").unwrap();
         let lines = store.read("eos", None, 10).unwrap();
         assert_eq!(lines["lines"].as_array().unwrap().len(), 1);
         assert_eq!(lines["lines"][0]["message"], "important stderr");
-        assert_eq!(
-            fs::read_to_string(store.legacy.join("eos.log")).unwrap(),
-            "important stderr\n"
-        );
         assert!(store.append("isos", "verbose", "unknown").is_err());
+        assert!(store.append("all", "warn", "bad alias").is_err());
     }
 
     #[test]
@@ -383,5 +453,49 @@ mod tests {
         let services = store.read("services", None, 10).unwrap();
         assert_eq!(services["lines"].as_array().unwrap().len(), 1);
         assert_eq!(services["lines"][0]["event_code"], "child_exited");
+    }
+
+    #[test]
+    fn capture_only_records_selected_structured_events() {
+        let (_temp, store) = store();
+        let mut input = b"routine progress\n{\"level\":\"warn\",\"message\":\"selected\",\"source\":\"forged\",\"event_code\":\"child_warning\"}\n".to_vec();
+        input.extend_from_slice(&[b'x'; 9000]);
+        input.extend_from_slice(b"\n{\"level\":\"error\",\"message\":\"second\"}\n");
+        input.extend_from_slice(&[0xff, b'\n']);
+        capture_stream(&input[..], store.clone(), "eos".into());
+        let lines = store.read("eos", None, 10).unwrap();
+        assert_eq!(lines["lines"].as_array().unwrap().len(), 2);
+        assert_eq!(lines["lines"][0]["source"], "eos");
+        assert_eq!(lines["lines"][0]["event_code"], "child_warning");
+        assert_eq!(lines["lines"][1]["message"], "second");
+    }
+
+    #[test]
+    fn filtered_reads_and_tail_keep_only_matching_severity() {
+        let (_temp, store) = store();
+        for (level, message) in [
+            ("info", "one"),
+            ("warn", "two"),
+            ("info", "three"),
+            ("error", "four"),
+        ] {
+            store.append("eos", level, message).unwrap();
+        }
+        let filtered = store.read_filtered("eos", None, 2, Some("warn")).unwrap();
+        assert_eq!(filtered["lines"].as_array().unwrap().len(), 2);
+        assert_eq!(filtered["lines"][0]["message"], "two");
+        assert_eq!(filtered["lines"][1]["message"], "four");
+        let tail = store.tail_filtered("eos", 1, Some("warn")).unwrap();
+        assert_eq!(tail[0]["message"], "four");
+        assert!(
+            store
+                .read_filtered("eos", None, 1, Some("verbose"))
+                .is_err()
+        );
+        assert!(
+            store
+                .append_event("eos", "trace", "../bad", "invalid")
+                .is_err()
+        );
     }
 }

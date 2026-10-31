@@ -24,8 +24,8 @@ API 只绑定 `127.0.0.1`，不提供前端文件。IsosUI 通过地址和端口
 | `GET /api/isos/v2/setup-status` | `{ready,issues,graph_revision,backends,process}` | Home 配置概况。 |
 | `POST /api/isos/v2/process-control` | `{schema_version:2,operation,revision?}` | `run`、`start`、`stop` 或 `restart`；可选修订防止操作过期视图。 |
 | `GET /api/isos/v2/process-status` | `{saved_revision,active_revision,state,last_error,package,processes}` | 固定包与直接子进程状态。 |
-| `GET /api/isos/v2/process-logs/{node}?lines=100` | `{node,lines}` | 最近标准输出/错误行，最多 1000 行。 |
-| `GET /api/isos/v2/logs?source=all&cursor=...&limit=100` | `{lines:[{timestamp,level,source,event_code,message,pid}],next_cursor,rotated}` | 读取统一轮转 JSON 日志；仍可选择 `source=isos` 或进程来源。每次最多 200 行或 64 KiB；文件轮转时 `rotated` 为 true。UI 的级别选择只过滤显示。 |
+| `GET /api/isos/v2/process-logs/{node}?lines=100` | `{node,lines}` | 结构化消息的兼容视图，最多 1000 行。 |
+| `GET /api/isos/v2/logs?source=all&cursor=...&limit=100&level=info` | `{lines:[{timestamp,level,source,event_code,message,pid}],next_cursor,rotated}` | 读取统一轮转 JSON 日志，并按 `level` 过滤。每次最多 200 行或 64 KiB；文件轮转时 `rotated` 为 true。 |
 | `GET /api/isos/v2/version` | `{api_schema_version,isos_version}` | 工作台兼容性检查。 |
 
 进程管理器在启动前重新校验已保存图和精确版本的软件包。EOS 将 MuJoCo 作为直接子进程启动，并在停止获准的执行器后终止它。图布局属于编辑器；HTTP 图只包含运行配置和有类型连接。
@@ -36,23 +36,25 @@ Unix 套接字每行接收一个 JSON 请求：`{schema_version:1,op,deployment?
 
 `manager_shutdown` 停止所有图子进程和独立服务，然后结束 API、界面及管理器。`v2_stop` 只影响指定部署。`services_list`、`services_validate`、`services_status`、`services_start`、`services_stop`、`services_restart` 和 `services_logs` 操作[独立服务定义](services_cn.md)；启动、停止、重启和日志请求需要 `service_id`，日志可带不透明的 `cursor` 及 1–200 的 `limit`。可执行文件摘要不同的 CLI 仍可请求关停，但不能启动或重启部署和服务。`isos status --json` 汇总部署状态、管理器身份和服务状态；`isos version check` 比较配置、选中与运行中的身份。
 
-日志 `source` 可为 `all`、`isos`、`services`、`service-gateway` 等服务来源、`packages`、`graph`、`ui`、`eos`、`egia`、`mujoco`、`bridge`、`config` 或通过校验的子进程 ID。`limit` 范围为 1–200，默认为 100。每行包含 RFC 3339 UTC `timestamp`、`level`（可采用结构化子进程日志的级别）、`source`、`message`，并可包含 `event_code` 和 `pid`。非结构化子进程标准错误记为 `warn`。即使当前文件已读完，`next_cursor` 仍为字符串，后续可用它继续轮询。日志目录权限为 `0700`、普通文件为 `0600`；达到 `[logging].max_bytes`（默认 1 MiB）后轮转，保留 `[logging].backups`（默认 3）份。旧进程端点读取镜像原始文本行。
+日志 `source` 可为 `all`、`isos`、`services`、`service-gateway` 等服务来源、`packages`、`graph`、`ui`、`eos`、`egia`、`mujoco`、`bridge`、`config` 或通过校验的子进程 ID。`limit` 范围为 1–200，默认为 100。每行包含 RFC 3339 UTC `timestamp`、`level`、`source`、`message`，并可包含 `event_code` 和 `pid`。IsOS 记录自身诊断及选定的结构化子进程事件，不镜像普通标准输出或标准错误。即使当前文件已读完，`next_cursor` 仍为字符串，后续可用它继续轮询。日志目录权限为 `0700`、普通文件为 `0600`；达到 `[logging].max_bytes`（默认 1 MiB）后轮转，保留 `[logging].backups`（默认 3）份。旧进程端点从统一日志读取消息。
 
-`[logging].level` 按 `trace < debug < info < warn < error` 过滤低于阈值的文件记录，默认为 `info`。非结构化子进程标准输出为 `info`，标准错误为 `warn`；结构化级别优先。UI 的级别选择只过滤显示，不改变写入。终端状态和命令错误不受影响。
+`[logging].level` 按 `trace < debug < info < warn < error` 记录达到阈值的文件事件，默认为 `info`。HTTP 的 `level` 参数和 UI 选择器只过滤显示，不改变写入。终端状态和命令错误不受影响。`isos logs [source] --level warn` 读取同一日志库。
+
+外部核心可通过仅所有者访问的管理套接字提交选定事件：`{schema_version:1,op:"log_append",deployment?,log:{source,level,message,event_code?}}`，响应含 `{accepted:true}`。`source` 为经校验的子进程 ID（1–48 个 ASCII 字母、数字、`_` 或 `-`），不能是 `all`、`events`、`services`、`isos` 或 `browser`；`level` 为五种级别之一；`message` 为 1–8192 个 UTF-8 字节；可选 `event_code` 为 1–64 个小写 ASCII 字母、数字或下划线。核心仍负责自己的完整日志。
 
 应用图包含 MuJoCo 软件包时，IsOS 会把部署日志目录传给 EOS 运行时。只有 EOS 写入和轮转 `mujoco.log`，并遵守相同的 JSON 行与权限契约；IsOS 通过此 API 读取。
 
 ### 本地运行配置
 
-IsOS 会读取存在的 `~/.config/isos/config.toml`（或 `ISOS_HOME/config/config.toml`）。`ISOS_CONFIG` 可指定必须存在的其他绝对路径。环境变量覆盖相应 TOML 字段。不会从命令工作目录搜索 `.env`。参见 [config.example.toml](../../../config.example.toml)。
+IsOS 默认读取其源码目录中的 [config/isos.toml](../../../config/isos.toml)，与命令工作目录无关。`ISOS_CONFIG` 可指定必须存在的其他绝对配置文件路径。环境变量覆盖相应 TOML 字段；TOML 中的相对源码路径以 IsOS 源码目录为基准。私有部署状态仍使用 `ISOS_HOME` 或 XDG 目录。不会从命令工作目录搜索 `.env`。参见 [config/isos.example.toml](../../../config/isos.example.toml)。
 
 | TOML 字段 | 类型／单位 | 用途与校验 | 环境变量覆盖 |
 | --- | --- | --- | --- |
 | `server.http_port` | 整数 TCP 端口 | IsOS 环回 API；1024–65535 | `ISOS_HTTP_PORT` |
 | `server.ui_port` | 整数 TCP 端口 | IsosUI 环回前端；1024–65535，且不同于 HTTP 端口 | `ISOSUI_PORT` |
-| `paths.ui_repo` | 绝对路径字符串 | 用于构建或显式 `--ui-live` 的 IsosUI 源码目录；只有实时模式需要安装 npm 依赖 | `ISOSUI_REPO_PATH` |
-| `paths.aether_bin_dir` | 绝对路径字符串 | Aether Rust 可执行文件目录 | `ISOS_AETHER_BIN_DIR` |
-| `paths.mujoco_root` | 绝对路径字符串 | 可选 MuJoCo 运行根目录 | `MUJOCO_ROOT` |
+| `paths.ui_repo` | 路径字符串 | 用于构建或显式 `--ui-live` 的 IsosUI 源码目录；相对路径以 IsOS 源码目录为基准；只有实时模式需要安装 npm 依赖 | `ISOSUI_REPO_PATH` |
+| `paths.aether_bin_dir` | 路径字符串 | Aether Rust 可执行文件目录；相对路径以 IsOS 源码目录为基准 | `ISOS_AETHER_BIN_DIR` |
+| `paths.mujoco_root` | 路径字符串 | 可选 MuJoCo 运行根目录；相对路径以 IsOS 源码目录为基准 | `MUJOCO_ROOT` |
 | `deployment.name` | slug 字符串 | 默认图与日志命名空间；需通过部署名校验 | `ISOS_DEPLOYMENT` |
 | `logging.max_bytes` | 整数，字节 | 轮转阈值 65,536–100,000,000；默认 1,048,576 | `ISOS_LOG_MAX_BYTES` |
 | `logging.backups` | 整数，份数 | 轮转副本 1–10；默认 3 | `ISOS_LOG_BACKUPS` |

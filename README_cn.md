@@ -6,7 +6,7 @@ IsOS 管理共享 Aether v2 图、后端软件包、本地工作台 API 和直�
 
 从 v2 `master` 源码目录运行 `./install.sh` 安装 CLI。`isos init --mode dev` 创建配置与初始图后退出；再次执行 `isos init` 会保留模式和已编辑的图。`isos init --mode product` 选择产品模式的准入规则。`isos serve` 在前台运行管理器、API 与固定的静态 IsosUI；开发模式可显式使用 `isos serve --ui-live` 启动受管理的 Webpack。
 
-将 [config.example.toml](config.example.toml) 复制到 `~/.config/isos/config.toml`，按需填写绝对源码路径；环境变量覆盖配置文件值。`ISOS_CONFIG` 可指定其他绝对配置路径。IsOS 不从命令工作目录读取 `.env`。开发模式先构建不可变产物，再显式选择：
+在受版本管理的 [config/isos.toml](config/isos.toml) 中设置可公开的运行默认值；可选字段见 [config/isos.example.toml](config/isos.example.toml)。相对源码路径以 IsOS 源码目录为基准，与命令工作目录无关。环境变量覆盖配置文件值；`ISOS_CONFIG` 可指定其他绝对配置文件路径。私有部署图和构建选择仍保存在 `~/.config/isos/`。IsOS 不从命令工作目录读取 `.env`。开发模式先构建不可变产物，再显式选择：
 
 ```sh
 isos init --mode dev

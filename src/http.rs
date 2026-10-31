@@ -648,16 +648,16 @@ async fn process_logs(
         .and_then(|n| n.parse::<usize>().ok())
         .unwrap_or(100)
         .min(1000);
-    let path = app
-        .paths
-        .data
-        .join("process-logs")
-        .join(&app.deployment)
-        .join(format!("{node}.log"));
-    let bytes = fs::read(path).map_err(|error| err(StatusCode::NOT_FOUND, error))?;
-    let source = String::from_utf8_lossy(&bytes);
-    let selected: Vec<_> = source.lines().rev().take(lines).collect();
-    ok(json!({"node":node,"lines":selected.into_iter().rev().collect::<Vec<_>>()}))
+    let store = LogStore::new(&app.paths, &app.deployment)
+        .map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR, error))?;
+    let selected = store
+        .tail_filtered(&node, lines.max(1), None)
+        .map_err(|error| err(StatusCode::NOT_FOUND, error))?;
+    let lines: Vec<_> = selected
+        .into_iter()
+        .filter_map(|entry| entry["message"].as_str().map(str::to_owned))
+        .collect();
+    ok(json!({"node":node,"lines":lines}))
 }
 
 async fn logs(
@@ -678,7 +678,12 @@ async fn logs(
     let store = LogStore::new(&app.paths, &app.deployment)
         .map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR, error))?;
     let data = store
-        .read(source, query.get("cursor").map(String::as_str), limit)
+        .read_filtered(
+            source,
+            query.get("cursor").map(String::as_str),
+            limit,
+            query.get("level").map(String::as_str),
+        )
         .map_err(|error| {
             let message = error.to_string();
             let status = if message.contains("unavailable") {
@@ -985,6 +990,57 @@ mod tests {
                 assert_eq!(body["data"]["lines"][0]["message"], "ready");
                 assert_eq!(body["data"]["lines"][0]["source"], "isos");
                 assert!(body["data"]["next_cursor"].is_string());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn logs_filter_level_and_legacy_process_view_reads_unified_records() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = Arc::new(App {
+            paths: Paths {
+                config: temp.path().join("config"),
+                data: temp.path().join("data"),
+                runtime: temp.path().join("run"),
+            },
+            deployment: "default".into(),
+        });
+        let store = LogStore::new(&app.paths, "default").unwrap();
+        store.append("eos", "info", "ready").unwrap();
+        store.append("eos", "error", "failed").unwrap();
+        for (route, status, expected) in [
+            (
+                "/api/isos/v2/logs?source=eos&level=warn",
+                StatusCode::OK,
+                "failed",
+            ),
+            (
+                "/api/isos/v2/process-logs/eos?lines=1",
+                StatusCode::OK,
+                "failed",
+            ),
+            (
+                "/api/isos/v2/logs?source=eos&level=verbose",
+                StatusCode::BAD_REQUEST,
+                "",
+            ),
+        ] {
+            let request = Request::builder()
+                .uri(route)
+                .header(header::HOST, "127.0.0.1:16000")
+                .body(Body::empty())
+                .unwrap();
+            let response = router(app.clone()).oneshot(request).await.unwrap();
+            assert_eq!(response.status(), status);
+            if status == StatusCode::OK {
+                let bytes = to_bytes(response.into_body(), 1_000_000).await.unwrap();
+                let body: Value = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(body["data"]["lines"].as_array().unwrap().len(), 1);
+                let line = &body["data"]["lines"][0];
+                assert_eq!(
+                    line["message"].as_str().or_else(|| line.as_str()),
+                    Some(expected)
+                );
             }
         }
     }
