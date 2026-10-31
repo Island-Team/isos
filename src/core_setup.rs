@@ -4,6 +4,7 @@ use crate::{
     packages,
 };
 use anyhow::{Context, Result, bail, ensure};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -21,6 +22,28 @@ const MAX_REPLY: usize = 4 * 1024 * 1024;
 const MAX_FILES: usize = 32;
 const MAX_FILE: usize = 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const EGIA_NORTHBOUND_PORT: u16 = 16060;
+
+#[derive(Deserialize)]
+struct SetupDiagnostic {
+    path: String,
+    code: String,
+    message: String,
+}
+
+#[derive(Deserialize)]
+struct SetupFile {
+    path: String,
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct SetupReply {
+    schema_version: u32,
+    ok: bool,
+    diagnostics: Vec<SetupDiagnostic>,
+    files: Vec<SetupFile>,
+}
 
 fn revision(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
@@ -95,41 +118,69 @@ fn package_refs(paths: &Paths, graph: &Value) -> Result<Vec<Value>> {
         .collect()
 }
 
-fn command_arg(graph: &Value, node: &str, flag: &str) -> Option<String> {
+fn command_arg(graph: &Value, node: &str, flag: &str) -> Result<Option<String>> {
     let pointer = format!("/cores/isos/layers/process/groups/component/nodes/{node}/settings");
-    let settings = graph.pointer(&pointer)?;
-    let args = settings
-        .get("args")
-        .or_else(|| settings.get("command"))?
-        .as_array()?;
-    args.windows(2)
-        .find(|pair| pair[0].as_str() == Some(flag))?
-        .get(1)?
-        .as_str()
-        .map(str::to_owned)
+    let Some(settings) = graph.pointer(&pointer) else {
+        return Ok(None);
+    };
+    let args = settings["args"].as_array().with_context(|| {
+        format!("{node} process requires settings.args; save the migrated graph")
+    })?;
+    ensure!(
+        args.iter().all(Value::is_string),
+        "{node} settings.args must contain strings"
+    );
+    let mut values = args.iter().filter_map(Value::as_str);
+    let mut selected = None;
+    while let Some(arg) = values.next() {
+        if arg == flag {
+            ensure!(selected.is_none(), "{node} has duplicate {flag}");
+            let value = values
+                .next()
+                .with_context(|| format!("{node} {flag} needs a value"))?;
+            ensure!(
+                !value.is_empty() && !value.starts_with("--"),
+                "{node} {flag} needs a value"
+            );
+            selected = Some(value.to_owned());
+        }
+    }
+    selected
+        .map(Some)
+        .with_context(|| format!("{node} process requires {flag}"))
 }
 
-fn listener(value: Option<String>, default: u16) -> Value {
+fn listener(value: Option<String>, default: u16) -> Result<Value> {
+    let Some(value) = value else {
+        return Ok(json!({"host":"127.0.0.1","port":default}));
+    };
     let (host, port) = value
-        .as_deref()
-        .and_then(|value| value.rsplit_once(':'))
-        .and_then(|(host, port)| port.parse::<u16>().ok().map(|port| (host.to_owned(), port)))
-        .unwrap_or_else(|| ("127.0.0.1".into(), default));
-    json!({"host":host,"port":port})
+        .rsplit_once(':')
+        .with_context(|| format!("listener {value} must be 127.0.0.1:<port>"))?;
+    ensure!(host == "127.0.0.1", "listener {value} must bind 127.0.0.1");
+    let port = port
+        .parse::<u16>()
+        .with_context(|| format!("listener {value} has invalid port"))?;
+    ensure!(port >= 1024, "listener {value} port must be 1024–65535");
+    Ok(json!({"host":host,"port":port}))
 }
 
-fn endpoints(paths: &Paths, name: &str, graph: &Value) -> Value {
-    let api_port = crate::http::local_port().unwrap_or(16000);
-    let eos_socket = command_arg(graph, "eos", "--socket")
+pub(crate) fn endpoints(paths: &Paths, name: &str, graph: &Value) -> Result<Value> {
+    let api_port = crate::http::local_port()?;
+    let eos_socket = command_arg(graph, "eos", "--socket")?
         .map(PathBuf::from)
         .unwrap_or_else(|| paths.runtime.join(format!("{name}-eos.sock")));
-    json!({
+    ensure!(
+        eos_socket.is_absolute(),
+        "EOS --socket must be an absolute path"
+    );
+    Ok(json!({
         "isos_api":{"url":format!("http://127.0.0.1:{api_port}")},
-        "eos_control":listener(command_arg(graph,"bridge","--listen"),16020),
-        "eos_catalog":listener(command_arg(graph,"config","--listen"),16021),
-        "egia_northbound":listener(command_arg(graph,"egia","--listen"),16060),
+        "eos_control":listener(command_arg(graph,"bridge","--listen")?,16020)?,
+        "eos_catalog":listener(command_arg(graph,"config","--listen")?,16021)?,
+        "egia_northbound":listener(None,EGIA_NORTHBOUND_PORT)?,
         "eos_socket":{"path":eos_socket}
-    })
+    }))
 }
 
 fn request(
@@ -146,7 +197,7 @@ fn request(
         "unknown setup operation"
     );
     let request = json!({"schema_version":2,"op":op,"core":role,"revision":graph_revision,
-        "graph":graph,"endpoints":endpoints(paths,name,graph),"packages":package_refs(paths, graph)?});
+        "graph":graph,"endpoints":endpoints(paths,name,graph)?,"packages":package_refs(paths, graph)?});
     ensure!(
         serde_json::to_vec(&request)?.len() <= MAX_REQUEST,
         "setup request exceeds 1 MiB"
@@ -193,7 +244,9 @@ fn invoke(program: &Path, request: &Value) -> Result<Value> {
         }
         thread::sleep(Duration::from_millis(10));
     };
-    let _ = write_task.join();
+    write_task
+        .join()
+        .map_err(|_| anyhow::anyhow!("setup adapter request writer failed"))??;
     let output = reader
         .join()
         .map_err(|_| anyhow::anyhow!("setup adapter reader failed"))??;
@@ -210,18 +263,26 @@ fn invoke(program: &Path, request: &Value) -> Result<Value> {
         String::from_utf8_lossy(&stderr)
     );
     let reply: Value = serde_json::from_slice(&output).context("parse setup adapter response")?;
+    let typed: SetupReply = serde_json::from_value(reply.clone())
+        .context("setup adapter response violates schema 2")?;
+    ensure!(typed.schema_version == 2, "setup adapter schema mismatch");
     ensure!(
-        reply["schema_version"] == 2,
-        "setup adapter schema mismatch"
+        typed
+            .diagnostics
+            .iter()
+            .all(|item| !item.path.is_empty() && !item.code.is_empty() && !item.message.is_empty()),
+        "setup adapter diagnostic fields must be nonempty"
     );
-    ensure!(reply["ok"].is_boolean(), "setup adapter response lacks ok");
     ensure!(
-        reply["diagnostics"].is_array(),
-        "setup adapter response lacks diagnostics"
+        typed
+            .files
+            .iter()
+            .all(|item| !item.path.is_empty() && item.content.len() <= MAX_FILE),
+        "setup adapter file is invalid or exceeds 1 MiB"
     );
     ensure!(
-        reply["files"].is_array(),
-        "setup adapter response lacks files"
+        typed.ok || !typed.diagnostics.is_empty(),
+        "setup adapter rejected request without diagnostics"
     );
     Ok(reply)
 }
@@ -322,23 +383,9 @@ pub fn render_graph(
         *role == "eos" && graph["cores"].get("eos").is_some() || *role == "egia" && egia_process
     });
     let mut files = Vec::new();
+    let mut seen_files = BTreeSet::new();
     for role in roles {
-        let reply = match call(paths, name, role, "render", graph, expected_revision) {
-            Ok(reply) => reply,
-            Err(error)
-                if role == "eos" && {
-                    let message = error.to_string();
-                    message.contains("unrecognized subcommand")
-                        || message.contains("unexpected argument 'setup'")
-                        || message.contains("unknown command 'setup'")
-                } =>
-            {
-                // Older verified EOS v2 binaries still use the authored graph directly.
-                crate::v2_process::validate_value(paths, graph)?;
-                continue;
-            }
-            Err(error) => return Err(error),
-        };
+        let reply = call(paths, name, role, "render", graph, expected_revision)?;
         ensure!(
             reply["ok"] == true,
             "{role} setup rejected graph: {}",
@@ -350,7 +397,12 @@ pub fn render_graph(
             "setup adapter returned too many files"
         );
         for entry in entries {
-            files.push(safe_file(role, entry)?);
+            let file = safe_file(role, entry)?;
+            ensure!(
+                seen_files.insert(file.0.clone()),
+                "duplicate setup file path"
+            );
+            files.push(file);
         }
     }
     let mut inputs = Vec::new();
@@ -494,6 +546,32 @@ mod tests {
         assert_eq!(reply["ok"], true);
         fs::write(&script, "#!/bin/sh\ncat >/dev/null\nprintf '{\"schema_version\":1,\"ok\":true,\"diagnostics\":[],\"files\":[]}'\n").unwrap();
         assert!(invoke(&script, &json!({"schema_version":2})).is_err());
+        fs::write(&script, "#!/bin/sh\ncat >/dev/null\nprintf '{\"schema_version\":2,\"ok\":false,\"diagnostics\":[],\"files\":[]}'\n").unwrap();
+        assert!(invoke(&script, &json!({"schema_version":2})).is_err());
+        fs::write(&script, "#!/bin/sh\ncat >/dev/null\nprintf '{\"schema_version\":2,\"ok\":true,\"diagnostics\":[],\"files\":[{\"path\":\"eos/graph.json\"}]}'\n").unwrap();
+        assert!(invoke(&script, &json!({"schema_version":2})).is_err());
+    }
+
+    #[test]
+    fn explicit_endpoints_reject_missing_malformed_and_duplicate_flags() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path());
+        let mut graph = json!({"cores":{"isos":{"layers":{"process":{"groups":{"component":{"nodes":{
+            "eos":{"settings":{"args":["--socket", "/tmp/eos.sock"]}},
+            "bridge":{"settings":{"args":["--listen", "127.0.0.1:16020"]}}
+        }}}}}}}});
+        let resolved = endpoints(&paths, "default", &graph).unwrap();
+        assert_eq!(resolved["eos_control"]["port"], 16020);
+        assert_eq!(resolved["egia_northbound"]["port"], EGIA_NORTHBOUND_PORT);
+        graph["cores"]["isos"]["layers"]["process"]["groups"]["component"]["nodes"]["bridge"]["settings"]
+            ["args"] = json!(["--listen", "bad"]);
+        assert!(endpoints(&paths, "default", &graph).is_err());
+        graph["cores"]["isos"]["layers"]["process"]["groups"]["component"]["nodes"]["bridge"]["settings"]
+            ["args"] = json!(["--listen", "127.0.0.1:16020", "--listen", "127.0.0.1:16021"]);
+        assert!(endpoints(&paths, "default", &graph).is_err());
+        graph["cores"]["isos"]["layers"]["process"]["groups"]["component"]["nodes"]["bridge"]["settings"]
+            ["args"] = json!([]);
+        assert!(endpoints(&paths, "default", &graph).is_err());
     }
 
     #[test]

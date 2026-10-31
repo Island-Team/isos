@@ -16,6 +16,8 @@ isos
 
 `isos` 与 `isos serve` 在 `http://127.0.0.1:16001/en/isos` 提供 IsosUI，在 `http://127.0.0.1:16000/api/isos/v2` 提供 API。IsOS 保留 16000–16019，EOS 保留 16020–16059（控制 16020、运行时目录 16021），EGIA 保留 16060–16099（北向接口 16060）。可显式覆盖监听端口；启动前会拒绝端口冲突。产品模式提供已配置且经校验的静态 UI，并要求兼容的核心程序。Ctrl+C 或 `isos stop` 会停止 UI、API、部署、显式启动的服务及管理器；`isos deployment stop` 只停止图部署。
 
+使用工作台时请保持 `isos serve` 终端运行。保存并运行、重启或图启动被拒绝只控制部署；不需要 systemd 用户服务，工作台仍保持可用。
+
 可选的 systemd 用户单元运行相同的产品模式命令：在 `isos init --mode product` 并配置经过验证的核心与界面路径后，运行 `./install.sh --install-user-service` 安装 CLI 并启用、启动该单元；如果 CLI 已安装，也可以运行 `tools/user-service.sh install`。运行 `tools/user-service.sh remove` 可禁用。CLI 与 shell 补全不依赖此单元。
 
 

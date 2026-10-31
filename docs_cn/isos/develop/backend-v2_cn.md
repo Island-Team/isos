@@ -56,3 +56,7 @@ Rust 测试通过 77 个单元测试和五个 CLI 测试。桩仿真路线覆盖
 ## 已保存 setup 状态恢复（2026-10-31）
 
 当前 EOS profile 接受适配器类型后，使用 `isos config apply` 重新应用了已保存的 MuJoCo 图。成功 Apply 现在会清除之前的 setup 错误；就绪报告会将保存图中不存在的核心标记为未启用。`cargo fmt --check`、`cargo clippy --all-targets -- -D warnings` 和 `cargo test` 均通过（78 个单元测试、五个 CLI 测试）。完整输出和图备份保存在忽略 Git 的 `logs/test/20261031-stale-setup-recovery/`。
+
+## Setup 契约与前台生命周期（2026-10-31）
+
+`cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test` 和 `python3 tests/clean_home_v2.py` 均通过，完整输出保存在忽略 Git 的 `logs/test/20261031-setup-contract-lifecycle/`。Rust 测试通过 80 个单元测试和四个 CLI 测试。clean-home 路线确认：EOS 程序在 Apply 后发生变化时，Run 返回 HTTP 422，而前台 `isos serve`、图 API 和静态 IsosUI 仍可用。测试还覆盖 Apply、Run、Restart、MuJoCo 桩控制、部署停止及工作台 Ctrl+C 退出。

@@ -17,7 +17,7 @@ API 只绑定 `127.0.0.1`，不提供前端文件。IsosUI 通过地址和端口
 | `POST /api/isos/v2/core-setup/{role}/render` | `{schema_version:2,graph,revision?}` → 配置响应 | 预览生成的核心配置；API 不写入预览。 |
 | `GET /api/isos/v2/node-options` | `{adapter_families,primitive_bindings,targets}` | 已保存图的适配器、原语绑定与目标选项。 |
 | `POST /api/isos/v2/node-options` | `{schema_version:2,graph}` → `{adapter_families,primitive_bindings,targets}` | 未应用草稿的选择器选项。 |
-| `GET /api/isos/v2/core-readiness` | `{cores,graph,isos,isosui}` | 检查已配置核心路径、兼容性、核心是否在已保存节点图中启用、图配置与运行状态。 |
+| `GET /api/isos/v2/core-readiness` | `{cores,graph,isos,isosui}` | 检查已配置核心路径、兼容性、核心是否在已保存节点图中启用、图配置、已配置端点与运行状态。端点表示配置，不代表正在监听。 |
 | `GET/POST /api/isos/v2/build-binaries` 及 `POST /api/isos/v2/build-binaries/select` | HTTP 410 | 已退出的构建与选择接口，返回迁移指引。 |
 | `GET /api/isos/v2/node-sets` | `{sets:[{package,id,parameters,nodes}]}` | 已安装软件包提供的节点集合。 |
 | `POST /api/isos/v2/node-sets/preview` | `{package:{id,version},set_id,graph,values:{name:string}}` → `{graph,added_paths}` | 将集合合成到草稿，不保存；无效合成返回 422。 |
@@ -35,6 +35,8 @@ API 只绑定 `127.0.0.1`，不提供前端文件。IsosUI 通过地址和端口
 ### 按需核心配置适配器
 
 IsOS 按需调用已配置的 `aether-profile setup --json` 或 `egia-config setup --json` 程序。标准输入为一个有界 JSON 对象：`{schema_version:2,op:"catalog"|"validate"|"render",core:"eos"|"egia",revision,graph,endpoints,packages}`。Run 时的 `revision` 是已保存图字节的 SHA-256。`graph` 是完整 v2 图，`endpoints` 包含解析后的 IsOS 与核心监听地址，`packages` 包含已校验精确包引用 `{id,version,path}`。适配器返回 `{schema_version:2,ok,diagnostics:[{path,code,message}],files:[{path,content}],catalog?}`。`render` 文件路径必须为以核心名称开头的相对路径，例如 `eos/graph.json`；文件内容为 UTF-8 文本。请求上限 1 MiB，响应上限 4 MiB，单个文件上限 1 MiB，配置超时 10 秒。适配器不绑定监听端口。
+
+已启用的 EOS 进程节点通过 `settings.args` 提供 `--socket`；已启用的 EOS bridge 和 config 节点以 `127.0.0.1:<端口>` 提供 `--listen`。IsOS 在 setup 预览和 Apply 时先迁移旧版组件命令，再检查这些参数。调用核心前，IsOS 会拒绝缺失、格式错误或重复的必需参数，不会静默改用 EOS 默认端点。当前保留的 EGIA 北向端点为 `127.0.0.1:16060`；实际监听由 EGIA 的受管启动配置负责，初始图不启用 EGIA 进程节点。核心 setup 必须支持 schema 2；缺少 setup 操作属于不兼容，不能回退到直接读取原始图。
 
 Apply 校验已保存修订后生成已启用核心配置；Run 和 Restart 在启动子进程前复查修订与软件包输入。IsOS 再次检查已保存图的修订，并把接受的文件原子写入私有生成配置目录。修订过期时停止配置，且不替换图。EOS 生成的 `graph.json` 是已校验快照；当前 EOS 运行时仍直接读取已保存图。缺失或不兼容的 setup 适配器会阻止启动。MuJoCo 是外部 IsOS 包，核心配置不会构建它。
 

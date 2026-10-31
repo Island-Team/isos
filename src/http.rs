@@ -812,12 +812,15 @@ async fn core_setup_route(
         if edit.schema_version != 2 {
             return Err(err(StatusCode::BAD_REQUEST, "API schema_version must be 2"));
         }
+        let mut graph = edit.graph;
+        v2_process::migrate_component_commands(&mut graph)
+            .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
         let revision = edit.revision.unwrap_or_else(|| {
-            serde_json::to_vec(&edit.graph)
+            serde_json::to_vec(&graph)
                 .map(|bytes| revision(&bytes))
                 .unwrap_or_default()
         });
-        (edit.graph, revision)
+        (graph, revision)
     } else {
         let bytes = fs::read(app.paths.v2_node_graph(&app.deployment))
             .map_err(|error| err(StatusCode::NOT_FOUND, error))?;
