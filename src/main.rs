@@ -69,7 +69,7 @@ fn catch_interrupts() -> Result<()> {
     name = "isos",
     version,
     about = "Manage Island EOS and EGIA as one local deployment",
-    after_help = "FIRST USE\n  1. Run `isos init --mode dev` once, then build and select IsOS, EOS, and IsosUI.\n  2. Run `isos serve` and use the Graph page to Validate and Apply.\n  3. Run `isos run`, inspect `isos status`, and stop with `isos stop`.\n\nMORE\n  Run `isos <command> --help` or read the IsOS quick start."
+    after_help = "FIRST USE\n  Run `isos` for a short setup guide.\n  Run `isos <command> --help` for command details."
 )]
 struct Cli {
     #[arg(long = "generate-completion", hide = true)]
@@ -1637,18 +1637,58 @@ fn service_call(
     )
 }
 
+fn print_first_use_guide() {
+    println!(
+        r#"IsOS quick start
+
+  1. Set up once:       isos init --mode dev
+  2. Build and select:  isos build eos
+                       isos version select eos <build-selector>
+                       isos build isosui
+                       isos version select isosui <build-selector>
+  3. Open the editor:  isos serve          (terminal 1)
+                       isos open           (terminal 2)
+  4. In Graph, add a backend, then Validate and Apply.
+  5. Start the graph:  isos run
+
+Ctrl+C stops the graph; `isos stop` stops the workbench.
+Use `isos doctor` to check readiness or `isos --help` for all commands."#
+    );
+}
+
+fn print_init_next_steps(mode: &str) {
+    println!("\nNext steps:");
+    if mode == "product" {
+        println!("  isos build isos && isos version select isos <build-selector>");
+        println!("  isos build eos && isos version select eos <build-selector>");
+        println!("  isos build isosui && isos version select isosui <build-selector>");
+    } else {
+        println!("  isos build eos && isos version select eos <build-selector>");
+        println!("  isos build isosui && isos version select isosui <build-selector>");
+    }
+    println!("  isos serve                         # start the workbench in this terminal");
+    println!("  isos open                          # open Graph from another terminal");
+    println!("  In Graph, add a backend, then Validate and Apply before `isos run`.");
+    println!("  Run `isos` for the full quick start or `isos doctor` to check readiness.");
+}
+
 fn main_run() -> Result<()> {
+    if std::env::args_os().len() == 1 {
+        print_first_use_guide();
+        return Ok(());
+    }
     config::load_runtime_config()?;
     let cli = Cli::parse();
     if let Some(shell) = cli.generate_completion {
         generate(shell, &mut Cli::command(), "isos", &mut std::io::stdout());
         return Ok(());
     }
+    let Some(command) = cli.command else {
+        print_first_use_guide();
+        return Ok(());
+    };
     let paths = config::Paths::discover()?;
     let name = cli.deployment;
-    let command = cli
-        .command
-        .ok_or_else(|| anyhow::anyhow!("run isos --help for usage"))?;
     match command {
         CommandLine::Build {
             target,
@@ -1783,6 +1823,7 @@ fn main_run() -> Result<()> {
                     "MuJoCo package missing: install or link island/mujoco-sim 2.0.0, then validate and apply the graph"
                 );
             }
+            print_init_next_steps(paths.mode()?);
         }
         CommandLine::Open => {
             v2_call(&paths, &name, "manager_identity")?;

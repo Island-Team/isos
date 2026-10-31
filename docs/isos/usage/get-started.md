@@ -4,6 +4,8 @@
 
 Install IsOS, then initialize a development home. `init` writes configuration and an editable starter graph only when absent, then exits. It does not start the manager or UI.
 
+Run `isos` with no command to print the short first-use guide. After `isos init`, the CLI prints the next build, editor, and graph commands; these are suggestions and do not start a service.
+
 ```sh
 isos init --mode dev
 isos build eos
