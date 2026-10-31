@@ -12,6 +12,9 @@ The API binds only to `127.0.0.1` and serves no frontend files. IsosUI calls it 
 | `PUT /api/isos/v2/node-graph` | `{schema_version:2,revision,graph}` | Validate and apply the graph. Stale revision returns 409. |
 | `POST /api/isos/v2/node-graph/validate` | `{schema_version:2,graph}` → `{valid,diagnostics}` | Registry and package admission, without applying. |
 | `GET /api/isos/v2/node-types` | `{types:[...]}` | Node type catalog from `aether-profile`. |
+| `GET /api/isos/v2/core-setup/{role}/catalog` | Setup reply with `catalog` | Query the selected `eos` or `egia` adapter without starting its runtime. |
+| `POST /api/isos/v2/core-setup/{role}/validate` | `{schema_version:2,graph,revision?}` → setup reply | Validate an editor draft with a core's own rules, without saving it. |
+| `POST /api/isos/v2/core-setup/{role}/render` | `{schema_version:2,graph,revision?}` → setup reply | Preview generated core configuration; the API does not write the preview. |
 | `GET /api/isos/v2/node-options` | `{adapter_families,primitive_bindings,targets}` | Selector options for the saved graph. |
 | `POST /api/isos/v2/node-options` | `{schema_version:2,graph}` → `{adapter_families,primitive_bindings,targets}` | Selector options for an unapplied draft. |
 | `GET /api/isos/v2/build-binaries` | `{selected:receipt|null,source_current:boolean,stale_reason:string|null}` | Digest-verified selected EOS binaries and source freshness. A stale source is reported as state, not an HTTP error; no selection gives `source_current:false` and `stale_reason:null`. |
@@ -29,6 +32,12 @@ The API binds only to `127.0.0.1` and serves no frontend files. IsosUI calls it 
 | `GET /api/isos/v2/version` | `{api_schema_version,isos_version}` | Workbench compatibility check. |
 
 The process manager validates the saved graph and exact package again before starting children. EOS starts MuJoCo as its direct child and stops it after admitted actuators are stopped. Graph layout belongs to the editor; the HTTP graph contains runtime configuration and typed connections only.
+
+### On-demand core setup adapter
+
+IsOS calls the selected `aether-profile setup --json` or `egia-config setup --json` executable on demand. It sends one bounded JSON object on standard input: `{schema_version:2,op:"catalog"|"validate"|"render",core:"eos"|"egia",revision,graph,endpoints,packages}`. `revision` is the SHA-256 of the saved graph bytes for Run. `graph` is the full v2 graph, `endpoints` contains resolved IsOS and core listener addresses, and `packages` contains verified exact package references `{id,version,path}`. The adapter returns `{schema_version:2,ok,diagnostics:[{path,code,message}],files:[{path,content}],catalog?}`. A `render` file path must be relative and begin with its core name, such as `eos/graph.json`. Each file contains UTF-8 text. The request is at most 1 MiB, the reply at most 4 MiB, each file at most 1 MiB, and setup times out after 10 seconds. The adapter binds no listener.
+
+Run renders enabled cores before starting children. IsOS checks the saved graph revision again and writes accepted files atomically under its private generated configuration directory. A stale revision aborts setup without replacing the graph. EOS's rendered `graph.json` is a validated snapshot; the current EOS runtime still reads the saved graph directly. Older verified EOS v2 binaries without `setup` keep their existing direct-graph validation path until explicitly rebuilt. Existing `/config/{role}/{op}` routes remain available during migration. MuJoCo is an external IsOS package and is never built by core setup.
 
 ## Owner-only manager operations
 
@@ -64,7 +73,9 @@ IsOS reads [config/isos.toml](../../../config/isos.toml) from its source checkou
 
 `receipt` contains `schema_version` (integer 2), `component` (`eos`), `product_version` (`2.0.0`), `source_commit` (full Git SHA), `source_dirty` (boolean indicating modified or untracked source), `source_fingerprint` (SHA-256 of commit and source files), `source_root` (optional absolute source path for development drift checks), `binaries` (absolute paths keyed by executable name), and `sha256` (matching file digests). Build stages the five Aether executables together under the private IsOS data directory without changing selection. Product mode admits only clean fingerprinted receipts. Run probes the exact EOS, bridge, config, and profile executable capabilities and returns an error when the set is stale or the graph points elsewhere. `suggested_graph` is `{revision,graph}` or null and is never applied automatically. CLI `isos build eos` activates its new build and applies the three process paths at the current graph revision. The API build remains staging only; its select endpoint or `isos version select eos <selector>` activates a reviewed candidate. The selector accepts a unique commit prefix, product version, or source fingerprint prefix; use the fingerprint when builds share a commit.
 
-In dev mode, graph validation and editing continue to use the digest-verified selected `aether-profile` when EOS source has changed. Selecting a staged build validates the suggested graph with that candidate's `aether-profile` before updating the graph and pin. Run still requires source freshness. The version check reports source drift in `match.eos_source` (boolean or null if unselected) and `eos_source_diagnostic` (string or null).
+In dev mode, graph validation and editing continue to use the digest-verified selected `aether-profile` when EOS source has changed. Selecting a staged build validates the suggested graph with that candidate's `aether-profile` before updating the graph and pin. Run admits the verified installed build even when local source changes; source drift is informational. The version check reports drift in `match.eos_source` (boolean or null if unselected) and `eos_source_diagnostic` (string or null).
+
+Development checks: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, and `cargo build` passed on 2026-10-31. Complete local output is saved under `logs/test/20261031-workbench-core-setup/`.
 
 IsOS and IsosUI builds use separate immutable receipts with the same source identity fields. `isos build` defaults to all components; EOS and IsosUI are activated after successful builds. `isos build isos` stages a release executable; product activation with `isos version select isos <selector>` requires a stopped manager. Development serves with the IsOS executable on disk. An IsosUI receipt additionally binds a directory digest to its manifest; product serving reads only the selected, verified directory.
 

@@ -4,26 +4,24 @@ IsOS owns the shared Aether v2 graph, backend packages, local workbench API, and
 
 ## Start a MuJoCo deployment
 
-Run `./install.sh` from the v2 `master` checkout to install the CLI without installing or starting a systemd user unit. `isos init --mode dev` creates the configuration and starter graph and exits; running `isos init` again preserves the mode and authored graph. Use `isos init --mode product` to select product admission rules. `isos serve` runs the manager, API, and selected static IsosUI in the foreground; `isos serve --ui-live` explicitly uses supervised Webpack in dev mode.
+Run `./install.sh` from the v2 source checkout to install the CLI without installing or starting a systemd user unit. Plain `isos` initializes a missing development graph, starts the local workbench, and opens its browser page; backend cores stay stopped. Repeating it reuses the running workbench. `isos init --mode dev` prepares the graph without launching anything, while `isos init --mode product` selects product admission rules. `isos serve` runs the workbench in the foreground without opening a browser; `isos serve --ui-live` explicitly uses supervised Webpack in dev mode.
 
 Edit the tracked [config/isos.toml](config/isos.toml) for portable runtime defaults; [config/isos.example.toml](config/isos.example.toml) shows optional fields. Relative source paths are resolved from this IsOS checkout, regardless of the command directory. Environment variables override file values; `ISOS_CONFIG` selects another absolute config file. Private deployment graphs and build selections remain under `~/.config/isos/`. IsOS does not load `.env` from the command directory. In dev mode, `isos build` builds IsOS, EOS, and IsosUI from the local source. It activates the just-built EOS and IsosUI artifacts automatically; MuJoCo remains a separate IsOS package:
 
 ```sh
-isos init --mode dev
-isos build
-isos serve
+isos
 ```
 
 `isos build isosui` and `isos build` use a sibling `IsosUI` checkout beside the IsOS source by default. Set the absolute `ISOSUI_REPO_PATH` or `[paths].ui_repo` in `config.toml` for another checkout. `build all` checks for the UI source before starting any component build; it selects the new EOS and IsosUI builds after verification. The IsOS executable on disk is used in dev mode.
 
-`isos serve` builds the local IsosUI source when its dev bundle is missing or stale, then hosts IsosUI at `http://127.0.0.1:16001/en/isos` and the API at `http://127.0.0.1:16000/api/isos/v2`. `ISOSUI_PORT` and `ISOS_HTTP_PORT` change the loopback ports. Product mode serves only the selected verified static UI and does not need npm or source checkouts. Ctrl+C or `isos stop` stops the UI, API, deployment, explicitly started services, and manager. `isos deployment stop` stops the graph only.
+`isos` and `isos serve` build the local IsosUI source when its dev bundle is missing or stale, then host IsosUI at `http://127.0.0.1:16001/en/isos` and the API at `http://127.0.0.1:16000/api/isos/v2`. IsOS reserves ports 16000–16019, EOS 16020–16059 (control 16020, runtime catalog 16021), and EGIA 16060–16099 (northbound 16060). Explicit listener overrides are supported; collisions are rejected before graph launch. Product mode serves only a selected verified static UI and requires exact verified core pins. Ctrl+C or `isos stop` stops the UI, API, deployment, explicitly started services, and manager. `isos deployment stop` stops the graph only.
 
 An optional systemd user unit runs that same product command: after `isos init --mode product` and selecting verified builds, run `./install.sh --install-user-service` to install the CLI and enable and start the unit, or run `tools/user-service.sh install` when the CLI is already installed. Run `tools/user-service.sh remove` to disable it. CLI commands and shell completion work without the unit.
 Product mode requires an exact selected IsOS executable. With the manager stopped, run `isos build isos` and `isos version select isos 2.0.0` before `isos serve`.
 
 In the second terminal:
 
-`isos open` requires a running `isos serve` manager. It prints the UI URL and launches the browser without forwarding desktop toolkit diagnostics to the terminal.
+`isos open` starts the workbench if needed, prints the UI URL, and opens the browser without forwarding desktop toolkit diagnostics to the terminal.
 
 ```sh
 isos open
@@ -36,7 +34,7 @@ isos config apply ~/.config/isos/deployments/default.nodes.json
 isos run
 ```
 
-`isos run` (also `start` and `restart`) stays attached. Press Ctrl+C to stop the deployment in reverse dependency order. Use `isos status --json`, `isos version check`, `isos services status`, or `isos stop` from another terminal.
+`isos run` starts the workbench if absent, prepares the saved graph through on-demand core adapters, then starts configured cores in dependency order. It stays attached. Press Ctrl+C to stop the deployment in reverse dependency order. Source edits alone do not prevent a verified installed core build from running; run `isos build` explicitly to compile source changes. Use `isos status --json`, `isos version check`, `isos services status`, or `isos stop` from another terminal.
 
 `isos init` creates the editable graph only when absent. Home shows package readiness and revisions. Graph edits the one `2.0.0` IsOS/EOS/EGIA graph with versioned `v1.0` node types. Validate and Apply save a revision; Run rechecks the exact package, graph, scene, executable, assets, and MuJoCo dependency. Install or link alone never changes an active deployment. EOS and EGIA have separate workbench pages, with EGIA runtime controls reserved for later.
 

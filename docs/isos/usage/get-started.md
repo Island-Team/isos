@@ -2,17 +2,13 @@
 
 [中文](../../../docs_cn/isos/usage/get-started_cn.md)
 
-Install IsOS, then initialize a development home. `init` writes configuration and an editable starter graph only when absent, then exits. It does not start the manager or UI.
-
-Run `isos` with no command to print the short first-use guide. After `isos init`, the CLI prints the next build, editor, and graph commands; these are suggestions and do not start a service.
+Install IsOS, then run plain `isos`. It initializes a missing development graph, starts the IsOS API on 16000 and IsosUI on 16001, and opens the browser. Backend cores stay stopped. Running `isos` again reuses the workbench. `isos init` only creates missing configuration and graph files and then exits.
 
 ```sh
-isos init --mode dev
-isos build
-isos serve
+isos
 ```
 
-`isos build` uses local source and activates the new EOS and IsosUI builds. MuJoCo remains an external IsOS package. `isos serve` builds a missing or stale dev UI bundle, then runs the manager, API, and verified static IsosUI in the foreground. Run `isos open` in another terminal. Use `isos serve --ui-live` only when developing the frontend from an IsosUI checkout with npm dependencies installed. Product mode requires clean, selected builds and serves the pinned UI without npm or source checkouts. See the [README](../../../README.md) for product setup.
+`isos build` explicitly compiles local source and activates new EOS and IsosUI builds. MuJoCo remains an external IsOS package. `isos serve` starts the workbench without opening a browser; `isos open` starts it if needed. Use `isos serve --ui-live` only when developing the frontend from an IsosUI checkout with npm dependencies installed. Product mode requires exact, verified selected releases and serves the pinned UI without npm or source checkouts. See the [README](../../../README.md) for product setup.
 
 Build the MuJoCo simulator and stage a `2.0.0` bundle with its repository's `tools/build-backend-bundle.py`; set `MUJOCO_ROOT` to the matching runtime. Link the bundle and preview its `sim-hardware` node set in the Graph workbench. The starter graph contains EOS process and dispatcher nodes but no hardware package. The preview adds the MuJoCo process, camera, base, manipulator, gate, and Vision nodes. Choose a scene, inspect the draft, then Validate and Apply. CLI equivalents are:
 

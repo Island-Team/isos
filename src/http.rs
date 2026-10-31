@@ -2,6 +2,7 @@
 use crate::{
     component,
     config::{self, Paths},
+    core_setup,
     graph::Deployment,
     lifecycle,
     log_store::LogStore,
@@ -392,8 +393,10 @@ async fn build_binaries_status(State(app): State<Arc<App>>, headers: HeaderMap) 
         .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
     let stale_reason = selected
         .as_ref()
-        .and_then(|receipt| v2_build::verify_source(&app.paths, receipt).err())
-        .map(|error| error.to_string());
+        .map(|receipt| v2_build::source_drift(&app.paths, receipt))
+        .transpose()
+        .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?
+        .flatten();
     let source_current = selected.is_some() && stale_reason.is_none();
     ok(json!({"selected":selected,"source_current":source_current,"stale_reason":stale_reason}))
 }
@@ -785,6 +788,51 @@ async fn component_route(
         .map_err(|e| err(StatusCode::UNPROCESSABLE_ENTITY, e))?;
     ok(value)
 }
+
+#[derive(Deserialize)]
+struct CoreSetupEdit {
+    schema_version: u32,
+    graph: Value,
+    #[serde(default)]
+    revision: Option<String>,
+}
+
+async fn core_setup_route(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    UrlPath((role, op)): UrlPath<(String, String)>,
+    body: Option<Json<CoreSetupEdit>>,
+) -> ApiResult {
+    authorized(&app, &headers)?;
+    if !matches!(role.as_str(), "eos" | "egia")
+        || !matches!(op.as_str(), "catalog" | "validate" | "render")
+    {
+        return Err(err(StatusCode::NOT_FOUND, "unknown core setup operation"));
+    }
+    if op != "catalog" && body.is_none() {
+        return Err(err(StatusCode::BAD_REQUEST, "operation requires a graph"));
+    }
+    let (graph, revision) = if let Some(Json(edit)) = body {
+        if edit.schema_version != 2 {
+            return Err(err(StatusCode::BAD_REQUEST, "API schema_version must be 2"));
+        }
+        let revision = edit.revision.unwrap_or_else(|| {
+            serde_json::to_vec(&edit.graph)
+                .map(|bytes| revision(&bytes))
+                .unwrap_or_default()
+        });
+        (edit.graph, revision)
+    } else {
+        let bytes = fs::read(app.paths.v2_node_graph(&app.deployment))
+            .map_err(|error| err(StatusCode::NOT_FOUND, error))?;
+        let graph = serde_json::from_slice(&bytes)
+            .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
+        (graph, revision(&bytes))
+    };
+    let reply = core_setup::call(&app.paths, &app.deployment, &role, &op, &graph, &revision)
+        .map_err(|error| err(StatusCode::SERVICE_UNAVAILABLE, error))?;
+    ok(reply)
+}
 pub fn serve(paths: Paths, deployment: String) -> Result<()> {
     paths.prepare()?;
     let app = Arc::new(App { paths, deployment });
@@ -914,6 +962,12 @@ fn router(app: Arc<App>) -> Router {
                 .post(component_route)
                 .options(preflight),
         )
+        .route(
+            "/api/isos/v2/core-setup/{role}/{op}",
+            get(core_setup_route)
+                .post(core_setup_route)
+                .options(preflight),
+        )
         .route_layer(middleware::from_fn(cors));
     Router::new().merge(api).with_state(app)
 }
@@ -923,6 +977,28 @@ mod tests {
     use super::*;
     use axum::body::to_bytes;
     use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn core_setup_api_rejects_unknown_role_and_missing_graph() {
+        for (route, expected) in [
+            (
+                "/api/isos/v2/core-setup/other/catalog",
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                "/api/isos/v2/core-setup/eos/validate",
+                StatusCode::BAD_REQUEST,
+            ),
+        ] {
+            let request = Request::builder()
+                .uri(route)
+                .header(header::HOST, "127.0.0.1:16000")
+                .body(Body::empty())
+                .unwrap();
+            let response = test_router().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), expected);
+        }
+    }
 
     #[tokio::test]
     async fn binary_build_api_rejects_legacy_dependency_mode() {

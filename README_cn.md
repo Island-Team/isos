@@ -4,26 +4,24 @@ IsOS 管理共享 Aether v2 图、后端软件包、本地工作台 API 和直�
 
 ## 启动 MuJoCo 部署
 
-从 v2 `master` 源码目录运行 `./install.sh` 安装 CLI，默认不会安装或启动 systemd 用户单元。`isos init --mode dev` 创建配置与初始图后退出；再次执行 `isos init` 会保留模式和已编辑的图。`isos init --mode product` 选择产品模式的准入规则。`isos serve` 在前台运行管理器、API 与固定的静态 IsosUI；开发模式可显式使用 `isos serve --ui-live` 启动受管理的 Webpack。
+从 v2 源码目录运行 `./install.sh` 安装 CLI，默认不会安装或启动 systemd 用户单元。直接运行 `isos` 会初始化缺失的开发图、启动本地工作台并打开浏览器；后端核心保持停止。再次运行会复用工作台。`isos init --mode dev` 仅准备图，不启动进程；`isos init --mode product` 选择产品模式规则。`isos serve` 在前台运行工作台但不打开浏览器；开发模式可显式使用 `isos serve --ui-live` 启动受管理的 Webpack。
 
 在受版本管理的 [config/isos.toml](config/isos.toml) 中设置可公开的运行默认值；可选字段见 [config/isos.example.toml](config/isos.example.toml)。相对源码路径以 IsOS 源码目录为基准，与命令工作目录无关。环境变量覆盖配置文件值；`ISOS_CONFIG` 可指定其他绝对配置文件路径。私有部署图和构建选择仍保存在 `~/.config/isos/`。IsOS 不从命令工作目录读取 `.env`。开发模式运行 `isos build` 构建本地 IsOS、EOS 和 IsosUI，并自动启用 EOS 与 IsosUI；MuJoCo 仍是独立的 IsOS 软件包：
 
 ```sh
-isos init --mode dev
-isos build
-isos serve
+isos
 ```
 
 `isos build isosui` 和 `isos build` 默认使用 IsOS 源码目录旁的 `IsosUI` 源码目录。如需使用其他目录，请设置绝对路径 `ISOSUI_REPO_PATH` 或在 `config.toml` 中设置 `[paths].ui_repo`。`build all` 会在构建任何组件前检查界面源码；验证后会启用新的 EOS 和 IsosUI 构建；开发模式直接使用磁盘上的 IsOS 程序。
 
-`isos serve` 在开发模式下会自动重建缺失或过期的本地界面，并在 `http://127.0.0.1:16001/en/isos` 提供 IsosUI，在 `http://127.0.0.1:16000/api/isos/v2` 提供 API。`ISOSUI_PORT` 与 `ISOS_HTTP_PORT` 可修改环回端口。产品模式只使用经校验的固定静态 UI，不需要 npm 或源码目录。Ctrl+C 或 `isos stop` 会停止 UI、API、部署、显式启动的服务及管理器；`isos deployment stop` 只停止图部署。
+`isos` 与 `isos serve` 在开发模式下会自动重建缺失或过期的本地界面，并在 `http://127.0.0.1:16001/en/isos` 提供 IsosUI，在 `http://127.0.0.1:16000/api/isos/v2` 提供 API。IsOS 保留 16000–16019，EOS 保留 16020–16059（控制 16020、运行时目录 16021），EGIA 保留 16060–16099（北向接口 16060）。可显式覆盖监听端口；启动前会拒绝端口冲突。产品模式只使用经校验的固定静态 UI，并要求精确固定的核心版本。Ctrl+C 或 `isos stop` 会停止 UI、API、部署、显式启动的服务及管理器；`isos deployment stop` 只停止图部署。
 
 可选的 systemd 用户单元运行相同的产品模式命令：在 `isos init --mode product` 并选择经验证的构建后，运行 `./install.sh --install-user-service` 安装 CLI 并启用、启动该单元；如果 CLI 已安装，也可以运行 `tools/user-service.sh install`。运行 `tools/user-service.sh remove` 可禁用。CLI 与 shell 补全不依赖此单元。
 产品模式要求精确选择的 IsOS 可执行文件。管理器停止时，先执行 `isos build isos` 和 `isos version select isos 2.0.0`，再执行 `isos serve`。
 
 在第二个终端执行：
 
-`isos open` 要求 `isos serve` 管理器已运行；它会输出 UI 地址并启动浏览器，不会把桌面工具包的诊断信息转发到终端。
+`isos open` 会在必要时启动工作台，输出 UI 地址并打开浏览器，不会把桌面工具包的诊断信息转发到终端。
 
 ```sh
 isos open
@@ -35,7 +33,7 @@ isos config apply ~/.config/isos/deployments/default.nodes.json
 isos run
 ```
 
-`isos run`（以及 `start`、`restart`）会保持前台运行。按 Ctrl+C 会按依赖逆序停止部署。可在其他终端执行 `isos status --json`、`isos version check`、`isos services status` 或 `isos stop`。
+`isos run` 会在工作台尚未运行时先启动工作台，再通过按需核心适配器准备已保存的图，并按依赖顺序启动已配置的核心。它保持前台运行。按 Ctrl+C 会按依赖逆序停止部署。源码更改本身不会阻止经过验证的已安装核心运行；要使用源码修改，显式运行 `isos build`。可在其他终端执行 `isos status --json`、`isos version check`、`isos services status` 或 `isos stop`。
 
 `isos init` 仅在图不存在时创建可编辑图。Home 展示软件包准备情况和修订；Graph 编辑唯一的 `2.0.0` IsOS/EOS/EGIA 图，当前节点类型版本为 `v1.0`。Validate 与 Apply 保存修订；Run 会重新校验固定版本的软件包、图、场景、可执行文件、资源和 MuJoCo 依赖。仅安装或链接不会改变运行中部署。工作台有单独的 EOS 和 EGIA 页面；EGIA 运行控制留待后续实现。
 

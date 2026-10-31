@@ -1,6 +1,7 @@
 mod auth;
 mod component;
 mod config;
+mod core_setup;
 mod graph;
 mod http;
 mod isosui;
@@ -69,7 +70,7 @@ fn catch_interrupts() -> Result<()> {
     name = "isos",
     version,
     about = "Manage Island EOS and EGIA as one local deployment",
-    after_help = "FIRST USE\n  Run `isos` for a short setup guide.\n  Run `isos <command> --help` for command details."
+    after_help = "MODES\n  dev (default): local source and installed binaries; setup can render configuration.\n  product: exact verified release pins; no source build at Run.\n\nSTART\n  Run `isos` to initialize and open the local workbench.\n  Run `isos <command> --help` for command details."
 )]
 struct Cli {
     #[arg(long = "generate-completion", hide = true)]
@@ -1025,6 +1026,11 @@ fn api_call(
                     "saved graph revision changed; reload before restart"
                 );
             }
+            core_setup::prepare_run(paths, &name, &revision)?;
+            ensure!(
+                v2_starter::revision(&path)? == revision,
+                "saved graph revision changed during core setup; reload before restart"
+            );
             let specs = v2_process::project_with_packages(paths, &source)?;
             v2_build::preflight_processes(paths, &specs)?;
             let started = restart_v2_processes(paths, managers, &name, &revision, &specs)?;
@@ -1041,6 +1047,11 @@ fn api_call(
                     "saved graph revision changed; reload before run"
                 );
             }
+            core_setup::prepare_run(paths, &name, &revision)?;
+            ensure!(
+                v2_starter::revision(&path)? == revision,
+                "saved graph revision changed during core setup; reload before run"
+            );
             let specs = v2_process::project_with_packages(paths, &source)?;
             v2_build::preflight_processes(paths, &specs)?;
             let manager = if let Some(active) = managers.get_mut(&name) {
@@ -1120,9 +1131,16 @@ fn api_call(
             let active = managers.get(&name);
             let active_revision = active.map(|a| a.active_revision.clone());
             let supervisor_failed = active.is_some_and(|a| a.last_error.is_some());
-            let last_error = active.and_then(|a| a.last_error.clone()).or_else(|| {
+            let mut last_error = active.and_then(|a| a.last_error.clone()).or_else(|| {
                 fs::read_to_string(paths.runtime.join(format!("{name}.last-error"))).ok()
             });
+            if last_error
+                .as_ref()
+                .is_some_and(|error| error.starts_with("EOS source changed since selected build"))
+                && v2_build::selected_verified(paths).ok().flatten().is_some()
+            {
+                last_error = None;
+            }
             let state = if active.is_none() {
                 "stopped"
             } else if supervisor_failed {
@@ -1391,7 +1409,35 @@ impl Drop for Frontend {
     }
 }
 
-fn serve_foreground(paths: config::Paths, name: String, ui_live: bool) -> Result<()> {
+fn open_browser() -> Result<()> {
+    let url = http::ui_url()?;
+    Command::new("xdg-open")
+        .arg(&url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("open IsosUI in browser")?;
+    Ok(())
+}
+
+fn ensure_setup(paths: &config::Paths, name: &str) -> Result<()> {
+    paths.prepare()?;
+    if !paths.config.join("mode").exists() && std::env::var_os("ISOS_MODE").is_none() {
+        paths.set_mode("dev")?;
+    }
+    v2_starter::init(paths, name)?;
+    Ok(())
+}
+
+fn serve_foreground(
+    paths: config::Paths,
+    name: String,
+    ui_live: bool,
+    browser: bool,
+    run_graph: bool,
+) -> Result<()> {
+    ensure_setup(&paths, &name)?;
     v2_build::verify_active_isos(&paths)?;
     ensure!(
         !ui_live || paths.mode()? == "dev",
@@ -1428,7 +1474,9 @@ fn serve_foreground(paths: config::Paths, name: String, ui_live: bool) -> Result
     let api_paths = paths.clone();
     let manager_name = name.clone();
     let manager = std::thread::spawn(move || daemon(&api_paths, &manager_name, listener));
-    let http_server = std::thread::spawn(move || http::serve(paths, name));
+    let http_paths = paths.clone();
+    let http_name = name.clone();
+    let http_server = std::thread::spawn(move || http::serve(http_paths, http_name));
     let mut result = if let Some(frontend) = frontend.as_mut() {
         frontend.ready(port)
     } else {
@@ -1451,6 +1499,24 @@ fn serve_foreground(paths: config::Paths, name: String, ui_live: bool) -> Result
         println!("IsOS API: {}", http::local_origin());
         println!("IsOS log: {}", main_log.display());
         println!("IsOS workbench is running; press Ctrl+C to stop it.");
+        if browser && let Err(error) = open_browser() {
+            eprintln!(
+                "Could not open browser: {error}. Open {} manually.",
+                http::ui_url()?
+            );
+        }
+        if run_graph {
+            match v2_call(&paths, &name, "v2_start") {
+                Ok(started) => {
+                    if let Err(error) = print_v2_run_startup(&paths, &name, &started) {
+                        eprintln!("Could not display graph status: {error}");
+                    }
+                }
+                Err(error) => {
+                    eprintln!("Graph did not start: {error}. Use the workbench to finish setup.")
+                }
+            }
+        }
         while !INTERRUPTED.load(Ordering::SeqCst) {
             if let Some(frontend) = frontend.as_mut()
                 && let Some(status) = frontend.0.try_wait()?
@@ -1630,22 +1696,6 @@ fn service_call(
     )
 }
 
-fn print_first_use_guide() {
-    println!(
-        r#"IsOS quick start
-
-  1. Set up once:       isos init --mode dev
-  2. Build locally:    isos build
-  3. Open the editor:  isos serve          (terminal 1)
-                       isos open           (terminal 2)
-  4. In Graph, add a backend, then Validate and Apply.
-  5. Start the graph:  isos run
-
-Ctrl+C stops the graph; `isos stop` stops the workbench.
-Use `isos doctor` to check readiness or `isos --help` for all commands."#
-    );
-}
-
 fn print_init_next_steps(mode: &str) {
     println!("\nNext steps:");
     if mode == "product" {
@@ -1655,29 +1705,35 @@ fn print_init_next_steps(mode: &str) {
     } else {
         println!("  isos build                  # build local IsOS, EOS, and IsosUI");
     }
-    println!("  isos serve                         # start the workbench in this terminal");
-    println!("  isos open                          # open Graph from another terminal");
+    println!("  isos                               # open the workbench; cores stay stopped");
     println!("  In Graph, add a backend, then Validate and Apply before `isos run`.");
-    println!("  Run `isos` for the full quick start or `isos doctor` to check readiness.");
+    println!("  Run `isos --help` for mode rules or `isos doctor` to check readiness.");
 }
 
 fn main_run() -> Result<()> {
-    if std::env::args_os().len() == 1 {
-        print_first_use_guide();
-        return Ok(());
-    }
     config::load_runtime_config()?;
     let cli = Cli::parse();
     if let Some(shell) = cli.generate_completion {
         generate(shell, &mut Cli::command(), "isos", &mut std::io::stdout());
         return Ok(());
     }
-    let Some(command) = cli.command else {
-        print_first_use_guide();
-        return Ok(());
-    };
     let paths = config::Paths::discover()?;
     let name = cli.deployment;
+    let Some(command) = cli.command else {
+        ensure_setup(&paths, &name)?;
+        if UnixStream::connect(paths.socket()).is_ok() {
+            let identity = v2_call(&paths, &name, "manager_identity")?;
+            println!("IsOS workbench already running: {}", identity["ui_url"]);
+            if let Err(error) = open_browser() {
+                eprintln!(
+                    "Could not open browser: {error}. Open {} manually.",
+                    http::ui_url()?
+                );
+            }
+            return Ok(());
+        }
+        return serve_foreground(paths, name, false, true, false);
+    };
     match command {
         CommandLine::Build {
             target,
@@ -1826,6 +1882,9 @@ fn main_run() -> Result<()> {
             print_init_next_steps(paths.mode()?);
         }
         CommandLine::Open => {
+            if UnixStream::connect(paths.socket()).is_err() {
+                return serve_foreground(paths, name, false, true, false);
+            }
             v2_call(&paths, &name, "manager_identity")?;
             let url = http::ui_url()?;
             Command::new("xdg-open")
@@ -1838,12 +1897,16 @@ fn main_run() -> Result<()> {
             println!("{url}");
         }
         CommandLine::Run => {
+            ensure_setup(&paths, &name)?;
+            if UnixStream::connect(paths.socket()).is_err() {
+                return serve_foreground(paths, name, false, true, true);
+            }
             catch_interrupts()?;
             print_v2_run_startup(&paths, &name, &v2_call(&paths, &name, "v2_start")?)?;
             wait_for_interrupt(&paths, &name)?;
         }
         CommandLine::Serve { ui_live } => {
-            serve_foreground(paths, name, ui_live)?;
+            serve_foreground(paths, name, ui_live, false, false)?;
         }
         CommandLine::Auth { command } => match command {
             AuthCommand::Login => auth::login(&paths)?,

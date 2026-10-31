@@ -475,6 +475,7 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
         backends.is_empty() || specs.contains_key("eos"),
         "EOS backend requires an IsOS-managed EOS runtime process"
     );
+    validate_listener_ports(&specs)?;
     let mut ordered = Vec::with_capacity(specs.len());
     let mut pending: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for (id, spec) in &specs {
@@ -512,6 +513,46 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
         }
     }
     Ok(ordered)
+}
+
+fn validate_listener_ports(specs: &BTreeMap<String, ProcessSpec>) -> Result<()> {
+    let api = crate::http::local_port()?;
+    let ui = crate::http::ui_port()?;
+    let mut claimed = BTreeMap::<u16, &str>::new();
+    for (id, spec) in specs {
+        let mut endpoints = Vec::new();
+        if let Some(ready) = &spec.settings.ready_tcp {
+            endpoints.push(ready.as_str());
+        }
+        for pair in spec.settings.command.windows(2) {
+            if matches!(id.as_str(), "eos" | "bridge" | "config" | "egia") && pair[0] == "--listen"
+            {
+                endpoints.push(&pair[1]);
+            }
+        }
+        for endpoint in endpoints {
+            for address in endpoint
+                .to_socket_addrs()
+                .with_context(|| format!("{id}: invalid listener address {endpoint}"))?
+            {
+                if !address.ip().is_loopback() {
+                    continue;
+                }
+                let port = address.port();
+                ensure!(
+                    port != api && port != ui,
+                    "{id}: listener port {port} conflicts with IsOS workbench"
+                );
+                if let Some(owner) = claimed.insert(port, id) {
+                    ensure!(
+                        owner == id,
+                        "{id}: listener port {port} conflicts with {owner}"
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn normalize_source(source: &str) -> Result<Value> {
@@ -1101,6 +1142,29 @@ command = ["/bin/sleep", "1"]
             .is_err()
         );
         assert!(project(&graph(r#"{"command":["/bin/sleep","1"],"ready_unix":"/tmp/eos.sock","ready_tcp":"127.0.0.1:1"}"#)).is_err());
+    }
+
+    #[test]
+    fn rejects_workbench_and_duplicate_listener_ports() {
+        let mut spec = project(&graph(
+            r#"{"command":["/bin/sleep","1"],"ready_tcp":"127.0.0.1:16020"}"#,
+        ))
+        .unwrap()
+        .remove(0);
+        let mut specs = BTreeMap::new();
+        specs.insert(spec.id.clone(), spec.clone());
+        assert!(validate_listener_ports(&specs).is_ok());
+
+        let mut second = spec.clone();
+        second.id = "bridge".into();
+        second.path = "isos/process/component/bridge".into();
+        specs.insert(second.id.clone(), second);
+        assert!(validate_listener_ports(&specs).is_err());
+
+        specs.remove("bridge");
+        spec.settings.ready_tcp = Some("127.0.0.1:16000".into());
+        specs.insert(spec.id.clone(), spec);
+        assert!(validate_listener_ports(&specs).is_err());
     }
 
     #[test]

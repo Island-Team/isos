@@ -12,6 +12,9 @@ API 只绑定 `127.0.0.1`，不提供前端文件。IsosUI 通过地址和端口
 | `PUT /api/isos/v2/node-graph` | `{schema_version:2,revision,graph}` | 校验并应用图；修订过期返回 409。 |
 | `POST /api/isos/v2/node-graph/validate` | `{schema_version:2,graph}` → `{valid,diagnostics}` | 只校验注册表和软件包，不应用。 |
 | `GET /api/isos/v2/node-types` | `{types:[...]}` | 由 `aether-profile` 提供节点类型目录。 |
+| `GET /api/isos/v2/core-setup/{role}/catalog` | 含 `catalog` 的配置响应 | 查询已选 `eos` 或 `egia` 适配器，不启动核心运行时。 |
+| `POST /api/isos/v2/core-setup/{role}/validate` | `{schema_version:2,graph,revision?}` → 配置响应 | 按核心规则校验编辑草稿，不保存。 |
+| `POST /api/isos/v2/core-setup/{role}/render` | `{schema_version:2,graph,revision?}` → 配置响应 | 预览生成的核心配置；API 不写入预览。 |
 | `GET /api/isos/v2/node-options` | `{adapter_families,primitive_bindings,targets}` | 已保存图的适配器、原语绑定与目标选项。 |
 | `POST /api/isos/v2/node-options` | `{schema_version:2,graph}` → `{adapter_families,primitive_bindings,targets}` | 未应用草稿的选择器选项。 |
 | `GET /api/isos/v2/build-binaries` | `{selected:receipt|null,source_current:boolean,stale_reason:string|null}` | 已选且摘要校验通过的 EOS 程序及源码状态。源码漂移作为状态返回，不导致 HTTP 错误；未选择时 `source_current:false` 且 `stale_reason:null`。 |
@@ -29,6 +32,12 @@ API 只绑定 `127.0.0.1`，不提供前端文件。IsosUI 通过地址和端口
 | `GET /api/isos/v2/version` | `{api_schema_version,isos_version}` | 工作台兼容性检查。 |
 
 进程管理器在启动前重新校验已保存图和精确版本的软件包。EOS 将 MuJoCo 作为直接子进程启动，并在停止获准的执行器后终止它。图布局属于编辑器；HTTP 图只包含运行配置和有类型连接。
+
+### 按需核心配置适配器
+
+IsOS 按需调用已选的 `aether-profile setup --json` 或 `egia-config setup --json` 程序。标准输入为一个有界 JSON 对象：`{schema_version:2,op:"catalog"|"validate"|"render",core:"eos"|"egia",revision,graph,endpoints,packages}`。Run 时的 `revision` 是已保存图字节的 SHA-256。`graph` 是完整 v2 图，`endpoints` 包含解析后的 IsOS 与核心监听地址，`packages` 包含已校验精确包引用 `{id,version,path}`。适配器返回 `{schema_version:2,ok,diagnostics:[{path,code,message}],files:[{path,content}],catalog?}`。`render` 文件路径必须为以核心名称开头的相对路径，例如 `eos/graph.json`；文件内容为 UTF-8 文本。请求上限 1 MiB，响应上限 4 MiB，单个文件上限 1 MiB，配置超时 10 秒。适配器不绑定监听端口。
+
+Run 在启动子进程前为已启用核心生成配置。IsOS 再次检查已保存图的修订，并把接受的文件原子写入私有生成配置目录。修订过期时停止配置，且不替换图。EOS 生成的 `graph.json` 是已校验快照；当前 EOS 运行时仍直接读取已保存图。缺少 `setup` 的旧版已校验 EOS v2 程序继续使用现有直接图校验路径，直到显式重建。迁移期间保留现有 `/config/{role}/{op}` 路由。MuJoCo 是外部 IsOS 包，核心配置不会构建它。
 
 ## 仅所有者可访问的管理器操作
 
@@ -64,7 +73,9 @@ IsOS 默认读取其源码目录中的 [config/isos.toml](../../../config/isos.t
 
 `receipt` 包含 `schema_version`（整数 2）、`component`（`eos`）、`product_version`（`2.0.0`）、`source_commit`（完整 Git SHA）、`source_dirty`（源码有修改或未跟踪文件时为 true）、`source_fingerprint`（提交和源码文件的 SHA-256）、`source_root`（用于开发环境漂移检查的可选绝对源码路径）、`binaries`（按程序名索引的绝对路径）和 `sha256`（文件摘要）。构建会将五个 Aether 程序作为同一集合放入 IsOS 私有数据目录，但不会改变已选构建。产品模式仅接纳干净且带源码指纹的收据。Run 会探测 EOS、bridge、config 与 profile 的精确能力；程序过旧或图指向其他程序时直接报错。`suggested_graph` 为 `{revision,graph}` 或 null，不会自动应用。CLI `isos build eos` 会启用新构建，并按当前图修订应用三个进程路径。API 构建接口仍只暂存；选择接口或 `isos version select eos <selector>` 可启用经检查的候选构建。选择器接受唯一的提交前缀、产品版本或源码指纹前缀；同一提交有多个构建时使用指纹。
 
-在开发模式下，EOS 源码变化后，图编辑与校验继续使用摘要校验通过的已选 `aether-profile`。选择暂存构建时，先使用候选构建的 `aether-profile` 校验建议图，再更新图和固定选择；Run 仍要求源码与所选构建一致。版本检查使用 `match.eos_source`（布尔值；未选择时为 null）和 `eos_source_diagnostic`（字符串或 null）报告源码漂移。
+在开发模式下，EOS 源码变化后，图编辑与校验继续使用摘要校验通过的已选 `aether-profile`。选择暂存构建时，先使用候选构建的 `aether-profile` 校验建议图，再更新图和固定选择。即使本地源码变化，Run 仍可使用经过验证的已安装构建；源码漂移仅作为信息显示。版本检查使用 `match.eos_source`（布尔值；未选择时为 null）和 `eos_source_diagnostic`（字符串或 null）报告源码漂移。
+
+开发检查：2026-10-31 执行 `cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test` 和 `cargo build` 均通过。完整的本地输出保存在 `logs/test/20261031-workbench-core-setup/`。
 
 IsOS 和 IsosUI 构建使用独立的不可变收据，并记录相同的源码身份字段。`isos build` 默认构建全部组件；成功后启用 EOS 与 IsosUI。`isos build isos` 暂存 release 可执行文件；产品模式使用 `isos version select isos <selector>` 激活时要求先停止管理器。开发模式使用磁盘上的 IsOS 程序。IsosUI 收据还将目录摘要绑定到清单；产品模式仅从已选择且校验通过的目录提供页面。
 

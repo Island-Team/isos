@@ -277,8 +277,8 @@ fn probe(path: &Path, binary: &str, features: &[&str]) -> Result<()> {
 pub fn preflight_processes(paths: &Paths, specs: &[crate::v2_process::ProcessSpec]) -> Result<()> {
     let selected = selected(paths)?;
     ensure!(
-        selected.is_some(),
-        "EOS build is unselected; run `isos build eos`, then `isos version select eos <commit>`"
+        paths.mode()? != "product" || selected.is_some(),
+        "product mode requires a selected EOS release; run `isos build eos`"
     );
     for (id, binary, features) in [
         (
@@ -578,18 +578,21 @@ pub fn verify_source(paths: &Paths, receipt: &BuildReceipt) -> Result<()> {
             "product mode requires a clean, fingerprinted EOS receipt"
         );
     }
-    if paths.mode()? == "dev"
-        && !receipt.source_fingerprint.is_empty()
-        && let Some(root) = &receipt.source_root
-        && root.is_dir()
-    {
-        let (commit, _, fingerprint) = source_identity(root)?;
-        ensure!(
-            commit == receipt.source_commit && fingerprint == receipt.source_fingerprint,
-            "EOS source changed since selected build; run `isos build eos`, then `isos version select eos <commit>`"
-        );
-    }
     Ok(())
+}
+
+/// Source drift is diagnostic in development. Runtime admission verifies the
+/// selected executable digest and graph commands instead of requiring Git HEAD.
+pub fn source_drift(paths: &Paths, receipt: &BuildReceipt) -> Result<Option<String>> {
+    if paths.mode()? != "dev" || receipt.source_fingerprint.is_empty() {
+        return Ok(None);
+    }
+    let Some(root) = receipt.source_root.as_ref().filter(|root| root.is_dir()) else {
+        return Ok(None);
+    };
+    let (commit, _, fingerprint) = source_identity(root)?;
+    Ok((commit != receipt.source_commit || fingerprint != receipt.source_fingerprint)
+        .then(|| "EOS source differs from the installed build; run `isos build eos` to use the new source".into()))
 }
 
 pub fn candidates(paths: &Paths) -> Result<Vec<BuildReceipt>> {
@@ -754,7 +757,7 @@ mod tests {
     }
 
     #[test]
-    fn verified_selection_survives_source_drift_but_run_selection_rejects_it() {
+    fn verified_selection_survives_source_drift_for_dev_run() {
         let temp = tempfile::tempdir().unwrap();
         let paths = Paths {
             config: temp.path().join("config"),
@@ -771,6 +774,24 @@ mod tests {
             .output()
             .unwrap();
         assert!(output.status.success());
+        assert!(
+            Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.invalid",
+                    "commit",
+                    "-q",
+                    "--allow-empty",
+                    "-m",
+                    "test",
+                ])
+                .current_dir(&source)
+                .status()
+                .unwrap()
+                .success()
+        );
         let receipt = fake_receipt(temp.path(), Some(source));
         config::atomic_write(
             &paths.config.join("pins/eos.json"),
@@ -778,7 +799,8 @@ mod tests {
         )
         .unwrap();
         assert!(selected_verified(&paths).unwrap().is_some());
-        assert!(selected(&paths).is_err());
+        assert!(selected(&paths).unwrap().is_some());
+        assert!(source_drift(&paths, &receipt).unwrap().is_some());
         assert!(preflight_processes(&paths, &[]).is_err());
     }
 

@@ -2,17 +2,13 @@
 
 [English](../../../docs/isos/usage/get-started.md)
 
-安装 IsOS 后初始化开发环境。`init` 只在配置和起始图不存在时创建它们，然后退出；不会启动管理器或界面。
-
-直接运行 `isos` 会显示简短的首次使用指南。执行 `isos init` 后，CLI 会提示下一步的构建、界面和图命令；这些只是建议，不会启动服务。
+安装 IsOS 后直接运行 `isos`。它会初始化缺失的开发图，在 16000 启动 IsOS API、16001 启动 IsosUI，并打开浏览器；后端核心保持停止。再次运行会复用工作台。`isos init` 只创建缺失的配置和图文件，然后退出。
 
 ```sh
-isos init --mode dev
-isos build
-isos serve
+isos
 ```
 
-`isos build` 使用本地源码并启用新的 EOS 和 IsosUI 构建。MuJoCo 仍是外部 IsOS 软件包。`isos serve` 会先构建缺失或过期的开发版界面，再在前台运行管理器、API 和经验证的静态 IsosUI。在另一终端执行 `isos open`。仅开发前端时，使用 `isos serve --ui-live` 启动 IsosUI 源码目录中已安装依赖的 npm 服务。产品模式要求选择干净构建，无须 npm 或源码目录；详见 [README](../../../README_cn.md)。
+`isos build` 显式编译本地源码并启用新的 EOS 和 IsosUI 构建。MuJoCo 仍是外部 IsOS 软件包。`isos serve` 启动工作台但不打开浏览器；`isos open` 会在必要时启动工作台。仅开发前端时，使用 `isos serve --ui-live` 启动 IsosUI 源码目录中已安装依赖的 npm 服务。产品模式要求精确选择经验证的发布构建，无须 npm 或源码目录；详见 [README](../../../README_cn.md)。
 
 构建 MuJoCo 仿真器，用其仓库的 `tools/build-backend-bundle.py` 制作 `2.0.0` 包，并将 `MUJOCO_ROOT` 指向匹配的运行环境。链接包后在 Graph 工作台预览 `sim-hardware` 节点集合。起始图包含 EOS 进程和调度器节点，不包含硬件包。预览加入 MuJoCo 进程、相机、底盘、机械臂、闸门与 Vision 节点。选择场景、检查草稿，再执行 Validate 和 Apply。对应命令为：
 
