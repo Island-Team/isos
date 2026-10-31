@@ -51,7 +51,7 @@ fn revision(bytes: &[u8]) -> String {
 
 fn selected_adapter(paths: &Paths, role: &str) -> Result<PathBuf> {
     match role {
-        "eos" => crate::v2_bins::resolve("aether-profile"),
+        "eos" => crate::core_bins::resolve("aether-profile"),
         "egia" => {
             let _ = paths;
             if let Some(directory) = std::env::var_os("ISOS_EGIA_BIN_DIR") {
@@ -413,7 +413,7 @@ pub fn render_graph(
             "aether-http-bridge",
             "aether-config-server",
         ] {
-            let path = crate::v2_bins::resolve(binary)?;
+            let path = crate::core_bins::resolve(binary)?;
             inputs.push(json!({"core":"eos","binary":binary,"path":path,"sha256":revision(&fs::read(&path)?)}));
         }
     }
@@ -446,7 +446,7 @@ pub fn verify_launch_inputs(paths: &Paths, name: &str) -> Result<()> {
         );
         ensure!(path.is_absolute(), "launch input path must be absolute");
         let configured = match input["core"].as_str() {
-            Some("eos") => crate::v2_bins::resolve(
+            Some("eos") => crate::core_bins::resolve(
                 input["binary"]
                     .as_str()
                     .context("launch input binary is missing")?,
@@ -586,7 +586,7 @@ mod tests {
         .unwrap();
         assert!(prepare_run(&paths, "default", "stale").is_err());
         assert!(!paths.generated("default").exists());
-        let revision = crate::v2_starter::revision(&paths.v2_node_graph("default")).unwrap();
+        let revision = crate::starter::revision(&paths.v2_node_graph("default")).unwrap();
         prepare_run(&paths, "default", &revision).unwrap();
     }
 }

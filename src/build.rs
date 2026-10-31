@@ -55,7 +55,7 @@ fn probe(path: &Path, binary: &str, features: &[&str]) -> Result<()> {
     Ok(())
 }
 
-pub fn preflight_processes(paths: &Paths, specs: &[crate::v2_process::ProcessSpec]) -> Result<()> {
+pub fn preflight_processes(paths: &Paths, specs: &[crate::process::ProcessSpec]) -> Result<()> {
     crate::core_setup::identity(paths, "eos")?;
     if specs.iter().any(|spec| spec.id == "egia") {
         crate::core_setup::identity(paths, "egia")?;
@@ -101,7 +101,7 @@ pub fn preflight_processes(paths: &Paths, specs: &[crate::v2_process::ProcessSpe
             .find(|spec| spec.id == id)
             .with_context(|| format!("graph lacks {id} process"))?;
         let path = Path::new(&spec.settings.command[0]);
-        let expected = crate::v2_bins::resolve(binary)?;
+        let expected = crate::core_bins::resolve(binary)?;
         ensure!(
             path.canonicalize()? == expected.canonicalize()?,
             "{id} launch path differs from configured EOS binary {}; reload the configured graph",
@@ -109,7 +109,7 @@ pub fn preflight_processes(paths: &Paths, specs: &[crate::v2_process::ProcessSpe
         );
         probe(path, binary, features)?;
     }
-    let profile = crate::v2_bins::resolve("aether-profile")?;
+    let profile = crate::core_bins::resolve("aether-profile")?;
     probe(
         &profile,
         "aether-profile",

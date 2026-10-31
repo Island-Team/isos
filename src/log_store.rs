@@ -13,8 +13,9 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
-const DEFAULT_MAX_BYTES: u64 = 1_048_576;
-const DEFAULT_BACKUPS: u8 = 3;
+const DEFAULT_MAX_BYTES: u64 = 262_144;
+const DEFAULT_BACKUPS: u8 = 2;
+const DEFAULT_MAX_SOURCES: u16 = 32;
 const MAX_READ_BYTES: u64 = 65_536;
 
 #[derive(Clone)]
@@ -22,6 +23,7 @@ pub struct LogStore {
     root: PathBuf,
     max_bytes: u64,
     backups: u8,
+    max_sources: u16,
     level: u8,
     lock: Arc<Mutex<()>>,
 }
@@ -73,6 +75,11 @@ impl LogStore {
             .map(|v| v.parse())
             .transpose()?
             .unwrap_or(DEFAULT_BACKUPS);
+        let max_sources = std::env::var("ISOS_LOG_MAX_SOURCES")
+            .ok()
+            .map(|v| v.parse())
+            .transpose()?
+            .unwrap_or(DEFAULT_MAX_SOURCES);
         let level = std::env::var("ISOS_LOG_LEVEL").unwrap_or_else(|_| "info".into());
         let level = level_rank(&level)
             .context("ISOS_LOG_LEVEL must be trace, debug, info, warn, or error")?;
@@ -84,10 +91,15 @@ impl LogStore {
             (1..=10).contains(&backups),
             "ISOS_LOG_BACKUPS must be 1..10"
         );
+        ensure!(
+            (10..=256).contains(&max_sources),
+            "ISOS_LOG_MAX_SOURCES must be 10..256"
+        );
         let root = paths.data.join("logs").join(deployment);
         private_dir(&root)?;
         for source in [
-            "isos", "packages", "graph", "ui", "eos", "egia", "mujoco", "bridge", "config",
+            "events", "isos", "packages", "graph", "ui", "eos", "egia", "mujoco", "bridge",
+            "config",
         ] {
             let file = OpenOptions::new()
                 .create(true)
@@ -100,6 +112,7 @@ impl LogStore {
             root,
             max_bytes,
             backups,
+            max_sources,
             level,
             lock: shared_lock(),
         })
@@ -149,6 +162,22 @@ impl LogStore {
         Ok(())
     }
 
+    fn source_file_available(&self, path: &Path) -> Result<bool> {
+        if path.exists() {
+            return Ok(true);
+        }
+        let source_count = fs::read_dir(&self.root)?
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "log")
+            })
+            .count();
+        Ok(source_count < usize::from(self.max_sources))
+    }
+
     pub fn append(&self, source: &str, level: &str, message: &str) -> Result<()> {
         self.append_event(source, level, "message", message)
     }
@@ -177,7 +206,9 @@ impl LogStore {
             &json!({"timestamp":Utc::now().to_rfc3339_opts(SecondsFormat::Millis,true),"level":level,"source":source,"event_code":event_code,"message":message,"pid":std::process::id()}),
         )?;
         line.push(b'\n');
-        self.append_file(&path, &line)?;
+        if self.source_file_available(&path)? {
+            self.append_file(&path, &line)?;
+        }
         if source != "events" {
             self.append_file(&self.root.join("events.log"), &line)?;
         }
@@ -199,7 +230,13 @@ impl LogStore {
         let min_rank = min_level
             .map(|level| level_rank(level).context("invalid log level"))
             .transpose()?;
-        let path = self.path(source)?;
+        let source_path = self.path(source)?;
+        let unified_fallback = !source_path.exists() && !matches!(source, "all" | "services");
+        let path = if unified_fallback {
+            self.path("all")?
+        } else {
+            source_path
+        };
         let mut file =
             File::open(&path).with_context(|| format!("log source {source} is unavailable"))?;
         let meta = file.metadata()?;
@@ -239,6 +276,7 @@ impl LogStore {
             }
             consumed += size as u64;
             if let Ok(value) = serde_json::from_slice::<Value>(&raw)
+                && (!unified_fallback || value["source"].as_str() == Some(source))
                 && (source != "services"
                     || value["source"]
                         .as_str()
@@ -267,13 +305,20 @@ impl LogStore {
         let min_rank = min_level
             .map(|level| level_rank(level).context("invalid log level"))
             .transpose()?;
-        let path = self.path(source)?;
+        let source_path = self.path(source)?;
+        let unified_fallback = !source_path.exists() && !matches!(source, "all" | "services");
+        let path = if unified_fallback {
+            self.path("all")?
+        } else {
+            source_path
+        };
         let file =
             File::open(&path).with_context(|| format!("log source {source} is unavailable"))?;
         let mut lines = VecDeque::with_capacity(limit);
         for raw in BufReader::new(file).split(b'\n') {
             let raw = raw?;
             if let Ok(value) = serde_json::from_slice::<Value>(&raw)
+                && (!unified_fallback || value["source"].as_str() == Some(source))
                 && (source != "services"
                     || value["source"]
                         .as_str()
@@ -453,6 +498,20 @@ mod tests {
         let services = store.read("services", None, 10).unwrap();
         assert_eq!(services["lines"].as_array().unwrap().len(), 1);
         assert_eq!(services["lines"][0]["event_code"], "child_exited");
+    }
+
+    #[test]
+    fn source_limit_keeps_unified_events_without_growing_source_files() {
+        let (_temp, mut store) = store();
+        store.max_sources = 10;
+        store.append("isos", "info", "ready").unwrap();
+        store.append("service-extra", "warn", "bounded").unwrap();
+        assert!(!store.root.join("service-extra.log").exists());
+        let events = store.read("all", None, 10).unwrap();
+        assert_eq!(events["lines"][1]["source"], "service-extra");
+        let source = store.read("service-extra", None, 10).unwrap();
+        assert_eq!(source["lines"][0]["message"], "bounded");
+        assert_eq!(fs::read_dir(&store.root).unwrap().count(), 10);
     }
 
     #[test]

@@ -543,7 +543,7 @@ pub fn remove(paths: &Paths, id: &str, version: &str) -> Result<()> {
         );
     }
     if UnixStream::connect(paths.socket()).is_ok() {
-        let active = crate::v2_call(paths, "default", "v2_active_packages")?;
+        let active = crate::manager::v2_call(paths, "default", "v2_active_packages")?;
         ensure!(
             !active["packages"]
                 .as_array()

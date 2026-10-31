@@ -1,5 +1,5 @@
 //! Selector options derived from the EOS registry and the current draft graph.
-use crate::v2_process;
+use crate::process;
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 
@@ -127,7 +127,7 @@ pub fn compose(graph: &Value, catalog: &Value) -> Result<Value> {
 }
 
 pub fn for_graph(graph: &Value) -> Result<Value> {
-    compose(graph, &v2_process::catalog()?)
+    compose(graph, &process::catalog()?)
 }
 
 #[cfg(test)]

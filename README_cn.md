@@ -41,7 +41,7 @@ isos run
 
 新图包含 EOS 进程节点和调度器；操作员在 Graph 中添加已安装软件包的节点集合后再应用。已有编写图会保留。对旧 MuJoCo 图，节点集合预览可显式替换旧后端、硬件及依赖它们的控制节点，然后由操作员应用返回的草稿。
 
-默认路径为 `~/.config/isos/deployments/<name>.nodes.json`、`~/.local/share/isos/packages/` 和 `$XDG_RUNTIME_DIR/isos/`。设置 `ISOS_HOME` 可创建隔离测试目录，其中有 `config/`、`data/` 和 `run/`。仅所有者可访问的轮转 JSON 日志位于 `~/.local/share/isos/logs/<deployment>/`；`GET /api/isos/v2/logs?source=all` 使用有界游标读取统一日志。UI 默认显示 `warn` 及以上级别，写入级别由 `[logging].level` 控制。服务 TOML 与 CLI 契约见[服务接口](docs_cn/isos/interfaces/services_cn.md)。
+默认路径为 `~/.config/isos/deployments/<name>.nodes.json`、`~/.local/share/isos/packages/` 和 `$XDG_RUNTIME_DIR/isos/`。设置 `ISOS_HOME` 可创建隔离测试目录，其中有 `config/`、`data/` 和 `run/`。仅所有者可访问的轮转 JSON 日志位于 `~/.local/share/isos/logs/<deployment>/`；`GET /api/isos/v2/logs` 和界面默认显示统一日志。`config/isos.toml` 中的 `[logging]` 控制默认来源、写入级别、单文件轮转、备份数量和来源文件上限。界面默认显示 `info` 及以上级别。服务 TOML 与 CLI 契约见[服务接口](docs_cn/isos/interfaces/services_cn.md)。
 
 归档包可先执行 `isos pkg verify <manifest> <asset>`，再用 `isos pkg install --manifest <manifest> --asset <asset> --allow-unapproved` 安装本地候选包。发布后可用 `isos pkg install island/mujoco-sim --version 2.0.0` 安装已批准的软件包。已应用图仍引用软件包时，`isos pkg remove` 会拒绝删除。
 

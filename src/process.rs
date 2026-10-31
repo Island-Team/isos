@@ -3,7 +3,7 @@
 //! The graph remains the authored source. This module admits only registered
 //! IsOS process nodes and keeps direct child handles in the manager process.
 
-use crate::{config::Paths, log_store, packages, v2_backend, v2_bins};
+use crate::{backend, config::Paths, core_bins, log_store, packages};
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -75,7 +75,7 @@ struct GraphNode {
     #[serde(default)]
     adapter: Option<Value>,
     #[serde(default)]
-    package: Option<v2_backend::PackageIdentity>,
+    package: Option<backend::PackageIdentity>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -138,7 +138,7 @@ pub struct ProcessSpec {
     pub id: String,
     pub path: String,
     pub settings: ProcessSettings,
-    pub package: Option<v2_backend::PackageIdentity>,
+    pub package: Option<backend::PackageIdentity>,
     pub fingerprint: Option<String>,
 }
 
@@ -322,13 +322,8 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
                         (1..=120_000).contains(&settings.start_timeout_ms),
                         "{path}: start_timeout_ms must be 1..=120000"
                     );
-                    let resolved = v2_backend::resolve(
-                        paths,
-                        package,
-                        version,
-                        &settings.scene,
-                        &settings.env,
-                    )?;
+                    let resolved =
+                        backend::resolve(paths, package, version, &settings.scene, &settings.env)?;
                     ensure!(
                         backends.insert(path, (resolved, settings.socket)).is_none(),
                         "duplicate backend path"
@@ -494,7 +489,7 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
                                 settings.command.iter().skip(1).cloned().collect()
                             };
                             settings.command = std::iter::once(
-                                v2_bins::resolve(binary)?.to_string_lossy().into_owned(),
+                                core_bins::resolve(binary)?.to_string_lossy().into_owned(),
                             )
                             .chain(args)
                             .collect();
@@ -727,7 +722,7 @@ pub fn normalize_source(source: &str) -> Result<Value> {
 }
 
 pub fn validate_value(paths: &Paths, graph: &Value) -> Result<()> {
-    validate_value_with_profile(paths, graph, &v2_bins::resolve("aether-profile")?)
+    validate_value_with_profile(paths, graph, &core_bins::resolve("aether-profile")?)
 }
 
 pub fn validate_value_with_profile(paths: &Paths, graph: &Value, profile: &Path) -> Result<()> {
@@ -747,11 +742,11 @@ pub fn validate_value_with_profile(paths: &Paths, graph: &Value, profile: &Path)
 /// Full graph admission is delegated to EOS's node-type registry. IsOS then
 /// validates the process projection again before supervising any child.
 pub fn validate_full_graph(path: &Path) -> Result<()> {
-    validate_with_program(path, &v2_bins::resolve("aether-profile")?)
+    validate_with_program(path, &core_bins::resolve("aether-profile")?)
 }
 
 pub fn catalog() -> Result<Value> {
-    let program = v2_bins::resolve("aether-profile")?;
+    let program = core_bins::resolve("aether-profile")?;
     let mut command = Command::new(&program);
     command.arg("catalog");
     let output = command
@@ -912,7 +907,7 @@ pub struct ProcessStatus {
     pub pid: u32,
     pub restarts: u32,
     pub state: &'static str,
-    pub package: Option<v2_backend::PackageIdentity>,
+    pub package: Option<backend::PackageIdentity>,
     pub fingerprint: Option<String>,
 }
 
@@ -931,7 +926,7 @@ impl Supervisor {
             .collect()
     }
 
-    pub fn active_packages(&self) -> Vec<v2_backend::PackageIdentity> {
+    pub fn active_packages(&self) -> Vec<backend::PackageIdentity> {
         self.running
             .values()
             .filter_map(|running| running.spec.package.clone())

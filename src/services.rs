@@ -703,11 +703,6 @@ impl ServiceManager {
             load_specs(&self.paths)?.contains_key(id),
             "unknown service {id}"
         );
-        if !self.logs.root().join(format!("service-{id}.log")).exists() {
-            return Ok(
-                serde_json::json!({"lines":[],"next_cursor":null,"rotated":cursor.is_some()}),
-            );
-        }
         self.logs.read(&format!("service-{id}"), cursor, limit)
     }
 }
