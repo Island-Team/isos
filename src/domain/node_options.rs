@@ -12,8 +12,8 @@ fn device_kind<'a>(catalog: &'a Value, node_type: &str) -> Option<&'a str> {
 
 pub fn compose(graph: &Value, catalog: &Value) -> Result<Value> {
     ensure!(
-        graph["version"] == "2.0.0",
-        "node graph must be version 2.0.0"
+        graph["version"] == "1.0.0",
+        "node graph must be version 1.0.0"
     );
     let families = catalog["adapter_families"]
         .as_array()
@@ -135,7 +135,7 @@ mod tests {
     use super::*;
     #[test]
     fn selector_uses_short_paths_and_availability() {
-        let graph = json!({"version":"2.0.0","cores":{"eos":{"layers":{"hardware":{"groups":{"base":{"nodes":{"drive":{"node_type":"eos.hardware.base@v1.0","adapter":{"type":"mujoco-v2"}}}}}}}}}});
+        let graph = json!({"version":"1.0.0","cores":{"eos":{"layers":{"hardware":{"groups":{"base":{"nodes":{"drive":{"node_type":"eos.hardware.base@v1.0","adapter":{"type":"mujoco-v2"}}}}}}}}}});
         let catalog = json!({"types":[{"id":"eos.dispatcher.primitive_base@v1.0"},{"id":"eos.hardware.base@v1.0","core":"eos","layer":"hardware","kind":"base"}],"adapter_families":[{"id":"mujoco-v2","device_kinds":["base"],"transport":"unix_socket","description":"sim","compiled":true}],"primitive_specs":[{"name":"base.velocity","version":"1.0.0","device_class":"base","movement_type":"body_velocity","description":"velocity"}]});
         let options = compose(&graph, &catalog).unwrap();
         assert_eq!(options["targets"][0]["path"], "eos/hardware/base/drive");

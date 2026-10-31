@@ -5,7 +5,7 @@ IsOS owns model-like service processes without representing them as deployment g
 ## Definition
 
 ```toml
-version = "2.0.0"
+version = "1.0.0"
 id = "gateway"
 command = ["/absolute/Island-models/launch.sh", "--managed", "--only", "gateway"]
 cwd = "/absolute/Island-models"
@@ -31,7 +31,7 @@ alias = "gateway"
 
 | Field | Type and unit | Purpose and validation |
 | --- | --- | --- |
-| `version` | string | Must be `2.0.0`. |
+| `version` | string | Must be `1.0.0`. |
 | `id` | string | 1–32 ASCII letters, digits, `_`, or `-`; matches file stem. |
 | `artifact.path`, `artifact.sha256` | absolute file path, SHA-256 hex | Exact artifact identity; content is hashed before launch. For Island-models this is `launch.sh`. |
 | `adapter` | optional tagged table | `kind = "island_models"` verifies `repo` (absolute path) and `alias` against the installed catalog and preflight; its result must equal `command`. |

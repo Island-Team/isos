@@ -9,4 +9,4 @@ The [integration plan](plan.md) records implemented behavior. Remaining mileston
 3. Version and test cross-repository API, graph, node-type, and service contracts before release.
 4. Integrate EGIA runtime control after its contract is available. EGIA common nodes are design-only today.
 5. Design future service graph representation without coupling the current independent TOML service manager to EOS or EGIA nodes.
-6. Retire legacy component and systemd compatibility paths after callers migrate. The optional user systemd unit runs the same product `isos serve` command.
+6. Keep the optional user systemd unit as a launcher for the same product `isos serve` command.

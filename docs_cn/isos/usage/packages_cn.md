@@ -2,7 +2,7 @@
 
 [English](../../../docs/isos/usage/packages.md)
 
-`island/mujoco-sim@2.0.0` 是首个后端包，包含可执行文件、场景、资源、节点集合和 `backend-v2.json`。v4 发行清单只描述分发，独立于 v2 图和节点类型。安装或链接不会自动激活。`isos init` 创建不含硬件的通用草稿。先预览已安装的节点集合并选择场景，再 Apply 图供 Run 使用。
+`island/mujoco-sim@2.0.0` 是首个后端包，包含可执行文件、场景、资源、节点集合和 `backend-v2.json`。v4 发行清单只描述分发，独立于 v1 图和节点类型。安装或链接不会自动激活。`isos init` 创建不含硬件的通用草稿。先预览已安装的节点集合并选择场景，再 Apply 图供 Run 使用。
 
 本地开发时，在 MuJoCo 仓库构建仿真器，并用 `python3 tools/build-backend-bundle.py --binary <simulator> --output <new-directory>` 制作包，再执行：
 

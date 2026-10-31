@@ -391,12 +391,12 @@ mod tests {
         assert!(resolve(&paths, "island/mujoco-sim", "2.0.0", "default", &env).is_err());
         let graph = serde_json::json!({"cores":{"eos":{"layers":{"process":{"groups":{"backend":{"nodes":{"simulator":{"settings":{"package":"island/mujoco-sim","version":"2.0.0"}}}}}}}}}});
         crate::config::atomic_write(
-            &paths.v2_node_graph("default"),
+            &paths.node_graph_path("default"),
             &serde_json::to_vec(&graph).unwrap(),
         )
         .unwrap();
         assert!(packages::remove(&paths, "island/mujoco-sim", "2.0.0").is_err());
-        fs::remove_file(paths.v2_node_graph("default")).unwrap();
+        fs::remove_file(paths.node_graph_path("default")).unwrap();
         assert!(packages::remove(&paths, "island/mujoco-sim", "2.0.0").is_ok());
 
         fs::write(bundle.join("bin/sim"), "#!/bin/sh\nexit 0\n").unwrap();

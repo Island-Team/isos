@@ -1,99 +1,10 @@
-use super::*;
-
-pub(crate) fn print_status(status: &lifecycle::Status, as_json: bool) -> Result<()> {
-    if as_json {
-        println!("{}", serde_json::to_string_pretty(status)?);
-    } else {
-        println!("{}", if status.running { "running" } else { "stopped" });
-        for node in &status.nodes {
-            println!(
-                "  {:<20} {}",
-                node.id,
-                if node.running { "running" } else { "stopped" }
-            );
-        }
-        if status.running && !status.north_http_url.is_empty() {
-            println!("EOS HTTP: {}", status.north_http_url);
-        }
-    }
-    Ok(())
-}
-
-pub(crate) fn component(
-    paths: &config::Paths,
-    name: &str,
-    role: &str,
-    cmd: ComponentCommand,
-) -> Result<()> {
-    match cmd {
-        ComponentCommand::Start => {
-            for id in lifecycle::start(paths, name, Some(role))? {
-                println!("started {id}");
-            }
-        }
-        ComponentCommand::Stop => {
-            for id in lifecycle::stop(paths, name, Some(role))? {
-                println!("stopped {id}");
-            }
-        }
-        ComponentCommand::Shutdown => {
-            ensure!(role == "eos", "shutdown is available for EOS only");
-            for id in lifecycle::stop(paths, name, Some(role))? {
-                println!("stopped {id}");
-            }
-            let caller = std::env::var("ISOS_SESSION_TOKEN").ok();
-            let closed = lifecycle::close_other_sessions(paths, name, caller.as_deref())?;
-            if closed > 0 {
-                println!("closed {closed} other EOS CLI session(s)");
-            }
-        }
-        ComponentCommand::Restart => {
-            lifecycle::stop(paths, name, Some(role))?;
-            for id in lifecycle::start(paths, name, Some(role))? {
-                println!("started {id}");
-            }
-        }
-        ComponentCommand::Status { json } => {
-            print_status(&lifecycle::status(paths, name, Some(role))?, json)?
-        }
-        ComponentCommand::Enter => {
-            ensure!(role == "eos", "enter is available for EOS only");
-            let status = lifecycle::status(paths, name, Some("eos"))?;
-            ensure!(status.running, "EOS is offline; run isos eos start first");
-            let endpoint = status
-                .north_http_url
-                .strip_prefix("http://")
-                .ok_or_else(|| {
-                    anyhow::anyhow!("EOS north HTTP URL is missing; set settings.north_http_url")
-                })?;
-            let reachable = endpoint
-                .to_socket_addrs()?
-                .any(|addr| TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok());
-            ensure!(
-                reachable,
-                "EOS north HTTP is unreachable at {}; check its sidecar and isos logs eos-north-http",
-                status.north_http_url
-            );
-            let executable = std::env::var("ISOS_EOS_CLI").unwrap_or_else(|_| "eos-cli".into());
-            let token = format!(
-                "{}-{}-{}",
-                name,
-                std::process::id(),
-                SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
-            );
-            let mut child = Command::new(executable)
-                .env("ISOS_DEPLOYMENT", name)
-                .env("ISOS_BIN", std::env::current_exe()?)
-                .env("ISOS_SESSION_TOKEN", &token)
-                .spawn()?;
-            lifecycle::register_session(paths, name, child.id() as i32, &token)?;
-            let exit = child.wait()?;
-            lifecycle::unregister_session(paths, name, &token)?;
-            ensure!(exit.success(), "EOS CLI exited with {exit}");
-        }
-    }
-    Ok(())
-}
+use super::{ConfigCommand, InstallArgs, LibraryCommand, PackageCommand, ServiceCommand};
+use crate::manager::service_call;
+use crate::{config, core_setup, lock, node_sets, packages, process, release, services, starter};
+use anyhow::{Context, Result, bail, ensure};
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use std::{fs, os::unix::net::UnixStream, path::Path};
 
 pub(crate) fn config_command(paths: &config::Paths, name: &str, cmd: ConfigCommand) -> Result<()> {
     match cmd {
@@ -110,14 +21,14 @@ pub(crate) fn config_command(paths: &config::Paths, name: &str, cmd: ConfigComma
         ConfigCommand::Validate { file } => {
             process::validate_full_graph(&file)?;
             let specs = process::project_with_packages(paths, &fs::read_to_string(&file)?)?;
-            println!("valid v2 graph: {} IsOS processes", specs.len());
+            println!("valid node graph: {} IsOS processes", specs.len());
         }
         ConfigCommand::Apply { file } => {
             let specs = apply_graph_file(paths, name, &file)?;
-            println!("applied v2 graph: {} IsOS processes", specs.len());
+            println!("applied node graph: {} IsOS processes", specs.len());
         }
         ConfigCommand::Show => {
-            println!("{}", fs::read_to_string(paths.v2_node_graph(name))?);
+            println!("{}", fs::read_to_string(paths.node_graph_path(name))?);
         }
     }
     Ok(())
@@ -129,15 +40,14 @@ pub(crate) fn apply_graph_file(
     file: &Path,
 ) -> Result<Vec<process::ProcessSpec>> {
     let source = fs::read_to_string(file)?;
-    let mut graph = process::normalize_source(&source)?;
-    process::migrate_component_commands(&mut graph)?;
+    let graph = process::normalize_source(&source)?;
     process::validate_value(paths, &graph)?;
     let normalized = serde_json::to_vec_pretty(&graph)?;
     let specs = process::project_with_packages(paths, &String::from_utf8(normalized.clone())?)?;
     let revision = hex::encode(Sha256::digest(&normalized));
     let rendered = core_setup::render_graph(paths, name, &graph, &revision)?;
-    let _lock = lifecycle::Lock::take(paths)?;
-    let destination = paths.v2_node_graph(name);
+    let _lock = lock::Lock::take(paths)?;
+    let destination = paths.node_graph_path(name);
     let previous = fs::read(&destination).ok();
     config::atomic_write(&destination, &normalized)?;
     if let Err(error) = core_setup::write_rendered(paths, name, rendered) {
@@ -260,7 +170,6 @@ pub(crate) fn package_command(paths: &config::Paths, cmd: PackageCommand) -> Res
             set_id,
             graph,
             values,
-            replace_legacy_mujoco,
         } => {
             let graph = process::normalize_source(&fs::read_to_string(graph)?)?;
             let values = values
@@ -271,15 +180,7 @@ pub(crate) fn package_command(paths: &config::Paths, cmd: PackageCommand) -> Res
                 )
                 .transpose()?
                 .unwrap_or_default();
-            let preview = node_sets::compose_with_migration(
-                paths,
-                &id,
-                &version,
-                &set_id,
-                &graph,
-                &values,
-                replace_legacy_mujoco,
-            )?;
+            let preview = node_sets::compose(paths, &id, &version, &set_id, &graph, &values)?;
             process::validate_value(paths, &preview["graph"])?;
             println!("{}", serde_json::to_string_pretty(&preview)?);
         }
@@ -299,6 +200,42 @@ pub(crate) fn package_command(paths: &config::Paths, cmd: PackageCommand) -> Res
         }
     }
     Ok(())
+}
+
+fn configured_nodes(paths: &config::Paths, name: &str, group_kind: &str) -> Result<Vec<Value>> {
+    let graph: Value = serde_json::from_slice(&fs::read(paths.node_graph_path(name))?)?;
+    let mut found = Vec::new();
+    let cores = graph["cores"]
+        .as_object()
+        .context("node graph lacks cores")?;
+    for (core_id, core) in cores {
+        let Some(layers) = core["layers"].as_object() else {
+            continue;
+        };
+        for (layer_id, layer) in layers {
+            let Some(groups) = layer["groups"].as_object() else {
+                continue;
+            };
+            for (group_id, group) in groups {
+                if group_id != group_kind {
+                    continue;
+                }
+                let Some(nodes) = group["nodes"].as_object() else {
+                    continue;
+                };
+                for (node_id, node) in nodes {
+                    found.push(json!({
+                        "id": node_id,
+                        "path": format!("cores/{core_id}/layers/{layer_id}/groups/{group_id}/nodes/{node_id}"),
+                        "core": core_id,
+                        "enabled": node["enabled"].as_bool().unwrap_or(true),
+                        "node": node,
+                    }));
+                }
+            }
+        }
+    }
+    Ok(found)
 }
 
 pub(crate) fn library(
@@ -330,19 +267,7 @@ pub(crate) fn library(
         }
         _ => {}
     }
-    let graph = config::load_selected(paths, name)?;
-    let nodes: Vec<_> = graph
-        .nodes
-        .iter()
-        .filter(|n| {
-            matches!(
-                (kind, &n.kind),
-                ("skills", NodeKind::Skill)
-                    | ("services", NodeKind::Service)
-                    | ("backends", NodeKind::Backend)
-            )
-        })
-        .collect();
+    let nodes = configured_nodes(paths, name, expected_kind)?;
     match command {
         LibraryCommand::List { json } => {
             if json {
@@ -353,34 +278,50 @@ pub(crate) fn library(
                 for node in nodes {
                     println!(
                         "{:<20} {}",
-                        node.id,
-                        if node.enabled { "enabled" } else { "disabled" }
+                        node["id"].as_str().unwrap_or(""),
+                        if node["enabled"] == true {
+                            "enabled"
+                        } else {
+                            "disabled"
+                        }
                     );
                 }
             }
         }
         LibraryCommand::Info { node } => {
-            let selected = nodes.into_iter().find(|n| n.id == node).ok_or_else(|| {
-                anyhow::anyhow!("{node} is not a {expected_kind} node in deployment {name}")
-            })?;
+            let selected = nodes
+                .iter()
+                .find(|entry| entry["id"] == node)
+                .with_context(|| {
+                    format!("{node} is not a {expected_kind} node in deployment {name}")
+                })?;
             println!("{}", serde_json::to_string_pretty(selected)?);
         }
         LibraryCommand::Status { node, json } => {
-            ensure!(
-                nodes.iter().any(|n| n.id == node),
-                "{node} is not a {expected_kind} node in deployment {name}"
-            );
-            let status = lifecycle::status(paths, name, None)?;
-            let running = status.nodes.iter().any(|n| n.id == node && n.running);
-            if json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(
-                        &json!({"schema_version":1,"id":node,"running":running})
-                    )?
-                );
+            let selected = nodes
+                .iter()
+                .find(|entry| entry["id"] == node)
+                .with_context(|| {
+                    format!("{node} is not a {expected_kind} node in deployment {name}")
+                })?;
+            let deployment = if UnixStream::connect(paths.socket()).is_ok() {
+                crate::manager::manager_call(paths, name, "deployment_status")?
             } else {
-                println!("{node}: {}", if running { "running" } else { "stopped" });
+                json!({"state":"stopped"})
+            };
+            let status = json!({"node":selected,"deployment_state":deployment["state"]});
+            if json {
+                println!("{}", serde_json::to_string_pretty(&status)?);
+            } else {
+                println!(
+                    "{node}: {} in {} deployment",
+                    if selected["enabled"] == true {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    },
+                    deployment["state"].as_str().unwrap_or("unknown")
+                );
             }
         }
         LibraryCommand::Install(_) | LibraryCommand::Remove { .. } => unreachable!(),

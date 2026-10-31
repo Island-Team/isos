@@ -1,4 +1,5 @@
-use super::*;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Deserialize, Serialize)]
 pub(crate) struct ApiRequest {
@@ -8,8 +9,6 @@ pub(crate) struct ApiRequest {
     pub(crate) deployment: Option<String>,
     #[serde(default)]
     pub(crate) role: Option<String>,
-    #[serde(default)]
-    pub(crate) graph: Option<Deployment>,
     #[serde(default)]
     pub(crate) revision: Option<String>,
     #[serde(default)]

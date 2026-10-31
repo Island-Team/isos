@@ -2,7 +2,7 @@
 
 [English](../../../docs/isos/maintenance/plan.md)
 
-本文记录当前 IsOS 边界。[v2 图](../interfaces/node-graph-v2_cn.md)、[服务契约](../interfaces/services_cn.md)、[发行清单](../interfaces/releases_cn.md)和[本地 API](../interfaces/local-api_cn.md)定义正在使用的接口。
+本文记录当前 IsOS 边界。[v2 图](../interfaces/node-graph-v1_cn.md)、[服务契约](../interfaces/services_cn.md)、[发行清单](../interfaces/releases_cn.md)和[本地 API](../interfaces/local-api_cn.md)定义正在使用的接口。
 
 ## 当前职责
 

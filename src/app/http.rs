@@ -1,10 +1,7 @@
 //! Loopback configuration API and verified static IsosUI server.
 use crate::{
-    component,
     config::{self, Paths},
-    core_setup,
-    graph::Deployment,
-    lifecycle,
+    core_setup, lock,
     log_store::LogStore,
     node_options, node_sets, packages, process, readiness,
 };
@@ -59,12 +56,12 @@ type ApiResult = std::result::Result<Json<Value>, (StatusCode, Json<Value>)>;
 fn err(status: StatusCode, message: impl ToString) -> (StatusCode, Json<Value>) {
     (
         status,
-        Json(json!({"schema_version":2,"ok":false,"data":null,"error":message.to_string()})),
+        Json(json!({"schema_version":1,"ok":false,"data":null,"error":message.to_string()})),
     )
 }
 fn ok(data: Value) -> ApiResult {
     Ok(Json(
-        json!({"schema_version":2,"ok":true,"data":data,"error":null}),
+        json!({"schema_version":1,"ok":true,"data":data,"error":null}),
     ))
 }
 fn record(app: &App, source: &str, message: &str) {
@@ -169,67 +166,21 @@ async fn preflight() -> StatusCode {
 
 async fn version(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
     authorized(&app, &headers)?;
-    ok(json!({"api_schema_version":2,"isos_version":env!("CARGO_PKG_VERSION")}))
+    ok(json!({"api_schema_version":1,"isos_version":env!("CARGO_PKG_VERSION")}))
 }
 fn revision(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
-fn diagnostic_path(graph: &Deployment, message: &str) -> String {
-    for (index, edge) in graph.edges.iter().enumerate() {
-        if message.contains(&format!("{} -> {}", edge.from, edge.to)) {
-            return format!("/edges/{index}");
-        }
-    }
-    for (index, node) in graph.nodes.iter().enumerate() {
-        if message.contains(&format!("{}:", node.id))
-            || message.starts_with(&format!("{} ", node.id))
-            || message.contains(&format!("node ID: {}", node.id))
-        {
-            if let Some((_, field)) = message
-                .split_once("settings.")
-                .or_else(|| message.split_once("values."))
-            {
-                let field = field
-                    .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '.'))
-                    .next()
-                    .unwrap_or("");
-                if !field.is_empty() {
-                    return format!("/nodes/{index}/settings/{}", field.replace('.', "/"));
-                }
-            }
-            let suffix = if message.contains("UDS path") || message.contains("socket_path") {
-                "/settings/socket_path"
-            } else if message.contains("ready_tcp") {
-                "/launch/ready_tcp"
-            } else if message.contains("profile") {
-                "/profile"
-            } else {
-                ""
-            };
-            return format!("/nodes/{index}{suffix}");
-        }
-    }
-    "/".into()
-}
-async fn graph(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
-    authorized(&app, &headers)?;
-    let bytes =
-        fs::read(app.paths.graph(&app.deployment)).map_err(|e| err(StatusCode::NOT_FOUND, e))?;
-    let graph: Value =
-        serde_json::from_slice(&bytes).map_err(|e| err(StatusCode::UNPROCESSABLE_ENTITY, e))?;
-    ok(json!({"revision":revision(&bytes),"graph":graph}))
-}
-
 async fn node_graph(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
     authorized(&app, &headers)?;
     process::validate_deployment_name(&app.deployment)
         .map_err(|error| err(StatusCode::BAD_REQUEST, error))?;
-    let bytes = match fs::read(app.paths.v2_node_graph(&app.deployment)) {
+    let bytes = match fs::read(app.paths.node_graph_path(&app.deployment)) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return ok(json!({
                 "revision":"",
-                "graph":{"version":"2.0.0","robot":{"id":"robot","name":"Robot"},"cores":{}}
+                "graph":{"version":"1.0.0","robot":{"id":"robot","name":"Robot"},"cores":{}}
             }));
         }
         Err(error) => return Err(err(StatusCode::INTERNAL_SERVER_ERROR, error)),
@@ -253,8 +204,8 @@ async fn validate_node_graph(
     Json(edit): Json<NodeGraphEdit>,
 ) -> ApiResult {
     authorized(&app, &headers)?;
-    if edit.schema_version != 2 {
-        return Err(err(StatusCode::BAD_REQUEST, "API schema_version must be 2"));
+    if edit.schema_version != 1 {
+        return Err(err(StatusCode::BAD_REQUEST, "API schema_version must be 1"));
     }
     let diagnostics: Vec<Value> = process::validate_value(&app.paths, &edit.graph)
         .err()
@@ -272,12 +223,10 @@ async fn apply_node_graph(
     authorized(&app, &headers)?;
     process::validate_deployment_name(&app.deployment)
         .map_err(|error| err(StatusCode::BAD_REQUEST, error))?;
-    if edit.schema_version != 2 {
-        return Err(err(StatusCode::BAD_REQUEST, "API schema_version must be 2"));
+    if edit.schema_version != 1 {
+        return Err(err(StatusCode::BAD_REQUEST, "API schema_version must be 1"));
     }
-    let mut graph = edit.graph;
-    process::migrate_component_commands(&mut graph)
-        .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
+    let graph = edit.graph;
     process::validate_value(&app.paths, &graph)
         .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
     let bytes = serde_json::to_vec_pretty(&graph)
@@ -285,9 +234,9 @@ async fn apply_node_graph(
     let next_revision = revision(&bytes);
     let rendered = core_setup::render_graph(&app.paths, &app.deployment, &graph, &next_revision)
         .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
-    let _lock = lifecycle::Lock::take(&app.paths)
+    let _lock = lock::Lock::take(&app.paths)
         .map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR, error))?;
-    let path = app.paths.v2_node_graph(&app.deployment);
+    let path = app.paths.node_graph_path(&app.deployment);
     let previous = fs::read(&path).ok();
     if let Some(bytes) = &previous {
         if edit.revision.as_deref() != Some(revision(bytes).as_str()) {
@@ -343,8 +292,8 @@ async fn node_options_for_graph(
     Json(request): Json<NodeOptionsRequest>,
 ) -> ApiResult {
     authorized(&app, &headers)?;
-    if request.schema_version != 2 {
-        return Err(err(StatusCode::BAD_REQUEST, "schema_version must be 2"));
+    if request.schema_version != 1 {
+        return Err(err(StatusCode::BAD_REQUEST, "schema_version must be 1"));
     }
     let options = node_options::for_graph(&request.graph)
         .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
@@ -353,7 +302,7 @@ async fn node_options_for_graph(
 
 async fn node_options_current(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
     authorized(&app, &headers)?;
-    let bytes = fs::read(app.paths.v2_node_graph(&app.deployment))
+    let bytes = fs::read(app.paths.node_graph_path(&app.deployment))
         .map_err(|error| err(StatusCode::NOT_FOUND, error))?;
     let graph: Value = serde_json::from_slice(&bytes)
         .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
@@ -362,17 +311,10 @@ async fn node_options_current(State(app): State<Arc<App>>, headers: HeaderMap) -
     ok(options)
 }
 
-async fn retired_build_api(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
-    authorized(&app, &headers)?;
-    Err(err(
-        StatusCode::GONE,
-        "IsOS no longer builds or selects EOS. Build in the EOS repository, configure ISOS_AETHER_BIN_DIR, then check core readiness.",
-    ))
-}
-
 async fn core_readiness(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
     authorized(&app, &headers)?;
-    let status = crate::manager::v2_call(&app.paths, &app.deployment, "v2_status").ok();
+    let status =
+        crate::manager::manager_call(&app.paths, &app.deployment, "deployment_status").ok();
     ok(readiness::report(
         &app.paths,
         &app.deployment,
@@ -439,13 +381,11 @@ async fn package_node_sets(State(app): State<Arc<App>>, headers: HeaderMap) -> A
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NodeSetPreview {
-    package: crate::graph::PackageRef,
+    package: crate::backend::PackageIdentity,
     set_id: String,
     graph: Value,
     #[serde(default)]
     values: std::collections::BTreeMap<String, String>,
-    #[serde(default)]
-    replace_legacy_mujoco: bool,
 }
 
 async fn preview_node_set(
@@ -454,14 +394,13 @@ async fn preview_node_set(
     Json(request): Json<NodeSetPreview>,
 ) -> ApiResult {
     authorized(&app, &headers)?;
-    let preview = node_sets::compose_with_migration(
+    let preview = node_sets::compose(
         &app.paths,
         &request.package.id,
         &request.package.version,
         &request.set_id,
         &request.graph,
         &request.values,
-        request.replace_legacy_mujoco,
     )
     .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
     process::validate_value(&app.paths, &preview["graph"])
@@ -472,7 +411,7 @@ async fn preview_node_set(
 
 async fn process_status(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
     authorized(&app, &headers)?;
-    let status = crate::manager::v2_call(&app.paths, &app.deployment, "v2_status")
+    let status = crate::manager::manager_call(&app.paths, &app.deployment, "deployment_status")
         .map_err(|error| err(StatusCode::SERVICE_UNAVAILABLE, error))?;
     ok(status)
 }
@@ -576,7 +515,7 @@ async fn package_link(
 
 async fn setup_status(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
     authorized(&app, &headers)?;
-    let graph_path = app.paths.v2_node_graph(&app.deployment);
+    let graph_path = app.paths.node_graph_path(&app.deployment);
     let revision = fs::read(&graph_path).ok().map(|bytes| revision(&bytes));
     let backends = crate::backend::installed(&app.paths);
     let mut issues: Vec<String> = Vec::new();
@@ -591,7 +530,8 @@ async fn setup_status(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiRes
         },
         Err(error) => issues.push(format!("graph is missing: {error}")),
     }
-    let process = crate::manager::v2_call(&app.paths, &app.deployment, "v2_status").ok();
+    let process =
+        crate::manager::manager_call(&app.paths, &app.deployment, "deployment_status").ok();
     if process.is_none() {
         issues.push("IsOS process manager is not running".into());
     }
@@ -614,13 +554,13 @@ async fn process_control(
     Json(control): Json<ProcessControl>,
 ) -> ApiResult {
     authorized(&app, &headers)?;
-    if control.schema_version != 2 {
-        return Err(err(StatusCode::BAD_REQUEST, "API schema_version must be 2"));
+    if control.schema_version != 1 {
+        return Err(err(StatusCode::BAD_REQUEST, "API schema_version must be 1"));
     }
     let op = match control.operation.as_str() {
-        "run" | "start" => "v2_start",
-        "stop" => "v2_stop",
-        "restart" => "v2_restart",
+        "run" | "start" => "deployment_start",
+        "stop" => "deployment_stop",
+        "restart" => "deployment_restart",
         _ => {
             return Err(err(
                 StatusCode::BAD_REQUEST,
@@ -629,7 +569,7 @@ async fn process_control(
         }
     };
     let result =
-        crate::manager::v2_call_revision(&app.paths, &app.deployment, op, control.revision)
+        crate::manager::manager_call_revision(&app.paths, &app.deployment, op, control.revision)
             .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
     ok(result)
 }
@@ -669,97 +609,6 @@ async fn logs(
     ok(data)
 }
 #[derive(Deserialize)]
-struct Edit {
-    schema_version: u32,
-    graph: Deployment,
-    #[serde(default)]
-    revision: Option<String>,
-}
-async fn validate(
-    State(app): State<Arc<App>>,
-    headers: HeaderMap,
-    Json(edit): Json<Edit>,
-) -> ApiResult {
-    authorized(&app, &headers)?;
-    if edit.schema_version != 2 {
-        return Err(err(StatusCode::BAD_REQUEST, "API schema_version must be 2"));
-    }
-    let diagnostic = edit
-        .graph
-        .validate()
-        .and_then(|_| component::validate_profiles(&edit.graph))
-        .err()
-        .map(|e| {let message=e.to_string();json!({"path":diagnostic_path(&edit.graph,&message),"code":"invalid_graph","message":message})});
-    ok(
-        json!({"valid":diagnostic.is_none(),"diagnostics":diagnostic.into_iter().collect::<Vec<_>>()}),
-    )
-}
-async fn apply(
-    State(app): State<Arc<App>>,
-    headers: HeaderMap,
-    Json(edit): Json<Edit>,
-) -> ApiResult {
-    authorized(&app, &headers)?;
-    if edit.schema_version != 2 {
-        return Err(err(StatusCode::BAD_REQUEST, "API schema_version must be 2"));
-    }
-    if edit.graph.name != app.deployment {
-        return Err(err(StatusCode::BAD_REQUEST, "deployment name mismatch"));
-    }
-    let _lock =
-        lifecycle::Lock::take(&app.paths).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    let current =
-        fs::read(app.paths.graph(&app.deployment)).map_err(|e| err(StatusCode::NOT_FOUND, e))?;
-    if edit.revision.as_deref() != Some(revision(&current).as_str()) {
-        return Err(err(
-            StatusCode::CONFLICT,
-            "graph revision changed; reload before applying",
-        ));
-    }
-    config::apply(&app.paths, &edit.graph).map_err(|e| err(StatusCode::UNPROCESSABLE_ENTITY, e))?;
-    let bytes = fs::read(app.paths.graph(&app.deployment))
-        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    ok(json!({"revision":revision(&bytes),"graph":edit.graph}))
-}
-async fn profiles(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
-    authorized(&app, &headers)?;
-    // The descriptors are queried without launching either component.
-    let mut profiles = Vec::new();
-    for role in ["eos", "egia"] {
-        if let (Ok(value), Ok(defaults)) = (
-            component::call(role, "profiles", None),
-            component::call(role, "defaults", None),
-        ) {
-            profiles.extend(component::editor_profiles(role, &value, &defaults));
-        }
-    }
-    ok(json!({"profiles":profiles}))
-}
-async fn component_route(
-    State(app): State<Arc<App>>,
-    headers: HeaderMap,
-    UrlPath((role, op)): UrlPath<(String, String)>,
-    body: Option<Json<Value>>,
-) -> ApiResult {
-    authorized(&app, &headers)?;
-    if !["eos", "egia"].contains(&role.as_str())
-        || !["describe", "defaults", "profiles", "render", "validate"].contains(&op.as_str())
-    {
-        return Err(err(StatusCode::NOT_FOUND, "unknown component operation"));
-    }
-    if matches!(op.as_str(), "render" | "validate") && body.is_none() {
-        return Err(err(
-            StatusCode::BAD_REQUEST,
-            "operation requires JSON values",
-        ));
-    }
-    let values = body.map(|Json(payload)| payload.get("values").cloned().unwrap_or(payload));
-    let value = component::call(&role, &op, values)
-        .map_err(|e| err(StatusCode::UNPROCESSABLE_ENTITY, e))?;
-    ok(value)
-}
-
-#[derive(Deserialize)]
 struct CoreSetupEdit {
     schema_version: u32,
     graph: Value,
@@ -783,12 +632,10 @@ async fn core_setup_route(
         return Err(err(StatusCode::BAD_REQUEST, "operation requires a graph"));
     }
     let (graph, revision) = if let Some(Json(edit)) = body {
-        if edit.schema_version != 2 {
-            return Err(err(StatusCode::BAD_REQUEST, "API schema_version must be 2"));
+        if edit.schema_version != 1 {
+            return Err(err(StatusCode::BAD_REQUEST, "API schema_version must be 1"));
         }
-        let mut graph = edit.graph;
-        process::migrate_component_commands(&mut graph)
-            .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
+        let graph = edit.graph;
         let revision = edit.revision.unwrap_or_else(|| {
             serde_json::to_vec(&graph)
                 .map(|bytes| revision(&bytes))
@@ -796,7 +643,7 @@ async fn core_setup_route(
         });
         (graph, revision)
     } else {
-        let bytes = fs::read(app.paths.v2_node_graph(&app.deployment))
+        let bytes = fs::read(app.paths.node_graph_path(&app.deployment))
             .map_err(|error| err(StatusCode::NOT_FOUND, error))?;
         let graph = serde_json::from_slice(&bytes)
             .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
@@ -853,94 +700,69 @@ pub fn serve_ui(directory: PathBuf) -> Result<()> {
 }
 fn router(app: Arc<App>) -> Router {
     let api = Router::new()
-        .route("/api/isos/v2/version", get(version).options(preflight))
+        .route("/api/isos/v1/version", get(version).options(preflight))
         .route(
-            "/api/isos/v2/node-types",
+            "/api/isos/v1/node-types",
             get(node_types).options(preflight),
         )
         .route(
-            "/api/isos/v2/build-binaries",
-            get(retired_build_api)
-                .post(retired_build_api)
-                .options(preflight),
-        )
-        .route(
-            "/api/isos/v2/build-binaries/select",
-            post(retired_build_api).options(preflight),
-        )
-        .route(
-            "/api/isos/v2/node-options",
+            "/api/isos/v1/node-options",
             get(node_options_current)
                 .post(node_options_for_graph)
                 .options(preflight),
         )
         .route(
-            "/api/isos/v2/node-sets",
+            "/api/isos/v1/node-sets",
             get(package_node_sets).options(preflight),
         )
         .route(
-            "/api/isos/v2/node-sets/preview",
+            "/api/isos/v1/node-sets/preview",
             post(preview_node_set).options(preflight),
         )
         .route(
-            "/api/isos/v2/process-status",
+            "/api/isos/v1/process-status",
             get(process_status).options(preflight),
         )
-        .route("/api/isos/v2/backends", get(backends).options(preflight))
+        .route("/api/isos/v1/backends", get(backends).options(preflight))
         .route(
-            "/api/isos/v2/packages",
+            "/api/isos/v1/packages",
             get(package_list).options(preflight),
         )
         .route(
-            "/api/isos/v2/packages/install",
+            "/api/isos/v1/packages/install",
             post(package_install).options(preflight),
         )
         .route(
-            "/api/isos/v2/packages/link",
+            "/api/isos/v1/packages/link",
             post(package_link).options(preflight),
         )
         .route(
-            "/api/isos/v2/packages/preview-link",
+            "/api/isos/v1/packages/preview-link",
             post(preview_link).options(preflight),
         )
         .route(
-            "/api/isos/v2/core-readiness",
+            "/api/isos/v1/core-readiness",
             get(core_readiness).options(preflight),
         )
         .route(
-            "/api/isos/v2/setup-status",
+            "/api/isos/v1/setup-status",
             get(setup_status).options(preflight),
         )
         .route(
-            "/api/isos/v2/process-control",
+            "/api/isos/v1/process-control",
             post(process_control).options(preflight),
         )
-        .route("/api/isos/v2/logs", get(logs).options(preflight))
+        .route("/api/isos/v1/logs", get(logs).options(preflight))
         .route(
-            "/api/isos/v2/node-graph",
+            "/api/isos/v1/node-graph",
             get(node_graph).put(apply_node_graph).options(preflight),
         )
         .route(
-            "/api/isos/v2/node-graph/validate",
+            "/api/isos/v1/node-graph/validate",
             post(validate_node_graph).options(preflight),
         )
         .route(
-            "/api/isos/v2/graph",
-            get(graph).put(apply).options(preflight),
-        )
-        .route(
-            "/api/isos/v2/graph/validate",
-            post(validate).options(preflight),
-        )
-        .route("/api/isos/v2/profiles", get(profiles).options(preflight))
-        .route(
-            "/api/isos/v2/config/{role}/{op}",
-            get(component_route)
-                .post(component_route)
-                .options(preflight),
-        )
-        .route(
-            "/api/isos/v2/core-setup/{role}/{op}",
+            "/api/isos/v1/core-setup/{role}/{op}",
             get(core_setup_route)
                 .post(core_setup_route)
                 .options(preflight),
@@ -959,11 +781,11 @@ mod tests {
     async fn core_setup_api_rejects_unknown_role_and_missing_graph() {
         for (route, expected) in [
             (
-                "/api/isos/v2/core-setup/other/catalog",
+                "/api/isos/v1/core-setup/other/catalog",
                 StatusCode::NOT_FOUND,
             ),
             (
-                "/api/isos/v2/core-setup/eos/validate",
+                "/api/isos/v1/core-setup/eos/validate",
                 StatusCode::BAD_REQUEST,
             ),
         ] {
@@ -977,24 +799,6 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn binary_build_api_rejects_legacy_dependency_mode() {
-        let request = Request::builder()
-            .method(Method::POST)
-            .uri("/api/isos/v2/build-binaries")
-            .header(header::HOST, "127.0.0.1:16000")
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(
-                r#"{"schema_version":2,"target":"eos","install_deps":true}"#,
-            ))
-            .unwrap();
-        let response = test_router().oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::GONE);
-        let body: Value =
-            serde_json::from_slice(&to_bytes(response.into_body(), 1000).await.unwrap()).unwrap();
-        assert_eq!(body["ok"], false);
-    }
-
     fn test_router() -> Router {
         router(Arc::new(App {
             paths: Paths {
@@ -1004,6 +808,26 @@ mod tests {
             },
             deployment: "default".into(),
         }))
+    }
+
+    #[tokio::test]
+    async fn obsolete_component_and_build_routes_are_absent() {
+        for route in [
+            "/api/isos/v1/graph",
+            "/api/isos/v1/graph/validate",
+            "/api/isos/v1/profiles",
+            "/api/isos/v1/config/eos/describe",
+            "/api/isos/v1/build-binaries",
+            "/api/isos/v1/build-binaries/select",
+        ] {
+            let request = Request::builder()
+                .uri(route)
+                .header(header::HOST, "127.0.0.1:16000")
+                .body(Body::empty())
+                .unwrap();
+            let response = test_router().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{route}");
+        }
     }
 
     #[tokio::test]
@@ -1020,13 +844,13 @@ mod tests {
         let store = LogStore::new(&app.paths, "default").unwrap();
         store.append("isos", "info", "ready").unwrap();
         for (route, expected) in [
-            ("/api/isos/v2/logs?source=isos&limit=1", StatusCode::OK),
+            ("/api/isos/v1/logs?source=isos&limit=1", StatusCode::OK),
             (
-                "/api/isos/v2/logs?source=isos&limit=201",
+                "/api/isos/v1/logs?source=isos&limit=201",
                 StatusCode::BAD_REQUEST,
             ),
             (
-                "/api/isos/v2/logs?source=..%2Fsecret",
+                "/api/isos/v1/logs?source=..%2Fsecret",
                 StatusCode::BAD_REQUEST,
             ),
         ] {
@@ -1063,12 +887,12 @@ mod tests {
         store.append("eos", "error", "failed").unwrap();
         for (route, status, expected) in [
             (
-                "/api/isos/v2/logs?source=eos&level=warn",
+                "/api/isos/v1/logs?source=eos&level=warn",
                 StatusCode::OK,
                 "failed",
             ),
             (
-                "/api/isos/v2/logs?source=eos&level=verbose",
+                "/api/isos/v1/logs?source=eos&level=verbose",
                 StatusCode::BAD_REQUEST,
                 "",
             ),
@@ -1092,7 +916,7 @@ mod tests {
             }
         }
         let request = Request::builder()
-            .uri("/api/isos/v2/logs?limit=2")
+            .uri("/api/isos/v1/logs?limit=2")
             .header(header::HOST, "127.0.0.1:16000")
             .body(Body::empty())
             .unwrap();
@@ -1115,7 +939,7 @@ mod tests {
             deployment: "default".into(),
         });
         let request = Request::builder()
-            .uri("/api/isos/v2/node-graph")
+            .uri("/api/isos/v1/node-graph")
             .header(header::HOST, "127.0.0.1:16000")
             .header(header::ORIGIN, "https://www.os-island.com")
             .body(Body::empty())
@@ -1125,31 +949,7 @@ mod tests {
         let bytes = to_bytes(response.into_body(), 1_000_000).await.unwrap();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["data"]["revision"], "");
-        assert_eq!(body["data"]["graph"]["version"], "2.0.0");
-    }
-
-    #[tokio::test]
-    async fn retired_build_status_gives_guidance() {
-        let temp = tempfile::tempdir().unwrap();
-        let app = Arc::new(App {
-            paths: Paths {
-                config: temp.path().join("config"),
-                data: temp.path().join("data"),
-                runtime: temp.path().join("run"),
-            },
-            deployment: "default".into(),
-        });
-        let request = Request::builder()
-            .uri("/api/isos/v2/build-binaries")
-            .header(header::HOST, "127.0.0.1:16000")
-            .header(header::ORIGIN, "https://www.os-island.com")
-            .body(Body::empty())
-            .unwrap();
-        let response = router(app).oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::GONE);
-        let bytes = to_bytes(response.into_body(), 1_000_000).await.unwrap();
-        let body: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(body["ok"], false);
+        assert_eq!(body["data"]["graph"]["version"], "1.0.0");
     }
 
     #[tokio::test]
@@ -1163,7 +963,7 @@ mod tests {
             },
             deployment: "default".into(),
         });
-        for route in ["/api/isos/v2/backends", "/api/isos/v2/setup-status"] {
+        for route in ["/api/isos/v1/backends", "/api/isos/v1/setup-status"] {
             let request = Request::builder()
                 .uri(route)
                 .header(header::HOST, "127.0.0.1:16000")
@@ -1206,10 +1006,10 @@ mod tests {
             deployment: "default".into(),
         });
         app.paths.prepare().unwrap();
-        let invalid = json!({"id":"island/mujoco-sim","version":"2.0.0","path":bundle,"manifest":"relative.json"});
+        let invalid = json!({"id":"island/mujoco-sim","version":"1.0.0","path":bundle,"manifest":"relative.json"});
         let request = Request::builder()
             .method(Method::POST)
-            .uri("/api/isos/v2/packages/link")
+            .uri("/api/isos/v1/packages/link")
             .header(header::HOST, "127.0.0.1:16000")
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(invalid.to_string()))
@@ -1218,11 +1018,11 @@ mod tests {
             router(app.clone()).oneshot(request).await.unwrap().status(),
             StatusCode::BAD_REQUEST
         );
-        let body = json!({"id":"island/mujoco-sim","version":"2.0.0","path":bundle});
+        let body = json!({"id":"island/mujoco-sim","version":"1.0.0","path":bundle});
         for expected in [StatusCode::OK, StatusCode::UNPROCESSABLE_ENTITY] {
             let request = Request::builder()
                 .method(Method::POST)
-                .uri("/api/isos/v2/packages/link")
+                .uri("/api/isos/v1/packages/link")
                 .header(header::HOST, "127.0.0.1:16000")
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(body.to_string()))
@@ -1233,14 +1033,14 @@ mod tests {
             );
         }
         let request = Request::builder()
-            .uri("/api/isos/v2/packages")
+            .uri("/api/isos/v1/packages")
             .header(header::HOST, "127.0.0.1:16000")
             .body(Body::empty())
             .unwrap();
         let response = router(app).oneshot(request).await.unwrap();
         let bytes = to_bytes(response.into_body(), 1_000_000).await.unwrap();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(body["data"]["installed"][0]["version"], "2.0.0");
+        assert_eq!(body["data"]["installed"][0]["version"], "1.0.0");
         assert_eq!(body["data"]["installed"].as_array().unwrap().len(), 1);
     }
 
@@ -1248,7 +1048,7 @@ mod tests {
     async fn loopback_and_trusted_browser_origins_connect_without_token() {
         let request = Request::builder()
             .method(Method::OPTIONS)
-            .uri("/api/isos/v2/version")
+            .uri("/api/isos/v1/version")
             .header(header::HOST, "127.0.0.1:16000")
             .header(header::ORIGIN, "https://www.os-island.com")
             .header(header::ACCESS_CONTROL_REQUEST_METHOD, "GET")
@@ -1263,7 +1063,7 @@ mod tests {
         );
 
         let request = Request::builder()
-            .uri("/api/isos/v2/version")
+            .uri("/api/isos/v1/version")
             .header(header::HOST, "127.0.0.1:16000")
             .header(header::ORIGIN, "https://www.os-island.com")
             .body(Body::empty())
@@ -1276,7 +1076,7 @@ mod tests {
         );
 
         let request = Request::builder()
-            .uri("/api/isos/v2/version")
+            .uri("/api/isos/v1/version")
             .header(header::HOST, "127.0.0.1:16000")
             .header(header::ORIGIN, "https://www.os-island.com")
             .body(Body::empty())
@@ -1294,7 +1094,7 @@ mod tests {
             [("sec-fetch-site", "same-origin")],
         ] {
             let mut request = Request::builder()
-                .uri("/api/isos/v2/version")
+                .uri("/api/isos/v1/version")
                 .header(header::HOST, "127.0.0.1:16000");
             for (name, value) in headers {
                 request = request.header(name, value);
@@ -1307,7 +1107,7 @@ mod tests {
         }
 
         let request = Request::builder()
-            .uri("/api/isos/v2/version")
+            .uri("/api/isos/v1/version")
             .header(header::HOST, "127.0.0.1:16000")
             .body(Body::empty())
             .unwrap();
@@ -1316,7 +1116,7 @@ mod tests {
             StatusCode::OK
         );
         let request = Request::builder()
-            .uri("/api/isos/v2/version")
+            .uri("/api/isos/v1/version")
             .header(header::HOST, "127.0.0.1:16000")
             .header("sec-fetch-site", "cross-site")
             .body(Body::empty())
@@ -1335,7 +1135,7 @@ mod tests {
             ("localhost:16000", "https://www.os-island.com"),
         ] {
             let request = Request::builder()
-                .uri("/api/isos/v2/version")
+                .uri("/api/isos/v1/version")
                 .header(header::HOST, host)
                 .header(header::ORIGIN, origin)
                 .body(Body::empty())
@@ -1359,33 +1159,5 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), StatusCode::NOT_FOUND);
         }
-    }
-    #[test]
-    fn diagnostics_point_at_graph_fields() {
-        let graph:Deployment=serde_json::from_value(json!({"schema_version":2,"name":"default","nodes":[{"id":"eos-uds","kind":"endpoint","owned":false,"enabled":true,"profile":{"id":"eos.uds","version":"1.0.0"},"settings":{"socket_path":"/tmp/../bad"}}],"edges":[]})).unwrap();
-        assert_eq!(
-            diagnostic_path(&graph, "eos-uds has unsafe UDS path"),
-            "/nodes/0/settings/socket_path"
-        );
-        assert_eq!(
-            diagnostic_path(&graph, "eos-uds: settings.socket_path invalid"),
-            "/nodes/0/settings/socket_path"
-        );
-        assert_eq!(
-            diagnostic_path(&graph, "eos-uds: launch.ready_tcp mismatch"),
-            "/nodes/0/launch/ready_tcp"
-        );
-        let mut graph = graph;
-        graph.edges.push(crate::graph::Edge {
-            from: "egia".into(),
-            to: "eos-uds".into(),
-            kind: crate::graph::EdgeKind::DependsOn,
-            input: Some("eos".into()),
-            output: Some("http".into()),
-        });
-        assert_eq!(
-            diagnostic_path(&graph, "egia -> eos-uds has incompatible typed ports"),
-            "/edges/0"
-        );
     }
 }

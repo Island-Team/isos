@@ -1,7 +1,9 @@
 mod commands;
 pub(crate) use commands::*;
 
-use super::*;
+use clap::{Args, Parser, Subcommand};
+use clap_complete::Shell;
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(
@@ -26,13 +28,6 @@ pub(crate) struct Cli {
 
 #[derive(Subcommand)]
 pub(crate) enum CommandLine {
-    /// Build in the owning repository; this command prints migration guidance.
-    Build {
-        #[arg(default_value = "all", value_parser = ["isos", "eos", "egia", "all", "isosui"])]
-        target: String,
-        #[arg(long)]
-        install_deps: bool,
-    },
     /// Report configured core build and launch readiness.
     Version {
         #[command(subcommand)]
@@ -84,16 +79,6 @@ pub(crate) enum CommandLine {
     },
     /// Check the shared graph, package, binaries, and manager readiness.
     Doctor,
-    /// Start, attach to, or stop the EOS component and its dependencies.
-    Eos {
-        #[command(subcommand)]
-        command: ComponentCommand,
-    },
-    /// Start or stop the EGIA component managed by this deployment.
-    Egia {
-        #[command(subcommand)]
-        command: ComponentCommand,
-    },
     /// Initialize, inspect, validate, or apply a deployment graph.
     Config {
         #[command(subcommand)]
@@ -122,20 +107,6 @@ pub(crate) enum CommandLine {
     },
     /// Serve the owner-only manager API on a Unix socket.
     Daemon,
-    /// Manage the shared v2 node graph and its IsOS-owned direct children.
-    V2 {
-        #[command(subcommand)]
-        command: V2Command,
-    },
-}
-
-#[derive(Subcommand)]
-pub(crate) enum V2Command {
-    Validate { file: PathBuf },
-    Apply { file: PathBuf },
-    Run,
-    Stop,
-    Status,
 }
 
 #[derive(Subcommand)]
@@ -194,25 +165,6 @@ pub(crate) enum VersionCommand {
         #[arg(long)]
         json: bool,
     },
-    #[command(name = "select", alias = "pin")]
-    Pin {
-        #[arg(value_parser = ["isos", "eos", "egia", "isosui"])]
-        component: String,
-        version: String,
-    },
-}
-
-#[derive(Subcommand)]
-pub(crate) enum ComponentCommand {
-    Start,
-    Stop,
-    Restart,
-    Status {
-        #[arg(long)]
-        json: bool,
-    },
-    Enter,
-    Shutdown,
 }
 
 #[derive(Subcommand)]
@@ -268,8 +220,6 @@ pub(crate) enum PackageCommand {
         graph: PathBuf,
         #[arg(long)]
         values: Option<PathBuf>,
-        #[arg(long)]
-        replace_legacy_mujoco: bool,
     },
     Verify {
         manifest: PathBuf,

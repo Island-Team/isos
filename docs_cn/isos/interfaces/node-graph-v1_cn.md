@@ -1,8 +1,8 @@
-# 共享 v2 图与 IsOS 进程节点
+# 共享 v1 图与 IsOS 进程节点
 
-[English](../../../docs/isos/interfaces/node-graph-v2.md)
+[English](../../../docs/isos/interfaces/node-graph-v1.md)
 
-位于 `~/.config/isos/deployments/<name>.nodes.json`（或 `ISOS_HOME/config/deployments/`）的 `2.0.0` 图同时配置 IsOS、EOS 与仅供设计的 EGIA 节点。节点类型声明 core、layer、group、字段与端口；节点实例提供 ID 和设置。当前节点类型版本为 `v1.0`。应用前以及运行前都执行 `aether-profile validate --file <graph>`；IsOS 随后校验软件包进程投影。图的 SHA-256 是保存修订号，运行中的进程保持其修订号直到重启。
+位于 `~/.config/isos/deployments/<name>.nodes.json`（或 `ISOS_HOME/config/deployments/`）的 `1.0.0` 图同时配置 IsOS、EOS 与仅供设计的 EGIA 节点。节点类型声明 core、layer、group、字段与端口；节点实例提供 ID 和设置。当前节点类型版本为 `v1.0`。应用前以及运行前都执行 `aether-profile validate --file <graph>`；IsOS 随后校验软件包进程投影。图的 SHA-256 是保存修订号，运行中的进程保持其修订号直到重启。
 
 `isos init` 只在图不存在时创建可编辑图，然后退出。新草稿包含 EOS 进程节点与调度器；预览已安装软件包的节点集合后再添加硬件。`isos config validate <file>` 校验软件包和图；`isos config apply <file>` 保存规范化 JSON。`isos serve` 运行仅所有者可访问的管理器和界面。`isos run` 与 `restart` 保持前台运行；`isos deployment stop` 只停止该图，`isos stop` 关闭管理器及所有所属子进程。EOS 在准入硬件操作前启动 MuJoCo，并在 EOS 停止时终止它。安装或链接软件包不会改变运行中的部署。
 
@@ -10,7 +10,6 @@
 
 新的软件包贡献 MuJoCo 进程节点使用 `eos.process.mujoco@v1.0`，路径为 `eos/process/mujoco/<id>`。精确包版本写在 `profile.package:{id,version}`；设置包含 `scene`、`socket`、可选 `env` 与 `start_timeout_ms`，类型和限制见下表。旧内置后端类型及其 `settings.package`/`settings.version` 对已保存图继续有效。相机、底盘、机械臂设备分别使用 `eos/hardware/camera/<id>`、`eos/hardware/base/<id>` 和 `eos/hardware/manipulator/<id>` 下的通用 EOS 类型。每台设备在 `profile.adapter` 中选择固定软件包版本的适配器系列；通用硬件节点类型不归软件包所有。
 
-旧路径：`cores/eos/layers/process/groups/backend/nodes/<id>`。旧类型：`eos.process.backend@v1.0`。节点只配置运行方式；`backend-v2.json` 是软件包元数据，相机帧和运动命令使用独立的 Rust 数据结构。可执行文件和场景路径由 IsOS 从校验过的软件包推导，不在节点中填写命令。
 
 | 设置 | Rust 类型 | 单位 | 用途与校验 |
 | --- | --- | --- | --- |
@@ -26,13 +25,13 @@ IsOS 将已验证的可执行文件、场景路径和 MuJoCo 库路径传给 EOS
 
 ## 组件进程节点
 
-路径：`cores/isos/layers/process/groups/component/nodes/<id>`。当前类型：`isos.process.component@v1.1`；已保存的 `@v1.0` 节点在 Apply 时迁移。
+路径：`cores/isos/layers/process/groups/component/nodes/<id>`。当前类型：`isos.process.component@v1.1`；已保存的 `@v1.0` 节点会收到转换提示，Apply 不会自动迁移。
 
 | 设置 | Rust 类型 | 单位 | 用途与校验 |
 | --- | --- | --- | --- |
 | `role` | `String` | 核心 ID | 托管的 `isos.process.component@v1.1` 节点必填 `eos` 或 `egia`；选择已配置的核心程序目录。 |
 | `args` | `Vec<String>` | argv 参数 | 传给 `role` 确定的程序；最多 63 个有界字符串，不经 shell，也不包含程序路径。 |
-| `command` | `Vec<String>` | argv | 仅旧版 `@v1.0` 使用；第一项为绝对可执行文件。使用已配置构建前应迁移为 `role` 和 `args`。 |
+| `command` | `Vec<String>` | argv | 已废弃，Apply 会拒绝；请使用 `role` 和 `args`。 |
 | `cwd` | `Option<PathBuf>` | 路径 | 可选绝对工作目录。 |
 | `env` | `BTreeMap<String,String>` | 环境变量 | 可选；键仅允许 ASCII 字母、数字或 `_`，值不得含 NUL。 |
 | `ready_tcp` | `Option<String>` | host:port | TCP 就绪探针，与 `ready_unix` 互斥。 |
@@ -42,7 +41,7 @@ IsOS 将已验证的可执行文件、场景路径和 MuJoCo 库路径传给 EOS
 | `max_restarts` | `u32` | 次数 | 自动重启上限，最多 10。 |
 | `depends_on` | `Vec<String>` | 规范节点路径 | 前置进程，须存在、唯一且无环。 |
 
-管理器按依赖顺序启动直接子进程，等待就绪；停止时逆序向进程组发送 TERM，两秒后发送 KILL。提供者故障时先停止依赖者再恢复。IsOS 自身诊断及选定的结构化子进程事件写入轮转的 `$XDG_DATA_HOME/isos/logs/<deployment>/<source>.log` 文件；普通子进程输出不再镜像。状态包含已保存/运行中修订、固定软件包、PID、重启次数和最近管理错误。私有 Unix 管理器 API 保留 schema 1 封装，使用 `v2_start`、`v2_restart`、`v2_stop`、`v2_status` 操作。
+管理器按依赖顺序启动直接子进程，等待就绪；停止时逆序向进程组发送 TERM，两秒后发送 KILL。提供者故障时先停止依赖者再恢复。IsOS 自身诊断及选定的结构化子进程事件写入轮转的 `$XDG_DATA_HOME/isos/logs/<deployment>/<source>.log` 文件；普通子进程输出不再镜像。状态包含已保存/运行中修订、固定软件包、PID、重启次数和最近管理错误。私有 Unix 管理器 API 保留 schema 1 封装，使用 `deployment_start`、`deployment_restart`、`deployment_stop`、`deployment_status` 操作。
 
 ## 可选的 EOS 控制节点
 
@@ -61,6 +60,5 @@ IsOS 将已验证的可执行文件、场景路径和 MuJoCo 库路径传给 EOS
 
 ## 标准节点路径与原语绑定
 
-节点引用采用 `<core>/<layer>/<group>/<node>` 四段非空路径。图的存储结构仍嵌套在 `cores`、`layers`、`groups`、`nodes` 下。节点集合预览会在返回的草稿中原子地转换旧八段式引用；保存仍须经过带修订校验的 Apply。MuJoCo 替换预览仅移除精确匹配的旧后端及相机、底盘、机械臂实例，并将现有控制引用改接至对应新节点。预览会清理替换后为空的组，并把旧模拟器的环境设置（包括操作员指定的 MuJoCo 库和 GUI 设置）带入新节点；无关节点和控制保持不变。
 
 `eos.dispatcher.primitive_base@v1.0` 与 `eos.dispatcher.primitive_manipulator@v1.0` 是绑定节点。其 `settings` 用字符串 `primitive_name`、`primitive_version`、`movement_type` 指定原语。硬件 `inputs.command` 是来自绑定节点的 `{node,output}` 边数组；每个绑定输出必须连接到一个兼容硬件节点。适配器实现由硬件实例的 `adapter.type` 选择，与通用硬件节点类型独立。IsOS Vision 配置为 `isos.ui.vision@v1.0`，放在 `isos/ui/panel` 下，是内部 UI 节点，不作为进程监管。

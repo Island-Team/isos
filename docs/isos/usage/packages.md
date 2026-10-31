@@ -2,7 +2,7 @@
 
 [中文](../../../docs_cn/isos/usage/packages_cn.md)
 
-`island/mujoco-sim@2.0.0` is the first backend bundle. It contains the executable, scene choices, assets, a node set, and `backend-v2.json`. The v4 release manifest is distribution metadata, separate from the v2 graph and node types. Installing or linking a bundle never activates it. `isos init` creates a generic draft without hardware. Preview the installed node set, choose a scene, and Apply the resulting graph before Run.
+`island/mujoco-sim@2.0.0` is the first backend bundle. It contains the executable, scene choices, assets, a node set, and `backend-v2.json`. The v4 release manifest is distribution metadata, separate from the v1 graph and node types. Installing or linking a bundle never activates it. `isos init` creates a generic draft without hardware. Preview the installed node set, choose a scene, and Apply the resulting graph before Run.
 
 For local development, build the MuJoCo repository's simulator and stage a bundle with `python3 tools/build-backend-bundle.py --binary <simulator> --output <new-directory>`. Then:
 

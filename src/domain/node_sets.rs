@@ -134,67 +134,6 @@ fn rewrite_paths(value: &mut Value, replacements: &BTreeMap<String, String>) {
     }
 }
 
-fn migrate_legacy_mujoco(graph: &mut Value, replacements: &BTreeMap<String, String>) -> Result<()> {
-    let legacy = [
-        (
-            "cores/eos/layers/process/groups/backend/nodes/simulator",
-            "eos.process.backend@v1.0",
-        ),
-        (
-            "cores/eos/layers/hardware/groups/camera/nodes/front",
-            "eos.hardware.camera@v1.0",
-        ),
-        (
-            "cores/eos/layers/hardware/groups/base/nodes/drive",
-            "eos.hardware.base@v1.0",
-        ),
-        (
-            "cores/eos/layers/hardware/groups/manipulator/nodes/arm",
-            "eos.hardware.manipulator@v1.0",
-        ),
-    ];
-    let mut removed = BTreeSet::new();
-    for (path, kind) in legacy {
-        if let Some(node) = graph.pointer(&format!("/{path}")) {
-            ensure!(
-                node["node_type"] == kind,
-                "legacy path {path} has a different node type"
-            );
-            removed.insert(path.to_owned());
-        }
-    }
-    for path in &removed {
-        ensure!(
-            replacements.contains_key(path),
-            "no replacement for legacy node {path}"
-        );
-    }
-    for path in &removed {
-        let (parent, id) = path.rsplit_once('/').unwrap();
-        graph
-            .pointer_mut(&format!("/{parent}"))
-            .and_then(Value::as_object_mut)
-            .context("legacy node parent disappeared")?
-            .remove(id);
-        let (group_path, _) = parent.rsplit_once("/nodes").unwrap();
-        let empty_group = graph
-            .pointer(&format!("/{group_path}/nodes"))
-            .and_then(Value::as_object)
-            .is_some_and(serde_json::Map::is_empty);
-        if empty_group {
-            let (groups_path, group_id) = group_path.rsplit_once('/').unwrap();
-            graph
-                .pointer_mut(&format!("/{groups_path}"))
-                .and_then(Value::as_object_mut)
-                .context("legacy group parent disappeared")?
-                .remove(group_id);
-        }
-    }
-    rewrite_paths(graph, replacements);
-    Ok(())
-}
-
-#[cfg(test)]
 pub fn compose(
     paths: &Paths,
     id: &str,
@@ -202,18 +141,6 @@ pub fn compose(
     set_id: &str,
     graph: &Value,
     values: &BTreeMap<String, String>,
-) -> Result<Value> {
-    compose_with_migration(paths, id, version, set_id, graph, values, false)
-}
-
-pub fn compose_with_migration(
-    paths: &Paths,
-    id: &str,
-    version: &str,
-    set_id: &str,
-    graph: &Value,
-    values: &BTreeMap<String, String>,
-    replace_legacy_mujoco: bool,
 ) -> Result<Value> {
     let release = installed_release(paths, id, version)?;
     let contributed_types: BTreeSet<_> = release
@@ -253,47 +180,11 @@ pub fn compose_with_migration(
         );
     }
     let mut draft = graph.clone();
-    let legacy_process_env = replace_legacy_mujoco
-        .then(|| {
-            graph
-                .pointer("/cores/eos/layers/process/groups/backend/nodes/simulator/settings/env")
-                .cloned()
-        })
-        .flatten();
     ensure!(
-        draft["version"] == "2.0.0",
-        "node graph must be version 2.0.0"
+        draft["version"] == "1.0.0",
+        "node graph must be version 1.0.0"
     );
-    if replace_legacy_mujoco {
-        ensure!(
-            id == "island/mujoco-sim",
-            "legacy migration is only for MuJoCo"
-        );
-        let old = [
-            (
-                "cores/eos/layers/process/groups/backend/nodes/simulator",
-                "simulator",
-            ),
-            (
-                "cores/eos/layers/hardware/groups/camera/nodes/front",
-                "front",
-            ),
-            ("cores/eos/layers/hardware/groups/base/nodes/drive", "drive"),
-            (
-                "cores/eos/layers/hardware/groups/manipulator/nodes/arm",
-                "arm",
-            ),
-        ];
-        let mut replacements = BTreeMap::new();
-        for (old_path, reference) in old {
-            if let Some(new_path) = paths_by_ref.get(reference) {
-                replacements.insert(old_path.to_owned(), new_path.clone());
-            }
-        }
-        migrate_legacy_mujoco(&mut draft, &replacements)?;
-    } else {
-        rewrite_paths(&mut draft, &BTreeMap::new());
-    }
+    rewrite_paths(&mut draft, &BTreeMap::new());
     let mut added_paths = Vec::new();
     let mut seen = BTreeSet::new();
     for node in &set.nodes {
@@ -311,12 +202,6 @@ pub fn compose_with_migration(
         let mut profile = node.profile.clone();
         substitute(&mut profile, &parameters)?;
         resolve_refs(&mut profile, &paths_by_ref)?;
-        if replace_legacy_mujoco
-            && node.reference == "simulator"
-            && let Some(env) = &legacy_process_env
-        {
-            profile["settings"]["env"] = env.clone();
-        }
         let package = json!({"id":id,"version":version});
         let node_type = profile["node_type"]
             .as_str()
@@ -406,7 +291,7 @@ mod tests {
     #[test]
     fn compose_resolves_refs_parameters_and_package_pin() {
         let (_temp, paths) = fixture();
-        let graph = json!({"version":"2.0.0","robot":{"id":"robot","name":"Robot"},"cores":{}});
+        let graph = json!({"version":"1.0.0","robot":{"id":"robot","name":"Robot"},"cores":{}});
         let values = BTreeMap::from([("socket".to_owned(), "/tmp/sim.sock".to_owned())]);
         let preview = compose(&paths, "test/sim", "2.0.0", "hardware", &graph, &values).unwrap();
         assert_eq!(preview["added_paths"].as_array().unwrap().len(), 4);
@@ -443,68 +328,6 @@ mod tests {
                 &BTreeMap::new()
             )
             .is_err()
-        );
-    }
-
-    #[test]
-    fn legacy_migration_preserves_unrelated_nodes() {
-        let mut graph = json!({"cores":{"eos":{"layers":{
-            "hardware":{"groups":{"camera":{"nodes":{"front":{"node_type":"eos.hardware.camera@v1.0"},"other":{"node_type":"eos.hardware.camera@v1.0"}}}}},
-            "control":{"groups":{"manual":{"nodes":{"old":{"references":["cores/eos/layers/hardware/groups/camera/nodes/front"]},"other":{"references":["cores/eos/layers/hardware/groups/camera/nodes/other"]}}}}},
-            "dispatcher":{"groups":{"control":{"nodes":{"command":{"references":["cores/eos/layers/hardware/groups/camera/nodes/front","cores/eos/layers/hardware/groups/camera/nodes/other"]}}}}}
-        }}}});
-        let replacements = BTreeMap::from([(
-            "cores/eos/layers/hardware/groups/camera/nodes/front".to_owned(),
-            "eos/hardware/camera/front".to_owned(),
-        )]);
-        migrate_legacy_mujoco(&mut graph, &replacements).unwrap();
-        assert!(
-            graph
-                .pointer("/cores/eos/layers/hardware/groups/camera/nodes/front")
-                .is_none()
-        );
-        assert!(
-            graph
-                .pointer("/cores/eos/layers/control/groups/manual/nodes/old")
-                .is_some()
-        );
-        assert!(
-            graph
-                .pointer("/cores/eos/layers/hardware/groups/camera/nodes/other")
-                .is_some()
-        );
-        assert!(
-            graph
-                .pointer("/cores/eos/layers/control/groups/manual/nodes/other")
-                .is_some()
-        );
-        assert_eq!(
-            graph["cores"]["eos"]["layers"]["dispatcher"]["groups"]["control"]["nodes"]["command"]
-                ["references"],
-            json!(["eos/hardware/camera/front", "eos/hardware/camera/other"])
-        );
-    }
-
-    #[test]
-    fn legacy_migration_removes_empty_group_after_replacing_process() {
-        let mut graph = json!({"cores":{"eos":{"layers":{"process":{"groups":{
-            "backend":{"nodes":{"simulator":{"node_type":"eos.process.backend@v1.0"}}},
-            "other":{"nodes":{"service":{"node_type":"eos.process.other@v1.0"}}}
-        }}}}}});
-        let replacements = BTreeMap::from([(
-            "cores/eos/layers/process/groups/backend/nodes/simulator".to_owned(),
-            "eos/process/mujoco/simulator".to_owned(),
-        )]);
-        migrate_legacy_mujoco(&mut graph, &replacements).unwrap();
-        assert!(
-            graph
-                .pointer("/cores/eos/layers/process/groups/backend")
-                .is_none()
-        );
-        assert!(
-            graph
-                .pointer("/cores/eos/layers/process/groups/other/nodes/service")
-                .is_some()
         );
     }
 }

@@ -25,7 +25,7 @@ class InstallUserServiceTest(unittest.TestCase):
         self.write_executable(self.checkout / "build.sh", "#!/bin/sh\nexit 0\n")
         self.write_executable(
             self.checkout / "target/release/isos",
-            '#!/bin/sh\nif [ "$1" = --version ]; then echo "isos 2.0.0"; fi\n',
+            '#!/bin/sh\nif [ "$1" = --version ]; then echo "isos 1.0.0"; fi\n',
         )
         fake_bin = self.root / "fake-bin"
         fake_bin.mkdir()
@@ -101,6 +101,18 @@ class InstallUserServiceTest(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertFalse((self.root / "installed").exists())
         self.assertEqual(self.systemctl_calls(), [])
+
+    def test_active_obsolete_service_blocks_install_without_stopping_it(self):
+        self.write_executable(
+            self.root / "fake-bin/systemctl",
+            '#!/bin/sh\nprintf "%s\\n" "$*" >> "$ISOS_TEST_SYSTEMCTL_LOG"\n'
+            'case "$*" in *is-active*) exit 0;; esac\n',
+        )
+        result = self.install()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("systemctl --user stop isos-server.service", result.stderr)
+        self.assertEqual(self.systemctl_calls(), ["--user is-active --quiet isos-server.service"])
+        self.assertFalse((self.root / "installed/bin/isos").exists())
 
 
 if __name__ == "__main__":

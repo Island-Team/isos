@@ -1,8 +1,8 @@
-version = "2.0.0"
+version = "1.0.0"
 
 [robot]
 id = "demo-0"
-name = "Aether v2 deployment"
+name = "Aether deployment"
 
 [cores.eos.layers.dispatcher.groups.control.nodes.command]
 id = "command"
@@ -21,8 +21,8 @@ description = "Dispatcher, journal, and isolated hardware adapters"
 capabilities = ["process"]
 [cores.isos.layers.process.groups.component.nodes.eos.settings]
 role = "eos"
-args = ["--profile", "/absolute/path/to/graph.json", "--journal-dir", "/absolute/path/to/journal", "--socket", "/tmp/eos-v2.sock"]
-ready_unix = "/tmp/eos-v2.sock"
+args = ["--profile", "/absolute/path/to/graph.json", "--journal-dir", "/absolute/path/to/journal", "--socket", "/tmp/eos.sock"]
+ready_unix = "/tmp/eos.sock"
 restart = "on_failure"
 max_restarts = 3
 
@@ -34,7 +34,7 @@ description = "Loopback control API for clients"
 capabilities = ["process"]
 [cores.isos.layers.process.groups.component.nodes.bridge.settings]
 role = "eos"
-args = ["--socket", "/tmp/eos-v2.sock", "--listen", "127.0.0.1:16020"]
+args = ["--socket", "/tmp/eos.sock", "--listen", "127.0.0.1:16020"]
 ready_tcp = "127.0.0.1:16020"
 depends_on = ["cores/isos/layers/process/groups/component/nodes/eos"]
 restart = "on_failure"

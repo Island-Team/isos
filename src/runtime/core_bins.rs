@@ -1,4 +1,4 @@
-//! Resolve the Aether executables used by the IsOS v2 graph.
+//! Resolve the Aether executables used by the IsOS node graph.
 
 use anyhow::{Result, ensure};
 use std::{
