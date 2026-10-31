@@ -65,4 +65,5 @@ fn version_check_defaults_to_readable_report_and_supports_json() {
     let report: serde_json::Value = serde_json::from_slice(&machine.stdout).unwrap();
     assert_eq!(report["cores"][0]["core"], "eos");
     assert!(report["cores"][0]["ready"].is_boolean());
+    assert_eq!(report["cores"][0]["enabled"], false);
 }

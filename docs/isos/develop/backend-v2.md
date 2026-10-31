@@ -52,3 +52,7 @@ ISOS_BIN=target/debug/isos ISOS_AETHER_BIN_DIR=../Island-eos/target/debug ISOSUI
 ```
 
 The Rust suite passed 77 unit tests and five CLI tests. The mock route covered Apply, Run, restart, failure admission, and stop. The real route covered camera frames, base and manipulator commands, nested asset change rejection, restart, and Ctrl+C stop. On this host the real run measured startup 7.04 s and 20 captures at median 376.25 ms, p99 428.04 ms, and 2.6 requests/s. These are initial measurements for this host and scene, not performance targets. A separate checkout test verified that changing `aether-runtime` after Apply changes readiness to blocked and prevents Run from starting hardware.
+
+## Saved setup status recovery (2026-10-31)
+
+The saved MuJoCo graph was reapplied with `isos config apply` after the current EOS profile accepted its adapter family. A successful Apply now clears the previous setup failure; readiness identifies cores absent from the saved graph as not enabled. `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test` passed (78 unit tests and five CLI tests). Full output and the graph backup are in ignored `logs/test/20261031-stale-setup-recovery/`.

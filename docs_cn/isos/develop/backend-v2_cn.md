@@ -52,3 +52,7 @@ ISOS_BIN=target/debug/isos ISOS_AETHER_BIN_DIR=../Island-eos/target/debug ISOSUI
 ```
 
 Rust 测试通过 77 个单元测试和五个 CLI 测试。桩仿真路线覆盖应用、启动、重启、失败准入和停止。真实仿真路线覆盖相机帧、底盘和机械臂命令、嵌套资源变更拒绝、重启和 Ctrl+C 停止。在这台主机上，真实运行启动耗时 7.04 秒；20 次捕获的中位延迟为 376.25 毫秒、p99 为 428.04 毫秒，吞吐为每秒 2.6 次请求。这些只是该主机和场景的初始测量，不是性能目标。另一次检出构建测试确认：应用图后修改 `aether-runtime` 会将就绪状态变为阻止，并防止运行时启动硬件。
+
+## 已保存 setup 状态恢复（2026-10-31）
+
+当前 EOS profile 接受适配器类型后，使用 `isos config apply` 重新应用了已保存的 MuJoCo 图。成功 Apply 现在会清除之前的 setup 错误；就绪报告会将保存图中不存在的核心标记为未启用。`cargo fmt --check`、`cargo clippy --all-targets -- -D warnings` 和 `cargo test` 均通过（78 个单元测试、五个 CLI 测试）。完整输出和图备份保存在忽略 Git 的 `logs/test/20261031-stale-setup-recovery/`。

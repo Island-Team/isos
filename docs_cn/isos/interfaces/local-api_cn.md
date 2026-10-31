@@ -17,7 +17,7 @@ API 只绑定 `127.0.0.1`，不提供前端文件。IsosUI 通过地址和端口
 | `POST /api/isos/v2/core-setup/{role}/render` | `{schema_version:2,graph,revision?}` → 配置响应 | 预览生成的核心配置；API 不写入预览。 |
 | `GET /api/isos/v2/node-options` | `{adapter_families,primitive_bindings,targets}` | 已保存图的适配器、原语绑定与目标选项。 |
 | `POST /api/isos/v2/node-options` | `{schema_version:2,graph}` → `{adapter_families,primitive_bindings,targets}` | 未应用草稿的选择器选项。 |
-| `GET /api/isos/v2/core-readiness` | `{cores,graph,isos,isosui}` | 检查已配置核心路径、兼容性、图配置与运行状态。 |
+| `GET /api/isos/v2/core-readiness` | `{cores,graph,isos,isosui}` | 检查已配置核心路径、兼容性、核心是否在已保存节点图中启用、图配置与运行状态。 |
 | `GET/POST /api/isos/v2/build-binaries` 及 `POST /api/isos/v2/build-binaries/select` | HTTP 410 | 已退出的构建与选择接口，返回迁移指引。 |
 | `GET /api/isos/v2/node-sets` | `{sets:[{package,id,parameters,nodes}]}` | 已安装软件包提供的节点集合。 |
 | `POST /api/isos/v2/node-sets/preview` | `{package:{id,version},set_id,graph,values:{name:string}}` → `{graph,added_paths}` | 将集合合成到草稿，不保存；无效合成返回 422。 |

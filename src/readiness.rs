@@ -35,7 +35,8 @@ pub fn report(paths: &Paths, name: &str, active: Option<&Value>) -> Value {
             } else {
                 core_setup::adapter_path(paths, core)
             };
-            let graph_configured = process_present(&graph, core)
+            let enabled = process_present(&graph, core);
+            let graph_configured = enabled
                 && paths
                     .generated(name)
                     .join("core-setup/launch-inputs.json")
@@ -97,7 +98,9 @@ pub fn report(paths: &Paths, name: &str, active: Option<&Value>) -> Value {
                         .into()
                 })
             });
-            let action = if !compatible {
+            let action = if !enabled {
+                "Core is not enabled in the saved graph".into()
+            } else if !compatible {
                 format!("Build {core} in its repository and configure its binary directory")
             } else if !graph_configured {
                 format!("Add the {core} process to the graph, then save it")
@@ -111,7 +114,7 @@ pub fn report(paths: &Paths, name: &str, active: Option<&Value>) -> Value {
                 "Run the saved graph".into()
             };
             json!({"core":core,"path":path,"version":version,"compatible":compatible,
-                "configured":explicit || path.is_some(),"graph_configured":graph_configured,
+                "configured":explicit || path.is_some(),"enabled":enabled,"graph_configured":graph_configured,
                 "running":running,"ready":ready,"reason":reason,"action":action})
         })
         .collect();

@@ -17,7 +17,7 @@ The API binds only to `127.0.0.1` and serves no frontend files. IsosUI calls it 
 | `POST /api/isos/v2/core-setup/{role}/render` | `{schema_version:2,graph,revision?}` → setup reply | Preview generated core configuration; the API does not write the preview. |
 | `GET /api/isos/v2/node-options` | `{adapter_families,primitive_bindings,targets}` | Selector options for the saved graph. |
 | `POST /api/isos/v2/node-options` | `{schema_version:2,graph}` → `{adapter_families,primitive_bindings,targets}` | Selector options for an unapplied draft. |
-| `GET /api/isos/v2/core-readiness` | `{cores,graph,isos,isosui}` | Inspect configured core paths, compatibility, graph configuration, and running state. |
+| `GET /api/isos/v2/core-readiness` | `{cores,graph,isos,isosui}` | Inspect configured core paths, compatibility, whether each core is enabled in the saved graph, graph configuration, and running state. |
 | `GET/POST /api/isos/v2/build-binaries` and `POST /api/isos/v2/build-binaries/select` | HTTP 410 | Retired build and selection endpoints with migration guidance. |
 | `GET /api/isos/v2/node-sets` | `{sets:[{package,id,parameters,nodes}]}` | Installed package node sets. |
 | `POST /api/isos/v2/node-sets/preview` | `{package:{id,version},set_id,graph,values:{name:string}}` → `{graph,added_paths}` | Compose a set into a draft without saving it; invalid composition returns 422. |
