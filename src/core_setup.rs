@@ -1,7 +1,7 @@
 //! Bounded, on-demand setup adapters for the saved v2 graph.
 use crate::{
     config::{self, Paths},
-    packages, v2_build,
+    packages,
 };
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
@@ -28,34 +28,31 @@ fn revision(bytes: &[u8]) -> String {
 
 fn selected_adapter(paths: &Paths, role: &str) -> Result<PathBuf> {
     match role {
-        "eos" => {
-            if let Some(receipt) = v2_build::selected_verified(paths)? {
-                return Ok(receipt.binaries["aether-profile"].clone());
-            }
-            crate::v2_bins::resolve("aether-profile")
-        }
+        "eos" => crate::v2_bins::resolve("aether-profile"),
         "egia" => {
-            let pin = paths.config.join("pins/egia.json");
-            if pin.is_file() {
-                let value: Value = serde_json::from_slice(&fs::read(&pin)?)?;
-                let artifact = value["artifact"]
-                    .as_str()
-                    .context("EGIA pin lacks artifact")?;
-                let expected = value["sha256"].as_str().context("EGIA pin lacks digest")?;
+            let _ = paths;
+            if let Some(directory) = std::env::var_os("ISOS_EGIA_BIN_DIR") {
+                let directory = PathBuf::from(directory);
                 ensure!(
-                    revision(&fs::read(artifact)?) == expected,
-                    "selected EGIA artifact digest changed"
+                    directory.is_absolute(),
+                    "ISOS_EGIA_BIN_DIR must be absolute"
                 );
-                if let Some(path) = value["config_binary"].as_str() {
-                    let path = PathBuf::from(path);
-                    ensure!(path.is_file(), "selected EGIA setup adapter is missing");
-                    return Ok(path);
-                }
+                let path = directory.join("egia-config");
+                ensure!(
+                    path.is_file(),
+                    "EGIA setup adapter missing at {}",
+                    path.display()
+                );
+                return Ok(path);
             }
             Ok(PathBuf::from(crate::component::binary("egia")))
         }
         _ => bail!("unknown setup core {role}"),
     }
+}
+
+pub fn adapter_path(paths: &Paths, role: &str) -> Result<PathBuf> {
+    selected_adapter(paths, role)
 }
 
 fn package_refs(paths: &Paths, graph: &Value) -> Result<Vec<Value>> {
@@ -99,9 +96,12 @@ fn package_refs(paths: &Paths, graph: &Value) -> Result<Vec<Value>> {
 }
 
 fn command_arg(graph: &Value, node: &str, flag: &str) -> Option<String> {
-    let pointer =
-        format!("/cores/isos/layers/process/groups/component/nodes/{node}/settings/command");
-    let args = graph.pointer(&pointer)?.as_array()?;
+    let pointer = format!("/cores/isos/layers/process/groups/component/nodes/{node}/settings");
+    let settings = graph.pointer(&pointer)?;
+    let args = settings
+        .get("args")
+        .or_else(|| settings.get("command"))?
+        .as_array()?;
     args.windows(2)
         .find(|pair| pair[0].as_str() == Some(flag))?
         .get(1)?
@@ -268,6 +268,29 @@ pub fn call(
     invoke(&selected_adapter(paths, role)?, &request)
 }
 
+pub fn identity(paths: &Paths, role: &str) -> Result<Value> {
+    ensure!(matches!(role, "eos" | "egia"), "unknown setup core {role}");
+    let reply = invoke(
+        &selected_adapter(paths, role)?,
+        &json!({"schema_version":2,"op":"identity","core":role}),
+    )?;
+    ensure!(reply["ok"] == true, "{role} identity rejected");
+    let identity = reply
+        .get("identity")
+        .context("identity reply missing identity")?;
+    ensure!(
+        identity["core"] == role
+            && identity["graph_version"] == "2.0.0"
+            && identity["node_type_version"] == "1.0"
+            && identity["setup_schema_version"] == 2
+            && identity["product_version"]
+                .as_str()
+                .is_some_and(|version| !version.is_empty()),
+        "{role} identity is incompatible with IsOS",
+    );
+    Ok(identity.clone())
+}
+
 pub fn prepare_run(paths: &Paths, name: &str, expected_revision: &str) -> Result<()> {
     let graph_path = paths.v2_node_graph(name);
     let bytes = fs::read(&graph_path).with_context(|| format!("read {}", graph_path.display()))?;
@@ -277,6 +300,21 @@ pub fn prepare_run(paths: &Paths, name: &str, expected_revision: &str) -> Result
         "node graph revision changed during setup"
     );
     let graph: Value = serde_json::from_slice(&bytes)?;
+    let files = render_graph(paths, name, &graph, expected_revision)?;
+    let _lock = crate::lifecycle::Lock::take(paths)?;
+    ensure!(
+        revision(&fs::read(&graph_path)?) == expected_revision,
+        "node graph revision changed during setup"
+    );
+    write_rendered(paths, name, files)
+}
+
+pub fn render_graph(
+    paths: &Paths,
+    name: &str,
+    graph: &Value,
+    expected_revision: &str,
+) -> Result<Vec<(PathBuf, Vec<u8>)>> {
     let egia_process = graph
         .pointer("/cores/isos/layers/process/groups/component/nodes/egia")
         .is_some_and(|node| node["enabled"] != false);
@@ -285,7 +323,7 @@ pub fn prepare_run(paths: &Paths, name: &str, expected_revision: &str) -> Result
     });
     let mut files = Vec::new();
     for role in roles {
-        let reply = match call(paths, name, role, "render", &graph, expected_revision) {
+        let reply = match call(paths, name, role, "render", graph, expected_revision) {
             Ok(reply) => reply,
             Err(error)
                 if role == "eos" && {
@@ -296,7 +334,7 @@ pub fn prepare_run(paths: &Paths, name: &str, expected_revision: &str) -> Result
                 } =>
             {
                 // Older verified EOS v2 binaries still use the authored graph directly.
-                crate::v2_process::validate_value(paths, &graph)?;
+                crate::v2_process::validate_value(paths, graph)?;
                 continue;
             }
             Err(error) => return Err(error),
@@ -315,14 +353,104 @@ pub fn prepare_run(paths: &Paths, name: &str, expected_revision: &str) -> Result
             files.push(safe_file(role, entry)?);
         }
     }
-    let _lock = crate::lifecycle::Lock::take(paths)?;
-    ensure!(
-        revision(&fs::read(&graph_path)?) == expected_revision,
-        "node graph revision changed during setup"
-    );
-    let root = paths.generated(name).join("core-setup");
+    let mut inputs = Vec::new();
+    if graph["cores"].get("eos").is_some() {
+        for binary in [
+            "aether-profile",
+            "aether-runtime",
+            "aether-http-bridge",
+            "aether-config-server",
+        ] {
+            let path = crate::v2_bins::resolve(binary)?;
+            inputs.push(json!({"core":"eos","binary":binary,"path":path,"sha256":revision(&fs::read(&path)?)}));
+        }
+    }
+    if egia_process {
+        for binary in ["egia-config", "egia"] {
+            let path = selected_adapter(paths, "egia")?.with_file_name(binary);
+            inputs.push(json!({"core":"egia","binary":binary,"path":path,"sha256":revision(&fs::read(&path)?)}));
+        }
+    }
+    files.push((
+        PathBuf::from("launch-inputs.json"),
+        serde_json::to_vec_pretty(&inputs)?,
+    ));
+    Ok(files)
+}
+
+pub fn verify_launch_inputs(paths: &Paths, name: &str) -> Result<()> {
+    let file = paths.generated(name).join("core-setup/launch-inputs.json");
+    let inputs: Value = serde_json::from_slice(&fs::read(&file).with_context(|| {
+        format!(
+            "saved launch inputs are missing at {}; save the graph",
+            file.display()
+        )
+    })?)?;
+    for input in inputs.as_array().context("invalid saved launch inputs")? {
+        let path = Path::new(
+            input["path"]
+                .as_str()
+                .context("launch input path is missing")?,
+        );
+        ensure!(path.is_absolute(), "launch input path must be absolute");
+        let configured = match input["core"].as_str() {
+            Some("eos") => crate::v2_bins::resolve(
+                input["binary"]
+                    .as_str()
+                    .context("launch input binary is missing")?,
+            )?,
+            Some("egia") => selected_adapter(paths, "egia")?.with_file_name(
+                input["binary"]
+                    .as_str()
+                    .context("EGIA launch input binary missing")?,
+            ),
+            _ => bail!("unknown launch input core"),
+        };
+        ensure!(
+            path == configured,
+            "configured path for {} changed since graph Apply; save the graph, then restart",
+            input["binary"]
+        );
+        let current = revision(&fs::read(path).with_context(|| {
+            format!(
+                "configured file {} is missing; save the graph after rebuilding",
+                path.display()
+            )
+        })?);
+        ensure!(
+            input["sha256"] == current,
+            "configured file {} changed since graph Apply; save the graph, then restart",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+pub fn write_rendered(paths: &Paths, name: &str, files: Vec<(PathBuf, Vec<u8>)>) -> Result<()> {
+    let generated = paths.generated(name);
+    fs::create_dir_all(&generated)?;
+    let root = generated.join("core-setup");
+    let staging = tempfile::Builder::new()
+        .prefix("core-setup-")
+        .tempdir_in(&generated)?;
     for (relative, content) in files {
-        config::atomic_write(&root.join(relative), &content)?;
+        config::atomic_write(&staging.path().join(relative), &content)?;
+    }
+    let backup = generated.join("core-setup.previous");
+    if backup.exists() {
+        fs::remove_dir_all(&backup)?;
+    }
+    if root.exists() {
+        fs::rename(&root, &backup)?;
+    }
+    if let Err(error) = fs::rename(staging.path(), &root) {
+        if backup.exists() {
+            let _ = fs::rename(&backup, &root);
+        }
+        return Err(error.into());
+    }
+    if backup.exists() {
+        fs::remove_dir_all(backup)?;
     }
     Ok(())
 }

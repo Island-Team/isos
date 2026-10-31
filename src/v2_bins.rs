@@ -1,6 +1,5 @@
 //! Resolve the Aether executables used by the IsOS v2 graph.
 
-use crate::{config::Paths, v2_build};
 use anyhow::{Result, ensure};
 use std::{
     env, fs,
@@ -11,10 +10,6 @@ use std::{
 fn runnable(path: &PathBuf) -> bool {
     fs::metadata(path)
         .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
-}
-
-fn override_key(name: &str) -> String {
-    format!("ISOS_{}_BIN", name.to_ascii_uppercase().replace('-', "_"))
 }
 
 fn required_in_dir(name: &str, dir: &Path) -> Result<PathBuf> {
@@ -29,66 +24,16 @@ fn required_in_dir(name: &str, dir: &Path) -> Result<PathBuf> {
 }
 
 pub fn resolve(name: &str) -> Result<PathBuf> {
-    let key = override_key(name);
-    if let Some(path) = env::var_os(&key) {
-        let path = PathBuf::from(path);
-        ensure!(
-            path.is_absolute() && runnable(&path),
-            "{key} must name an absolute executable file: {}",
-            path.display()
-        );
-        return Ok(path);
-    }
-    if let Ok(paths) = Paths::discover() {
-        let selected = if paths.mode()? == "dev" {
-            v2_build::selected_verified(&paths)?
-        } else {
-            v2_build::selected(&paths)?
-        };
-        if let Some(path) = selected.and_then(|receipt| receipt.binaries.get(name).cloned()) {
-            return Ok(path);
-        }
-    }
     if let Some(dir) = env::var_os("ISOS_AETHER_BIN_DIR") {
         return required_in_dir(name, &PathBuf::from(dir));
     }
-    if let Ok(current) = env::current_exe()
-        && let Some(dir) = current.parent()
-    {
-        let path = dir.join(name);
-        if runnable(&path) {
-            return Ok(path);
-        }
-    }
-    if let Some(paths) = env::var_os("PATH") {
-        for dir in env::split_paths(&paths) {
-            let path = dir.join(name);
-            if runnable(&path) {
-                return Ok(path);
-            }
-        }
-    }
-    anyhow::bail!(
-        "{name} is not installed; install the Aether v2 executables beside isos or set ISOS_AETHER_BIN_DIR to their absolute bin directory"
-    )
-}
-
-pub fn draft_path(name: &str) -> String {
-    if let Ok(path) = resolve(name) {
-        return path.to_string_lossy().into_owned();
-    }
-    if let Some(path) = env::var_os(override_key(name)) {
-        return PathBuf::from(path).to_string_lossy().into_owned();
-    }
-    if let Some(dir) = env::var_os("ISOS_AETHER_BIN_DIR") {
-        return PathBuf::from(dir).join(name).to_string_lossy().into_owned();
-    }
-    // An editable graph can still be created before Aether is installed.
-    let dir = env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(|parent| parent.to_path_buf()))
-        .unwrap_or_else(|| PathBuf::from("/usr/bin"));
-    dir.join(name).to_string_lossy().into_owned()
+    let sibling = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("Island-eos/target/release");
+    required_in_dir(name, &sibling).map_err(|_| anyhow::anyhow!(
+        "{name} is unavailable; build EOS in its repository and set paths.aether_bin_dir in config/isos.toml to the prebuilt binary directory"
+    ))
 }
 
 #[cfg(test)]
