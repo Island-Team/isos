@@ -1,5 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
+install_user_service=false
+case "${1:-}" in
+  "") ;;
+  --install-user-service) install_user_service=true ;;
+  -h|--help)
+    echo "usage: ./install.sh [--install-user-service]"
+    echo "  --install-user-service  Install and start the optional product-mode systemd user unit"
+    exit 0
+    ;;
+  *)
+    echo "usage: ./install.sh [--install-user-service]" >&2
+    exit 2
+    ;;
+esac
+if (( $# > 1 )); then
+  echo "usage: ./install.sh [--install-user-service]" >&2
+  exit 2
+fi
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if command -v cargo >/dev/null 2>&1; then
   CARGO_BIN="$(command -v cargo)"
@@ -68,4 +86,7 @@ if ! command -v isos >/dev/null 2>&1; then
 fi
 if ! command -v isos >/dev/null 2>&1; then
   echo "Add $INSTALL_ROOT/bin to PATH, then open a new shell to run isos." >&2
+fi
+if [[ "$install_user_service" == true ]]; then
+  ISOS_EXECUTABLE="$INSTALL_ROOT/bin/isos" "$ROOT/tools/user-service.sh" install
 fi

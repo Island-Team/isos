@@ -15,8 +15,13 @@ if [[ "$action" == remove ]]; then
   systemctl --user daemon-reload
   exit 0
 fi
-command -v isos >/dev/null || { echo "isos executable is unavailable" >&2; exit 1; }
-isos_executable="$(readlink -f "$(command -v isos)")"
+if [[ -n "${ISOS_EXECUTABLE:-}" ]]; then
+  [[ -x "$ISOS_EXECUTABLE" ]] || { echo "IsOS executable is unavailable: $ISOS_EXECUTABLE" >&2; exit 1; }
+  isos_executable="$(readlink -f "$ISOS_EXECUTABLE")"
+else
+  command -v isos >/dev/null || { echo "isos executable is unavailable" >&2; exit 1; }
+  isos_executable="$(readlink -f "$(command -v isos)")"
+fi
 if [[ "$isos_executable" == *' '* ]]; then
   echo "IsOS executable path cannot contain spaces for this systemd unit" >&2
   exit 1

@@ -26,11 +26,13 @@ IsOS passes the verified executable and scene as explicit EOS runtime arguments 
 
 ## Component process node
 
-Path: `cores/isos/layers/process/groups/component/nodes/<id>`. Type: `isos.process.component@v1.0`.
+Path: `cores/isos/layers/process/groups/component/nodes/<id>`. Current type: `isos.process.component@v1.1`; saved `@v1.0` nodes are migrated on Apply.
 
 | Setting | Rust type | Unit | Purpose and validation |
 | --- | --- | --- | --- |
-| `command` | `Vec<String>` | argv | Required absolute executable and up to 63 bounded arguments; no shell. IsOS checks executable presence and execute permission. |
+| `role` | `String` | core ID | Required `eos` or `egia` for managed `isos.process.component@v1.1` nodes; selects the configured core binary directory. |
+| `args` | `Vec<String>` | argv arguments | Arguments for the binary determined by `role`, at most 63 bounded strings; no shell or executable path. |
+| `command` | `Vec<String>` | argv | Legacy `@v1.0` only. The first entry is an absolute executable; migrate to `role` and `args` before using a configured build. |
 | `cwd` | `Option<PathBuf>` | path | Optional absolute working directory. |
 | `env` | `BTreeMap<String,String>` | environment | Optional child variables; keys ASCII alphanumeric or `_`, values exclude NUL. |
 | `ready_tcp` | `Option<String>` | host:port | TCP readiness probe; exclusive with `ready_unix`. |
@@ -40,7 +42,7 @@ Path: `cores/isos/layers/process/groups/component/nodes/<id>`. Type: `isos.proce
 | `max_restarts` | `u32` | attempts | Automatic restart cap, maximum 10. |
 | `depends_on` | `Vec<String>` | canonical node paths | Prerequisites; unique, existing, and acyclic. |
 
-The manager starts direct children in dependency order, waits for readiness, and stops process groups in reverse order with TERM then KILL after two seconds. Provider failure stops dependents before recovery. Categorized rotating logs are `$XDG_DATA_HOME/isos/logs/<deployment>/<source>.log`; legacy raw process logs remain at `$XDG_DATA_HOME/isos/process-logs/<deployment>/<node>.log`. Status includes saved/active revision, pinned package, process PID/restarts, and last supervisor error. The private Unix manager API retains its schema 1 envelope and uses `v2_start`, `v2_restart`, `v2_stop`, and `v2_status` operations.
+The manager starts direct children in dependency order, waits for readiness, and stops process groups in reverse order with TERM then KILL after two seconds. Provider failure stops dependents before recovery. IsOS diagnostics and selected structured child events are stored in rotating `$XDG_DATA_HOME/isos/logs/<deployment>/<source>.log` files; plain child output is not mirrored. Status includes saved/active revision, pinned package, process PID/restarts, and last supervisor error. The private Unix manager API retains its schema 1 envelope and uses `v2_start`, `v2_restart`, `v2_stop`, and `v2_status` operations.
 
 ## Optional EOS control nodes
 

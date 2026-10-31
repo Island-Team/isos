@@ -1,0 +1,22 @@
+# Example IsOS runtime settings. Copy selected values into config/isos.toml.
+# Relative source paths below are resolved from the IsOS checkout, not the shell's cwd.
+# Environment variables override matching values.
+[server]
+http_port = 16000
+ui_port = 16001
+
+[paths]
+aether_bin_dir = "../Island-eos/target/debug"
+egia_bin_dir = "../Island-egia/bin"
+ui_dist = "../IsosUI/dist/local"
+# Only for explicit `isos serve --ui-live` frontend development.
+ui_repo = "../IsosUI"
+# mujoco_root = "../mujoco"
+
+[deployment]
+name = "default"
+
+[logging]
+level = "info" # trace, debug, info, warn, error
+max_bytes = 1048576
+backups = 3

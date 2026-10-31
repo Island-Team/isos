@@ -1,6 +1,7 @@
 mod auth;
 mod component;
 mod config;
+mod core_setup;
 mod graph;
 mod http;
 mod isosui;
@@ -10,6 +11,7 @@ mod manager_log;
 mod node_options;
 mod node_sets;
 mod packages;
+mod readiness;
 mod release;
 mod services;
 mod v2_backend;
@@ -69,7 +71,7 @@ fn catch_interrupts() -> Result<()> {
     name = "isos",
     version,
     about = "Manage Island EOS and EGIA as one local deployment",
-    after_help = "FIRST USE\n  1. Run `isos init --mode dev` once, then build and select IsOS, EOS, and IsosUI.\n  2. Run `isos serve` and use the Graph page to Validate and Apply.\n  3. Run `isos run`, inspect `isos status`, and stop with `isos stop`.\n\nMORE\n  Run `isos <command> --help` or read the IsOS quick start."
+    after_help = "MODES\n  dev (default): local source and installed binaries; setup can render configuration.\n  product: exact verified release pins; no source build at Run.\n\nSTART\n  Run `isos` to initialize and open the local workbench.\n  Run `isos <command> --help` for command details."
 )]
 struct Cli {
     #[arg(long = "generate-completion", hide = true)]
@@ -87,14 +89,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum CommandLine {
-    /// Build IsOS, EOS, EGIA, or IsosUI from configured source checkouts.
+    /// Build in the owning repository; this command prints migration guidance.
     Build {
-        #[arg(value_parser = ["isos", "eos", "egia", "all", "isosui"])]
+        #[arg(default_value = "all", value_parser = ["isos", "eos", "egia", "all", "isosui"])]
         target: String,
         #[arg(long)]
         install_deps: bool,
     },
-    /// Check or select exact component builds.
+    /// Report configured core build and launch readiness.
     Version {
         #[command(subcommand)]
         command: VersionCommand,
@@ -134,11 +136,14 @@ enum CommandLine {
         #[arg(long)]
         json: bool,
     },
-    /// Read recent direct-child logs for a deployment node.
+    /// Read recent unified logs for a source or all sources.
     Logs {
-        node: String,
+        #[arg(default_value = "all")]
+        source: String,
         #[arg(long, default_value_t = 100)]
         lines: u32,
+        #[arg(long, default_value = "info", value_parser = ["trace", "debug", "info", "warn", "error"])]
+        level: String,
     },
     /// Check the shared graph, package, binaries, and manager readiness.
     Doctor,
@@ -248,7 +253,10 @@ enum AuthCommand {
 
 #[derive(Subcommand)]
 enum VersionCommand {
-    Check,
+    Check {
+        #[arg(long)]
+        json: bool,
+    },
     #[command(name = "select", alias = "pin")]
     Pin {
         #[arg(value_parser = ["isos", "eos", "egia", "isosui"])]
@@ -483,15 +491,7 @@ fn config_command(paths: &config::Paths, name: &str, cmd: ConfigCommand) -> Resu
             println!("valid v2 graph: {} IsOS processes", specs.len());
         }
         ConfigCommand::Apply { file } => {
-            v2_process::validate_full_graph(&file)?;
-            let source = fs::read_to_string(&file)?;
-            let specs = v2_process::project_with_packages(paths, &source)?;
-            let normalized = v2_process::normalize_source(&source)?;
-            let _lock = lifecycle::Lock::take(paths)?;
-            config::atomic_write(
-                &paths.v2_node_graph(name),
-                &serde_json::to_vec_pretty(&normalized)?,
-            )?;
+            let specs = apply_graph_file(paths, name, &file)?;
             println!("applied v2 graph: {} IsOS processes", specs.len());
         }
         ConfigCommand::Show => {
@@ -499,6 +499,46 @@ fn config_command(paths: &config::Paths, name: &str, cmd: ConfigCommand) -> Resu
         }
     }
     Ok(())
+}
+
+fn apply_graph_file(
+    paths: &config::Paths,
+    name: &str,
+    file: &Path,
+) -> Result<Vec<v2_process::ProcessSpec>> {
+    let source = fs::read_to_string(file)?;
+    let mut graph = v2_process::normalize_source(&source)?;
+    v2_process::migrate_component_commands(&mut graph)?;
+    v2_process::validate_value(paths, &graph)?;
+    let normalized = serde_json::to_vec_pretty(&graph)?;
+    let specs = v2_process::project_with_packages(paths, &String::from_utf8(normalized.clone())?)?;
+    let revision = hex::encode(Sha256::digest(&normalized));
+    let rendered = core_setup::render_graph(paths, name, &graph, &revision)?;
+    let _lock = lifecycle::Lock::take(paths)?;
+    let destination = paths.v2_node_graph(name);
+    let previous = fs::read(&destination).ok();
+    config::atomic_write(&destination, &normalized)?;
+    if let Err(error) = core_setup::write_rendered(paths, name, rendered) {
+        if let Some(previous) = previous {
+            config::atomic_write(&destination, &previous)?;
+        } else {
+            let _ = fs::remove_file(&destination);
+        }
+        return Err(error);
+    }
+    if let Err(error) = clear_saved_setup_error(paths, name) {
+        eprintln!("saved graph applied, but could not clear prior setup error: {error}");
+    }
+    Ok(specs)
+}
+
+pub(crate) fn clear_saved_setup_error(paths: &config::Paths, name: &str) -> Result<()> {
+    let path = paths.runtime.join(format!("{name}.last-error"));
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn install_package(paths: &config::Paths, args: InstallArgs, kind: Option<&str>) -> Result<()> {
@@ -796,6 +836,17 @@ struct ApiRequest {
     cursor: Option<String>,
     #[serde(default)]
     limit: Option<usize>,
+    #[serde(default)]
+    log: Option<LogEventInput>,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct LogEventInput {
+    source: String,
+    level: String,
+    message: String,
+    #[serde(default)]
+    event_code: Option<String>,
 }
 #[derive(Deserialize, Serialize)]
 struct ApiResponse {
@@ -924,6 +975,41 @@ fn api_call(
     }
     match request.op.as_str() {
         "manager_identity" => manager_identity(paths),
+        "log_append" => {
+            v2_process::validate_deployment_name(&name)?;
+            let event = request.log.context("log is required")?;
+            ensure!(
+                !matches!(
+                    event.source.as_str(),
+                    "all" | "events" | "services" | "isos" | "browser"
+                ),
+                "reserved log source"
+            );
+            ensure!(
+                !event.message.is_empty() && event.message.len() <= 8192,
+                "log message must be 1..8192 bytes"
+            );
+            let code = event.event_code.as_deref().unwrap_or("external_event");
+            ensure!(
+                !code.is_empty()
+                    && code.len() <= 64
+                    && code.bytes().all(|byte| byte.is_ascii_lowercase()
+                        || byte.is_ascii_digit()
+                        || byte == b'_'),
+                "event_code must be 1..64 lowercase letters, digits, or underscores"
+            );
+            ensure!(
+                log_store::level_rank(&event.level).is_some(),
+                "log level must be trace, debug, info, warn, or error"
+            );
+            log_store::LogStore::new(paths, &name)?.append_event(
+                &event.source,
+                &event.level,
+                code,
+                &event.message,
+            )?;
+            Ok(json!({"accepted":true}))
+        }
         "manager_shutdown" => {
             tracing::info!(
                 event_code = "manager_shutdown",
@@ -977,7 +1063,13 @@ fn api_call(
                 );
             }
             let specs = v2_process::project_with_packages(paths, &source)?;
+            core_setup::verify_launch_inputs(paths, &name)?;
             v2_build::preflight_processes(paths, &specs)?;
+            core_setup::prepare_run(paths, &name, &revision)?;
+            ensure!(
+                v2_starter::revision(&path)? == revision,
+                "saved graph revision changed during core setup; reload before restart"
+            );
             let started = restart_v2_processes(paths, managers, &name, &revision, &specs)?;
             Ok(json!({"started":started,"active_revision":revision}))
         }
@@ -993,7 +1085,13 @@ fn api_call(
                 );
             }
             let specs = v2_process::project_with_packages(paths, &source)?;
+            core_setup::verify_launch_inputs(paths, &name)?;
             v2_build::preflight_processes(paths, &specs)?;
+            core_setup::prepare_run(paths, &name, &revision)?;
+            ensure!(
+                v2_starter::revision(&path)? == revision,
+                "saved graph revision changed during core setup; reload before run"
+            );
             let manager = if let Some(active) = managers.get_mut(&name) {
                 ensure!(
                     active.active_revision == revision,
@@ -1253,20 +1351,13 @@ fn daemon(paths: &config::Paths, deployment: &str, listener: UnixListener) -> Re
 }
 
 fn ui_source() -> Result<PathBuf> {
-    let source = std::env::var_os("ISOSUI_REPO_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("../IsosUI"));
-    ensure!(
-        source.join("package.json").is_file(),
-        "IsosUI source missing at {}; set ISOSUI_REPO_PATH",
-        source.display()
-    );
+    let source = isosui::source_root()?;
     ensure!(
         source.join("node_modules").is_dir(),
         "IsosUI dependencies missing at {}; run npm ci there",
         source.display()
     );
-    Ok(source.canonicalize()?)
+    Ok(source)
 }
 
 struct Frontend(Child);
@@ -1349,7 +1440,35 @@ impl Drop for Frontend {
     }
 }
 
-fn serve_foreground(paths: config::Paths, name: String, ui_live: bool) -> Result<()> {
+fn open_browser() -> Result<()> {
+    let url = http::ui_url()?;
+    Command::new("xdg-open")
+        .arg(&url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("open IsosUI in browser")?;
+    Ok(())
+}
+
+fn ensure_setup(paths: &config::Paths, name: &str) -> Result<()> {
+    paths.prepare()?;
+    if !paths.config.join("mode").exists() && std::env::var_os("ISOS_MODE").is_none() {
+        paths.set_mode("dev")?;
+    }
+    v2_starter::init(paths, name)?;
+    Ok(())
+}
+
+fn serve_foreground(
+    paths: config::Paths,
+    name: String,
+    ui_live: bool,
+    browser: bool,
+    run_graph: bool,
+) -> Result<()> {
+    ensure_setup(&paths, &name)?;
     v2_build::verify_active_isos(&paths)?;
     ensure!(
         !ui_live || paths.mode()? == "dev",
@@ -1379,14 +1498,16 @@ fn serve_foreground(paths: config::Paths, name: String, ui_live: bool) -> Result
     let static_ui = if ui_live {
         None
     } else {
-        let directory = isosui::selected_bundle(&paths)?;
+        let directory = isosui::bundle_for_serve(&paths)?;
         Some(std::thread::spawn(move || http::serve_ui(directory)))
     };
     let listener = bind_daemon(&paths)?;
     let api_paths = paths.clone();
     let manager_name = name.clone();
     let manager = std::thread::spawn(move || daemon(&api_paths, &manager_name, listener));
-    let http_server = std::thread::spawn(move || http::serve(paths, name));
+    let http_paths = paths.clone();
+    let http_name = name.clone();
+    let http_server = std::thread::spawn(move || http::serve(http_paths, http_name));
     let mut result = if let Some(frontend) = frontend.as_mut() {
         frontend.ready(port)
     } else {
@@ -1409,6 +1530,24 @@ fn serve_foreground(paths: config::Paths, name: String, ui_live: bool) -> Result
         println!("IsOS API: {}", http::local_origin());
         println!("IsOS log: {}", main_log.display());
         println!("IsOS workbench is running; press Ctrl+C to stop it.");
+        if browser && let Err(error) = open_browser() {
+            eprintln!(
+                "Could not open browser: {error}. Open {} manually.",
+                http::ui_url()?
+            );
+        }
+        if run_graph {
+            match v2_call(&paths, &name, "v2_start") {
+                Ok(started) => {
+                    if let Err(error) = print_v2_run_startup(&paths, &name, &started) {
+                        eprintln!("Could not display graph status: {error}");
+                    }
+                }
+                Err(error) => {
+                    eprintln!("Graph did not start: {error}. Use the workbench to finish setup.")
+                }
+            }
+        }
         while !INTERRUPTED.load(Ordering::SeqCst) {
             if let Some(frontend) = frontend.as_mut()
                 && let Some(status) = frontend.0.try_wait()?
@@ -1529,6 +1668,7 @@ fn v2_call_revision(
         service_id: None,
         cursor: None,
         limit: None,
+        log: None,
     };
     manager_request(paths, request)
 }
@@ -1582,8 +1722,19 @@ fn service_call(
             service_id: id,
             cursor: None,
             limit,
+            log: None,
         },
     )
+}
+
+fn print_init_next_steps(mode: &str) {
+    println!("\nNext steps:");
+    println!("  Build EOS, EGIA, and IsosUI in their owning repositories ({mode} mode).");
+    println!("  Configure ISOS_AETHER_BIN_DIR, ISOS_EGIA_BIN_DIR, and ISOSUI_DIST_DIR.");
+    println!("  isos version check                # inspect build and launch readiness");
+    println!("  isos                               # open the workbench; cores stay stopped");
+    println!("  In Graph, add a backend, then Check graph and Save graph before `isos run`.");
+    println!("  Run `isos --help` for mode rules or `isos doctor` to check readiness.");
 }
 
 fn main_run() -> Result<()> {
@@ -1595,122 +1746,89 @@ fn main_run() -> Result<()> {
     }
     let paths = config::Paths::discover()?;
     let name = cli.deployment;
-    let command = cli
-        .command
-        .ok_or_else(|| anyhow::anyhow!("run isos --help for usage"))?;
+    let Some(command) = cli.command else {
+        ensure_setup(&paths, &name)?;
+        if UnixStream::connect(paths.socket()).is_ok() {
+            let identity = v2_call(&paths, &name, "manager_identity")?;
+            println!("IsOS workbench already running: {}", identity["ui_url"]);
+            if let Err(error) = open_browser() {
+                eprintln!(
+                    "Could not open browser: {error}. Open {} manually.",
+                    http::ui_url()?
+                );
+            }
+            return Ok(());
+        }
+        return serve_foreground(paths, name, false, true, false);
+    };
     match command {
-        CommandLine::Build {
-            target,
-            install_deps,
-        } => {
-            if target == "isos" || target == "all" {
-                ensure!(
-                    !install_deps,
-                    "--install-deps is unavailable for the Rust v2 build"
-                );
-                let receipt = v2_build::build_isos(&paths)?;
-                println!(
-                    "built IsOS {} {} at {}",
-                    receipt.product_version,
-                    receipt.source_commit,
-                    receipt.executable.display()
-                );
-                if target == "isos" {
-                    return Ok(());
-                }
-            }
-            if target == "isosui" {
-                ensure!(
-                    !install_deps,
-                    "--install-deps is unavailable for the Rust v2 build"
-                );
-                let receipt = isosui::build(&paths)?;
-                println!(
-                    "built isosui {} {} sha256:{}",
-                    receipt.manifest.version, receipt.manifest.source_commit, receipt.sha256
-                );
-                return Ok(());
-            }
-            ensure!(
-                matches!(target.as_str(), "eos" | "egia" | "all"),
-                "build target must be isos, eos, egia, all, or isosui"
+        CommandLine::Build { target, .. } => {
+            anyhow::bail!(
+                "Build {target} in its owning repository, then configure ISOS_AETHER_BIN_DIR, ISOS_EGIA_BIN_DIR, or ISOSUI_DIST_DIR. Run `isos version check` for readiness."
             );
-            for role in if target == "all" {
-                vec!["eos"]
-            } else {
-                vec![target.as_str()]
-            } {
-                if role == "eos" {
-                    ensure!(!install_deps, "Rust EOS build does not use --install-deps");
-                    let receipt = v2_build::build_eos(&paths)?;
-                    println!(
-                        "built Rust EOS {} {} at {}",
-                        receipt.product_version,
-                        receipt.source_commit,
-                        receipt.binaries["aether-runtime"].display()
-                    );
-                } else {
-                    let receipt = versions::build(&paths, role, false)?;
-                    println!(
-                        "built {role} {} {} sha256:{}",
-                        receipt.product_version, receipt.source_commit, receipt.sha256
-                    );
-                }
-            }
-            if target == "all" {
-                let receipt = isosui::build(&paths)?;
-                println!(
-                    "built IsosUI {} {} sha256:{}",
-                    receipt.manifest.version, receipt.manifest.source_commit, receipt.sha256
-                );
-            }
         }
         CommandLine::Version { command } => match command {
-            VersionCommand::Check => {
+            VersionCommand::Check { json } => {
                 let active = if UnixStream::connect(paths.socket()).is_ok() {
-                    Some(json!({
-                        "manager": v2_call(&paths, &name, "manager_identity")?,
-                        "deployment": v2_call(&paths, &name, "v2_status")?,
-                        "services": service_call(&paths, &name, "services_status", None, None)?,
-                    }))
+                    v2_call(&paths, &name, "v2_status").ok()
                 } else {
                     None
                 };
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&versions::check_v2(&paths, &name, active)?)?
-                );
+                let report = readiness::report(&paths, &name, active.as_ref());
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&report)?);
+                } else {
+                    println!(
+                        "IsOS {} | graph {}",
+                        env!("CARGO_PKG_VERSION"),
+                        report["graph"]["path"].as_str().unwrap_or("unavailable")
+                    );
+                    for core in report["cores"].as_array().into_iter().flatten() {
+                        let name = core["core"].as_str().unwrap_or("core");
+                        let version = core["version"].as_str().unwrap_or("unknown");
+                        let state = if core["enabled"] == false {
+                            "not enabled"
+                        } else if core["ready"] == true {
+                            "ready"
+                        } else {
+                            "blocked"
+                        };
+                        println!(
+                            "{name}: {state} | version {version} | {}",
+                            core["path"].as_str().unwrap_or("not configured")
+                        );
+                        println!(
+                            "  Graph configuration: {} | Running: {}",
+                            if core["graph_configured"] == true {
+                                "saved"
+                            } else {
+                                "missing"
+                            },
+                            if core["running"] == true { "yes" } else { "no" }
+                        );
+                        if let Some(reason) = core["reason"].as_str() {
+                            println!("  Reason: {reason}");
+                        }
+                        if let Some(action) = core["action"].as_str() {
+                            println!("  Next: {action}");
+                        }
+                    }
+                    println!(
+                        "IsosUI: {} | {}",
+                        if report["isosui"]["ready"] == true {
+                            "ready"
+                        } else {
+                            "blocked"
+                        },
+                        report["isosui"]["path"]
+                            .as_str()
+                            .unwrap_or("not configured")
+                    );
+                }
             }
-            VersionCommand::Pin { component, version } => {
-                if component == "isos" {
-                    let receipt = v2_build::install_isos(&paths, &version)?;
-                    println!(
-                        "installed IsOS {} ({})",
-                        receipt.product_version, receipt.source_commit
-                    );
-                    return Ok(());
-                }
-                if component == "eos" {
-                    let revision = v2_starter::revision(&paths.v2_node_graph(&name))?;
-                    let receipt = v2_build::select_eos(&paths, &name, &version, &revision)?;
-                    println!(
-                        "selected EOS {} ({})",
-                        receipt.product_version, receipt.source_commit
-                    );
-                    return Ok(());
-                }
-                if component == "isosui" {
-                    let receipt = isosui::pin(&paths, &version)?;
-                    println!(
-                        "pinned isosui {} ({})",
-                        receipt.manifest.version, receipt.manifest.source_commit
-                    );
-                    return Ok(());
-                }
-                let receipt = versions::pin(&paths, &component, &version, &name)?;
-                println!(
-                    "pinned {} {} ({})",
-                    component, receipt.product_version, receipt.source_commit
+            VersionCommand::Pin { .. } => {
+                anyhow::bail!(
+                    "Version selection is retired. Configure one binary directory per core and ISOSUI_DIST_DIR, then run `isos version check`."
                 );
             }
         },
@@ -1732,8 +1850,12 @@ fn main_run() -> Result<()> {
                     "MuJoCo package missing: install or link island/mujoco-sim 2.0.0, then validate and apply the graph"
                 );
             }
+            print_init_next_steps(paths.mode()?);
         }
         CommandLine::Open => {
+            if UnixStream::connect(paths.socket()).is_err() {
+                return serve_foreground(paths, name, false, true, false);
+            }
             v2_call(&paths, &name, "manager_identity")?;
             let url = http::ui_url()?;
             Command::new("xdg-open")
@@ -1746,12 +1868,16 @@ fn main_run() -> Result<()> {
             println!("{url}");
         }
         CommandLine::Run => {
+            ensure_setup(&paths, &name)?;
+            if UnixStream::connect(paths.socket()).is_err() {
+                return serve_foreground(paths, name, false, true, true);
+            }
             catch_interrupts()?;
             print_v2_run_startup(&paths, &name, &v2_call(&paths, &name, "v2_start")?)?;
             wait_for_interrupt(&paths, &name)?;
         }
         CommandLine::Serve { ui_live } => {
-            serve_foreground(paths, name, ui_live)?;
+            serve_foreground(paths, name, ui_live, false, false)?;
         }
         CommandLine::Auth { command } => match command {
             AuthCommand::Login => auth::login(&paths)?,
@@ -1809,17 +1935,20 @@ fn main_run() -> Result<()> {
             };
             println!("{}", serde_json::to_string_pretty(&status)?);
         }
-        CommandLine::Logs { node, lines } => {
-            v2_process::validate_deployment_name(&node)?;
-            let log = paths
-                .data
-                .join("process-logs")
-                .join(&name)
-                .join(format!("{node}.log"));
-            let source = fs::read_to_string(log)?;
-            let selected: Vec<_> = source.lines().rev().take(lines as usize).collect();
-            for line in selected.into_iter().rev() {
-                println!("{line}");
+        CommandLine::Logs {
+            source,
+            lines,
+            level,
+        } => {
+            let store = log_store::LogStore::new(&paths, &name)?;
+            for entry in store.tail_filtered(&source, lines as usize, Some(&level))? {
+                println!(
+                    "{} {} [{}] {}",
+                    entry["timestamp"].as_str().unwrap_or(""),
+                    entry["level"].as_str().unwrap_or("").to_ascii_uppercase(),
+                    entry["source"].as_str().unwrap_or(""),
+                    entry["message"].as_str().unwrap_or("")
+                );
             }
         }
         CommandLine::Doctor => {
@@ -1866,15 +1995,7 @@ fn main_run() -> Result<()> {
                     println!("valid v2 node graph: {} IsOS process nodes", specs.len());
                 }
                 V2Command::Apply { file } => {
-                    v2_process::validate_full_graph(&file)?;
-                    let source = fs::read_to_string(&file)?;
-                    let specs = v2_process::project_with_packages(&paths, &source)?;
-                    let normalized = v2_process::normalize_source(&source)?;
-                    paths.prepare()?;
-                    config::atomic_write(
-                        &paths.v2_node_graph(&name),
-                        &serde_json::to_vec_pretty(&normalized)?,
-                    )?;
+                    let specs = apply_graph_file(&paths, &name, &file)?;
                     println!("applied v2 node graph: {} IsOS process nodes", specs.len());
                 }
                 V2Command::Run => println!(
@@ -1905,6 +2026,62 @@ fn main() {
 #[cfg(test)]
 mod restart_tests {
     use super::*;
+
+    #[test]
+    fn successful_graph_apply_clears_previous_setup_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = config::Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        fs::create_dir_all(&paths.runtime).unwrap();
+        let stale = paths.runtime.join("default.last-error");
+        fs::write(&stale, "old setup failure").unwrap();
+        clear_saved_setup_error(&paths, "default").unwrap();
+        assert!(!stale.exists());
+        clear_saved_setup_error(&paths, "default").unwrap();
+    }
+
+    #[test]
+    fn external_log_operation_records_selected_event_and_rejects_reserved_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = config::Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        let mut managers = V2Supervisors::new();
+        let mut services = services::ServiceManager::new(&paths, "default").unwrap();
+        let make_request = |source: &str| ApiRequest {
+            schema_version: 1,
+            op: "log_append".into(),
+            deployment: Some("default".into()),
+            role: None,
+            graph: None,
+            revision: None,
+            service_id: None,
+            cursor: None,
+            limit: None,
+            log: Some(LogEventInput {
+                source: source.into(),
+                level: "warn".into(),
+                message: "adapter unavailable".into(),
+                event_code: Some("adapter_unavailable".into()),
+            }),
+        };
+        assert_eq!(
+            api_call(&paths, &mut managers, &mut services, make_request("eos")).unwrap()["accepted"],
+            true
+        );
+        let stored = log_store::LogStore::new(&paths, "default")
+            .unwrap()
+            .read("eos", None, 10)
+            .unwrap();
+        assert_eq!(stored["lines"][0]["event_code"], "adapter_unavailable");
+        assert_eq!(stored["lines"][0]["message"], "adapter unavailable");
+        assert!(api_call(&paths, &mut managers, &mut services, make_request("isos")).is_err());
+    }
 
     #[test]
     fn failed_restart_restores_previous_revision_and_child() {

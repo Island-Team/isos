@@ -7,6 +7,7 @@ use crate::{config::Paths, log_store, packages, v2_backend, v2_bins};
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -95,7 +96,12 @@ struct BackendSettings {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProcessSettings {
+    #[serde(default)]
     pub command: Vec<String>,
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
     #[serde(default)]
     pub cwd: Option<PathBuf>,
     #[serde(default)]
@@ -331,6 +337,53 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
             }
         }
     }
+    let mut adapter_libraries = BTreeMap::new();
+    if let Some(hardware) = graph
+        .cores
+        .get("eos")
+        .and_then(|core| core.layers.get("hardware"))
+    {
+        for group in hardware.groups.values() {
+            for node in group.nodes.values() {
+                let Some(adapter) = &node.adapter else {
+                    continue;
+                };
+                let Some(family) = adapter.get("type").and_then(Value::as_str) else {
+                    continue;
+                };
+                if matches!(family, "mock-cxx" | "mujoco-v2") {
+                    continue;
+                }
+                let package = adapter
+                    .get("package")
+                    .and_then(Value::as_object)
+                    .and_then(|package| {
+                        Some((
+                            package.get("id")?.as_str()?,
+                            package.get("version")?.as_str()?,
+                        ))
+                    })
+                    .or_else(|| {
+                        node.package
+                            .as_ref()
+                            .map(|package| (package.id.as_str(), package.version.as_str()))
+                    })
+                    .with_context(|| format!("{}: loadable adapter requires a package", node.id))?;
+                let paths = paths.context("loadable adapter requires IsOS package resolver")?;
+                let (library, digest) =
+                    packages::verified_adapter_library(paths, package.0, package.1, family)?;
+                let argument = format!("{family}={}@{digest}", library.display());
+                if let Some(previous) =
+                    adapter_libraries.insert(family.to_owned(), argument.clone())
+                {
+                    ensure!(
+                        previous == argument,
+                        "adapter family {family} resolves to conflicting libraries"
+                    );
+                }
+            }
+        }
+    }
     for (core_id, core) in &graph.cores {
         if core_id != "eos" {
             continue;
@@ -409,7 +462,9 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
                     {
                         continue;
                     }
-                    if node.node_type == "isos.process.component@v1.0" {
+                    if node.node_type == "isos.process.component@v1.0"
+                        || node.node_type == "isos.process.component@v1.1"
+                    {
                         ensure!(
                             core_id == "isos" && layer_id == "process" && group_id == "component",
                             "{path}: process type has invalid placement"
@@ -418,6 +473,58 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
                         let mut settings: ProcessSettings =
                             serde_json::from_value(node.settings)
                                 .with_context(|| format!("{path}: invalid process settings"))?;
+                        let binary = match key.as_str() {
+                            "eos" => "aether-runtime",
+                            "bridge" => "aether-http-bridge",
+                            "config" => "aether-config-server",
+                            _ => "",
+                        };
+                        if !binary.is_empty() && paths.is_some() {
+                            ensure!(
+                                settings.role.as_deref().is_none_or(|role| role == "eos"),
+                                "{path}: role must be eos"
+                            );
+                            let args = if node.node_type.ends_with("@v1.1") {
+                                ensure!(
+                                    settings.command.is_empty(),
+                                    "{path}: v1.1 must not set command"
+                                );
+                                settings.args.clone()
+                            } else {
+                                settings.command.iter().skip(1).cloned().collect()
+                            };
+                            settings.command = std::iter::once(
+                                v2_bins::resolve(binary)?.to_string_lossy().into_owned(),
+                            )
+                            .chain(args)
+                            .collect();
+                        } else if key == "egia" && paths.is_some() {
+                            ensure!(
+                                settings.role.as_deref().is_none_or(|role| role == "egia"),
+                                "{path}: role must be egia"
+                            );
+                            let args = if node.node_type.ends_with("@v1.1") {
+                                ensure!(
+                                    settings.command.is_empty(),
+                                    "{path}: v1.1 must not set command"
+                                );
+                                settings.args.clone()
+                            } else {
+                                settings.command.iter().skip(1).cloned().collect()
+                            };
+                            let executable =
+                                crate::core_setup::adapter_path(paths.unwrap(), "egia")?
+                                    .with_file_name("egia");
+                            ensure!(
+                                executable.is_file(),
+                                "EGIA executable missing at {}",
+                                executable.display()
+                            );
+                            settings.command =
+                                std::iter::once(executable.to_string_lossy().into_owned())
+                                    .chain(args)
+                                    .collect();
+                        }
                         for dependency in &mut settings.depends_on {
                             *dependency = canonical_node_path(dependency);
                         }
@@ -437,6 +544,11 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
                             }
                         }
                         if key == "eos" {
+                            for argument in adapter_libraries.values() {
+                                spec.settings
+                                    .command
+                                    .extend(["--adapter-library".into(), argument.clone()]);
+                            }
                             ensure!(backends.len() <= 1, "EOS currently supports one backend");
                             for (backend_path, (resolved, _socket)) in &backends {
                                 spec.settings.command.extend([
@@ -451,6 +563,16 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
                                 spec.package = Some(resolved.descriptor.package.clone());
                                 spec.fingerprint = Some(resolved.fingerprint.clone());
                             }
+                        }
+                        if paths.is_some()
+                            && matches!(key.as_str(), "eos" | "bridge" | "config" | "egia")
+                        {
+                            let mut digest = Sha256::new();
+                            digest.update(fs::read(&spec.settings.command[0])?);
+                            if let Some(backend) = &spec.fingerprint {
+                                digest.update(backend.as_bytes());
+                            }
+                            spec.fingerprint = Some(hex::encode(digest.finalize()));
                         }
                         spec.validate()?;
                         ensure!(
@@ -475,6 +597,7 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
         backends.is_empty() || specs.contains_key("eos"),
         "EOS backend requires an IsOS-managed EOS runtime process"
     );
+    validate_listener_ports(&specs)?;
     let mut ordered = Vec::with_capacity(specs.len());
     let mut pending: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for (id, spec) in &specs {
@@ -512,6 +635,82 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
         }
     }
     Ok(ordered)
+}
+
+/// Replace authored executable paths with logical core arguments on save.
+pub fn migrate_component_commands(graph: &mut Value) -> Result<()> {
+    let Some(nodes) = graph
+        .pointer_mut("/cores/isos/layers/process/groups/component/nodes")
+        .and_then(Value::as_object_mut)
+    else {
+        return Ok(());
+    };
+    for (id, node) in nodes {
+        if !matches!(id.as_str(), "eos" | "bridge" | "config" | "egia")
+            || node["node_type"] != "isos.process.component@v1.0"
+        {
+            continue;
+        }
+        let settings = node
+            .get_mut("settings")
+            .and_then(Value::as_object_mut)
+            .with_context(|| format!("{id}: settings must be an object"))?;
+        let command = settings
+            .remove("command")
+            .and_then(|value| value.as_array().cloned())
+            .with_context(|| format!("{id}: command must be an array"))?;
+        ensure!(!command.is_empty(), "{id}: command is empty");
+        settings.insert(
+            "role".into(),
+            Value::String(if id == "egia" { "egia" } else { "eos" }.into()),
+        );
+        settings.insert(
+            "args".into(),
+            Value::Array(command.into_iter().skip(1).collect()),
+        );
+        node["node_type"] = Value::String("isos.process.component@v1.1".into());
+    }
+    Ok(())
+}
+
+fn validate_listener_ports(specs: &BTreeMap<String, ProcessSpec>) -> Result<()> {
+    let api = crate::http::local_port()?;
+    let ui = crate::http::ui_port()?;
+    let mut claimed = BTreeMap::<u16, &str>::new();
+    for (id, spec) in specs {
+        let mut endpoints = Vec::new();
+        if let Some(ready) = &spec.settings.ready_tcp {
+            endpoints.push(ready.as_str());
+        }
+        for pair in spec.settings.command.windows(2) {
+            if matches!(id.as_str(), "eos" | "bridge" | "config" | "egia") && pair[0] == "--listen"
+            {
+                endpoints.push(&pair[1]);
+            }
+        }
+        for endpoint in endpoints {
+            for address in endpoint
+                .to_socket_addrs()
+                .with_context(|| format!("{id}: invalid listener address {endpoint}"))?
+            {
+                if !address.ip().is_loopback() {
+                    continue;
+                }
+                let port = address.port();
+                ensure!(
+                    port != api && port != ui,
+                    "{id}: listener port {port} conflicts with IsOS workbench"
+                );
+                if let Some(owner) = claimed.insert(port, id) {
+                    ensure!(
+                        owner == id,
+                        "{id}: listener port {port} conflicts with {owner}"
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn normalize_source(source: &str) -> Result<Value> {
@@ -1060,6 +1259,30 @@ mod tests {
     }
 
     #[test]
+    fn migrates_legacy_component_commands_to_core_roles() {
+        let mut source: Value = serde_json::from_str(&graph(
+            r#"{"command":["/old/aether-runtime","--listen","127.0.0.1:1"]}"#,
+        ))
+        .unwrap();
+        source["cores"]["isos"]["layers"]["process"]["groups"]["component"]["nodes"]["egia"] = serde_json::json!({"id":"egia","node_type":"isos.process.component@v1.0",
+                "settings":{"command":["/old/egia","--quiet"]}});
+        migrate_component_commands(&mut source).unwrap();
+        let nodes = &source["cores"]["isos"]["layers"]["process"]["groups"]["component"]["nodes"];
+        assert_eq!(nodes["eos"]["node_type"], "isos.process.component@v1.1");
+        assert_eq!(nodes["eos"]["settings"]["role"], "eos");
+        assert_eq!(
+            nodes["eos"]["settings"]["args"],
+            serde_json::json!(["--listen", "127.0.0.1:1"])
+        );
+        assert!(nodes["eos"]["settings"].get("command").is_none());
+        assert_eq!(nodes["egia"]["settings"]["role"], "egia");
+        assert_eq!(
+            nodes["egia"]["settings"]["args"],
+            serde_json::json!(["--quiet"])
+        );
+    }
+
+    #[test]
     fn projection_rejects_wrong_type_placement_and_unbounded_launch() {
         let source = graph(r#"{"command":["/bin/sleep","1"]}"#);
         assert_eq!(project(&source).unwrap()[0].id, "eos");
@@ -1101,6 +1324,29 @@ command = ["/bin/sleep", "1"]
             .is_err()
         );
         assert!(project(&graph(r#"{"command":["/bin/sleep","1"],"ready_unix":"/tmp/eos.sock","ready_tcp":"127.0.0.1:1"}"#)).is_err());
+    }
+
+    #[test]
+    fn rejects_workbench_and_duplicate_listener_ports() {
+        let mut spec = project(&graph(
+            r#"{"command":["/bin/sleep","1"],"ready_tcp":"127.0.0.1:16020"}"#,
+        ))
+        .unwrap()
+        .remove(0);
+        let mut specs = BTreeMap::new();
+        specs.insert(spec.id.clone(), spec.clone());
+        assert!(validate_listener_ports(&specs).is_ok());
+
+        let mut second = spec.clone();
+        second.id = "bridge".into();
+        second.path = "isos/process/component/bridge".into();
+        specs.insert(second.id.clone(), second);
+        assert!(validate_listener_ports(&specs).is_err());
+
+        specs.remove("bridge");
+        spec.settings.ready_tcp = Some("127.0.0.1:16000".into());
+        specs.insert(spec.id.clone(), spec);
+        assert!(validate_listener_ports(&specs).is_err());
     }
 
     #[test]

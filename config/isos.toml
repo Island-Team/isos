@@ -1,0 +1,20 @@
+# Portable IsOS defaults. Relative source paths are resolved from the IsOS checkout.
+# Use ISOS_CONFIG=/absolute/path/to/file.toml to load another file.
+# Environment variables override matching values.
+[server]
+http_port = 16000
+ui_port = 16001
+
+[paths]
+# Prebuilt artifacts from each owning repository; build there before running IsOS.
+aether_bin_dir = "../Island-eos/target/debug"
+egia_bin_dir = "../Island-egia/bin"
+ui_dist = "../IsosUI/dist/local"
+
+[deployment]
+name = "default"
+
+[logging]
+level = "info"
+max_bytes = 1048576
+backups = 3

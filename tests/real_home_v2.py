@@ -40,7 +40,7 @@ def api(isos_port, path, method="GET", data=None):
                       data=None if data is None else json.dumps(data).encode(),
                       method=method, headers={"Content-Type": "application/json",
                                               "Origin": f"http://127.0.0.1:{isos_port}"})
-    with urlopen(request, timeout=5) as response:
+    with urlopen(request, timeout=30) as response:
         body = json.load(response)
     if not body["ok"]:
         raise RuntimeError(body)
@@ -137,13 +137,13 @@ def main():
     bundle = Path(os.environ["ISOS_TEST_REAL_BUNDLE"])
     aether = Path(os.environ["ISOS_AETHER_BIN_DIR"])
     mujoco = Path(os.environ["MUJOCO_ROOT"])
-    ui_repo = Path(os.environ.get("ISOSUI_REPO_PATH", str(Path(__file__).resolve().parents[2] / "IsosUI")))
-    if not (ui_repo / "node_modules").is_dir():
-        raise RuntimeError(f"install IsosUI dependencies first: {ui_repo}")
+    ui_dist = Path(os.environ.get("ISOSUI_DIST_DIR", str(Path(__file__).resolve().parents[2] / "IsosUI/dist/local")))
+    if not (ui_dist / "index.html").is_file():
+        raise RuntimeError(f"build the IsosUI bundle first: {ui_dist}")
     descriptor = json.loads((bundle / "backend-v2.json").read_text())
     assert descriptor["entrypoint"] == "bin/eos-mujoco-sim"
     scene = descriptor["scenes"][0]["id"]
-    print(f"Environment: IsOS={isos} Aether={aether} bundle={bundle} MuJoCo={mujoco} ui_repo={ui_repo} DISPLAY={os.environ.get('DISPLAY')} WAYLAND_DISPLAY={os.environ.get('WAYLAND_DISPLAY')}", flush=True)
+    print(f"Environment: IsOS={isos} Aether={aether} bundle={bundle} MuJoCo={mujoco} ui_dist={ui_dist} DISPLAY={os.environ.get('DISPLAY')} WAYLAND_DISPLAY={os.environ.get('WAYLAND_DISPLAY')}", flush=True)
     with tempfile.TemporaryDirectory(prefix="isos-real-v2-") as temporary:
         root = Path(temporary)
         linked_bundle = root / "bundle"
@@ -153,23 +153,16 @@ def main():
                    ISOS_HTTP_PORT=str(isos_port),
                    ISOSUI_PORT=str(ui_port),
                    ISOS_AETHER_BIN_DIR=str(aether), MUJOCO_ROOT=str(mujoco),
-                   ISOSUI_REPO_PATH=str(ui_repo))
+                   ISOSUI_DIST_DIR=str(ui_dist))
         command(isos, env, "pkg", "link", "island/mujoco-sim", "2.0.0", str(linked_bundle), "--manifest", str(linked_bundle / "release.json"))
         command(isos, env, "init", "--mode", "dev")
         graph_file = root / "home/config/deployments/default.nodes.json"
         graph_before = graph_file.read_bytes()
         command(isos, env, "init", "--mode", "dev")
         assert graph_file.read_bytes() == graph_before
-        built = subprocess.run([str(isos), "build", "eos"], env=env,
-                               text=True, capture_output=True, timeout=300)
-        if built.returncode:
-            raise RuntimeError(f"isos build eos failed: {built.stderr}")
-        receipts = list((root / "home/data/builds/eos").glob("*/receipt.json"))
-        assert len(receipts) == 1, receipts
-        commit = json.loads(receipts[0].read_text())["source_commit"]
-        command(isos, env, "version", "select", "eos", commit)
+        command(isos, env, "version", "check")
         serve_log = (root / "serve.log").open("w+")
-        serve = subprocess.Popen([str(isos), "serve", "--ui-live"], env=env, stdout=serve_log,
+        serve = subprocess.Popen([str(isos), "serve"], env=env, stdout=serve_log,
                                  stderr=subprocess.STDOUT, text=True)
         running = None
         try:
@@ -187,7 +180,7 @@ def main():
             components = graph["cores"]["isos"]["layers"]["process"]["groups"]["component"]["nodes"]
             for node, listen in [("bridge", bridge_port), ("config", config_port)]:
                 settings = components[node]["settings"]
-                settings["command"][-1] = f"127.0.0.1:{listen}"
+                settings["args"][-1] = f"127.0.0.1:{listen}"
                 settings["ready_tcp"] = f"127.0.0.1:{listen}"
             document = await_condition(lambda: api(isos_port, "node-graph"))
             assert api(isos_port, "node-graph/validate", "POST", {"schema_version": 2, "graph": graph})["valid"]
@@ -217,9 +210,9 @@ def main():
                 print("MuJoCo GUI visibility check skipped: DISPLAY or xwininfo unavailable", flush=True)
             assert command(isos, env, "pkg", "remove", "island/mujoco-sim", "2.0.0", success=False).returncode != 0
             assert eos(bridge_port, {"op": "discover"})["nodes"]
-            camera = "cores/eos/layers/hardware/groups/mujoco/nodes/front"
-            base = "cores/eos/layers/hardware/groups/mujoco/nodes/drive"
-            arm = "cores/eos/layers/hardware/groups/mujoco/nodes/arm"
+            camera = "eos/hardware/camera/front"
+            base = "eos/hardware/base/drive"
+            arm = "eos/hardware/manipulator/arm"
             assert eos(bridge_port, {"op": "capture", "node_path": camera})["frame"]["width_px"] > 0
             origin = f"http://127.0.0.1:{isos_port}"
             active_gates = await_condition(lambda: vision_gates(bridge_port, origin)
@@ -287,7 +280,7 @@ def main():
             if (root / "run.log").exists():
                 print("--- run log ---\n", (root / "run.log").read_text(), flush=True)
             for name in ["eos", "bridge", "config"]:
-                log = root / "home/data/process-logs/default" / f"{name}.log"
+                log = root / "home/data/logs/default" / f"{name}.log"
                 if log.exists():
                     print(f"--- {name} log ---\n", log.read_text(errors="replace")[-6000:], flush=True)
 

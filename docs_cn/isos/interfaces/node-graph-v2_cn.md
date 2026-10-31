@@ -26,11 +26,13 @@ IsOS 将已验证的可执行文件、场景路径和 MuJoCo 库路径传给 EOS
 
 ## 组件进程节点
 
-路径：`cores/isos/layers/process/groups/component/nodes/<id>`。类型：`isos.process.component@v1.0`。
+路径：`cores/isos/layers/process/groups/component/nodes/<id>`。当前类型：`isos.process.component@v1.1`；已保存的 `@v1.0` 节点在 Apply 时迁移。
 
 | 设置 | Rust 类型 | 单位 | 用途与校验 |
 | --- | --- | --- | --- |
-| `command` | `Vec<String>` | argv | 必填绝对可执行文件及最多 63 个有界参数；不经 shell。IsOS 检查文件存在且可执行。 |
+| `role` | `String` | 核心 ID | 托管的 `isos.process.component@v1.1` 节点必填 `eos` 或 `egia`；选择已配置的核心程序目录。 |
+| `args` | `Vec<String>` | argv 参数 | 传给 `role` 确定的程序；最多 63 个有界字符串，不经 shell，也不包含程序路径。 |
+| `command` | `Vec<String>` | argv | 仅旧版 `@v1.0` 使用；第一项为绝对可执行文件。使用已配置构建前应迁移为 `role` 和 `args`。 |
 | `cwd` | `Option<PathBuf>` | 路径 | 可选绝对工作目录。 |
 | `env` | `BTreeMap<String,String>` | 环境变量 | 可选；键仅允许 ASCII 字母、数字或 `_`，值不得含 NUL。 |
 | `ready_tcp` | `Option<String>` | host:port | TCP 就绪探针，与 `ready_unix` 互斥。 |
@@ -40,7 +42,7 @@ IsOS 将已验证的可执行文件、场景路径和 MuJoCo 库路径传给 EOS
 | `max_restarts` | `u32` | 次数 | 自动重启上限，最多 10。 |
 | `depends_on` | `Vec<String>` | 规范节点路径 | 前置进程，须存在、唯一且无环。 |
 
-管理器按依赖顺序启动直接子进程，等待就绪；停止时逆序向进程组发送 TERM，两秒后发送 KILL。提供者故障时先停止依赖者再恢复。分类轮转日志位于 `$XDG_DATA_HOME/isos/logs/<deployment>/<source>.log`；旧原始进程日志仍位于 `$XDG_DATA_HOME/isos/process-logs/<deployment>/<node>.log`。状态包含已保存/运行中修订、固定软件包、PID、重启次数和最近管理错误。私有 Unix 管理器 API 保留 schema 1 封装，使用 `v2_start`、`v2_restart`、`v2_stop`、`v2_status` 操作。
+管理器按依赖顺序启动直接子进程，等待就绪；停止时逆序向进程组发送 TERM，两秒后发送 KILL。提供者故障时先停止依赖者再恢复。IsOS 自身诊断及选定的结构化子进程事件写入轮转的 `$XDG_DATA_HOME/isos/logs/<deployment>/<source>.log` 文件；普通子进程输出不再镜像。状态包含已保存/运行中修订、固定软件包、PID、重启次数和最近管理错误。私有 Unix 管理器 API 保留 schema 1 封装，使用 `v2_start`、`v2_restart`、`v2_stop`、`v2_status` 操作。
 
 ## 可选的 EOS 控制节点
 

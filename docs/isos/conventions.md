@@ -8,4 +8,4 @@ Use 2 spaces for Markdown, JSON, and configuration indentation. Rust follows car
 
 Before committing, run cargo fmt --check, cargo clippy --all-targets -- -D warnings, and cargo test. Add tests for graph ordering, package validation, process ownership, and API boundary changes. Keep runtime state under XDG paths, not in the repository. Use small Conventional Commits; a public PR can be squash-merged after review.
 
-The public IsosUI repository owns the editor source and static build. IsOS owns the CLI, loopback API, and optional local build/pin integration. Do not copy editor source here or package UI assets into the standard IsOS release. Keep the IsosUI pin independent of EOS/EGIA graph selection.
+The public IsosUI repository owns the editor source and static build. IsOS owns the CLI, loopback API, and configured path to one verified UI bundle. Do not copy editor source here or package UI assets into the standard IsOS release. Keep the UI bundle path independent of EOS/EGIA graph selection.
