@@ -52,7 +52,7 @@ IsOS reads [config/isos.toml](../../../config/isos.toml) from its source checkou
 | --- | --- | --- | --- |
 | `server.http_port` | integer TCP port | IsOS loopback API; 1024–65535 | `ISOS_HTTP_PORT` |
 | `server.ui_port` | integer TCP port | IsosUI loopback frontend; 1024–65535, different from HTTP port | `ISOSUI_PORT` |
-| `paths.ui_repo` | path string | IsosUI source repository for builds or explicit `--ui-live`; relative to IsOS checkout; npm dependencies are required only for live mode | `ISOSUI_REPO_PATH` |
+| `paths.ui_repo` | path string | Optional IsosUI source repository for builds or explicit `--ui-live`; defaults to the sibling `IsosUI` checkout; relative paths resolve from the IsOS checkout | `ISOSUI_REPO_PATH` |
 | `paths.aether_bin_dir` | path string | Aether Rust executable directory; relative to IsOS checkout | `ISOS_AETHER_BIN_DIR` |
 | `paths.mujoco_root` | path string | Optional MuJoCo runtime root; relative to IsOS checkout | `MUJOCO_ROOT` |
 | `deployment.name` | slug string | Default graph/log namespace; validated deployment name | `ISOS_DEPLOYMENT` |

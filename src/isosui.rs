@@ -137,12 +137,31 @@ fn command(root: &Path, program: &str, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8(output.stdout)?.trim().into())
 }
 
+fn checked_source_root(path: PathBuf) -> Result<PathBuf> {
+    ensure!(
+        path.is_absolute() && path.join("package.json").is_file(),
+        "IsosUI source missing at {}; set ISOSUI_REPO_PATH to an absolute checkout path or paths.ui_repo in config.toml",
+        path.display()
+    );
+    Ok(path.canonicalize()?)
+}
+
+fn resolve_source_root(configured: Option<PathBuf>, sibling: PathBuf) -> Result<PathBuf> {
+    checked_source_root(configured.unwrap_or(sibling))
+}
+
+pub fn source_root() -> Result<PathBuf> {
+    resolve_source_root(
+        std::env::var_os("ISOSUI_REPO_PATH").map(PathBuf::from),
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("IsosUI"),
+    )
+}
+
 pub fn build(paths: &Paths) -> Result<Receipt> {
-    let root = std::env::var_os("ISOSUI_REPO_PATH")
-        .map(PathBuf::from)
-        .ok_or_else(|| anyhow::anyhow!("ISOSUI_REPO_PATH is required for isos build isosui"))?;
-    ensure!(root.is_dir(), "ISOSUI_REPO_PATH is not a directory");
-    let root = root.canonicalize()?;
+    let root = source_root()?;
     let (commit, dirty, fingerprint) = crate::v2_build::source_identity(&root)?;
     ensure!(
         paths.mode()? != "product" || !dirty,
@@ -307,6 +326,18 @@ pub fn check(paths: &Paths) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_root_uses_sibling_and_validates_override() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("IsosUI");
+        fs::create_dir(&root).unwrap();
+        assert!(resolve_source_root(None, root.clone()).is_err());
+        fs::write(root.join("package.json"), "{}").unwrap();
+        assert_eq!(resolve_source_root(None, root.clone()).unwrap(), root);
+        assert!(resolve_source_root(Some(PathBuf::from("../IsosUI")), root.clone()).is_err());
+        assert!(resolve_source_root(Some(root.join("missing")), root).is_err());
+    }
 
     #[test]
     fn pin_validation_rejects_damage() {

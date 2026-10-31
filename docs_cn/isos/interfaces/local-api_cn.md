@@ -52,7 +52,7 @@ IsOS 默认读取其源码目录中的 [config/isos.toml](../../../config/isos.t
 | --- | --- | --- | --- |
 | `server.http_port` | 整数 TCP 端口 | IsOS 环回 API；1024–65535 | `ISOS_HTTP_PORT` |
 | `server.ui_port` | 整数 TCP 端口 | IsosUI 环回前端；1024–65535，且不同于 HTTP 端口 | `ISOSUI_PORT` |
-| `paths.ui_repo` | 路径字符串 | 用于构建或显式 `--ui-live` 的 IsosUI 源码目录；相对路径以 IsOS 源码目录为基准；只有实时模式需要安装 npm 依赖 | `ISOSUI_REPO_PATH` |
+| `paths.ui_repo` | 路径字符串 | 可选的 IsosUI 源码目录，用于构建或显式 `--ui-live`；默认使用 IsOS 旁的 `IsosUI`；相对路径以 IsOS 源码目录为基准 | `ISOSUI_REPO_PATH` |
 | `paths.aether_bin_dir` | 路径字符串 | Aether Rust 可执行文件目录；相对路径以 IsOS 源码目录为基准 | `ISOS_AETHER_BIN_DIR` |
 | `paths.mujoco_root` | 路径字符串 | 可选 MuJoCo 运行根目录；相对路径以 IsOS 源码目录为基准 | `MUJOCO_ROOT` |
 | `deployment.name` | slug 字符串 | 默认图与日志命名空间；需通过部署名校验 | `ISOS_DEPLOYMENT` |

@@ -17,6 +17,8 @@ isos version select isosui <staged-commit>
 isos serve
 ```
 
+`isos build isosui` 和 `isos build all` 默认使用 IsOS 源码目录旁的 `IsosUI` 源码目录。如需使用其他目录，请设置绝对路径 `ISOSUI_REPO_PATH` 或在 `config.toml` 中设置 `[paths].ui_repo`。`build all` 会在构建任何组件前检查界面源码；构建只会暂存产物，不会自动选择版本。
+
 `isos serve` 在 `http://127.0.0.1:16001/en/isos` 提供 IsosUI，在 `http://127.0.0.1:16000/api/isos/v2` 提供 API。`ISOSUI_PORT` 与 `ISOS_HTTP_PORT` 可修改环回端口。产品模式只使用经校验的固定静态 UI，不需要 npm 或源码目录。Ctrl+C 或 `isos stop` 会停止 UI、API、部署、显式启动的服务及管理器；`isos deployment stop` 只停止图部署。
 
 可选的 systemd 用户单元运行相同的产品模式命令：在 `isos init --mode product` 并选择经验证的构建后，运行 `./install.sh --install-user-service` 安装 CLI 并启用、启动该单元；如果 CLI 已安装，也可以运行 `tools/user-service.sh install`。运行 `tools/user-service.sh remove` 可禁用。CLI 与 shell 补全不依赖此单元。

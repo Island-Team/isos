@@ -17,6 +17,8 @@ isos version select isosui <staged-commit>
 isos serve
 ```
 
+`isos build isosui` and `isos build all` use a sibling `IsosUI` checkout beside the IsOS source by default. Set the absolute `ISOSUI_REPO_PATH` or `[paths].ui_repo` in `config.toml` for another checkout. `build all` checks for the UI source before starting any component build; it stages builds but does not select them.
+
 `isos serve` hosts IsosUI at `http://127.0.0.1:16001/en/isos` and the API at `http://127.0.0.1:16000/api/isos/v2`. `ISOSUI_PORT` and `ISOS_HTTP_PORT` change the loopback ports. Product mode serves only the selected verified static UI and does not need npm or source checkouts. Ctrl+C or `isos stop` stops the UI, API, deployment, explicitly started services, and manager. `isos deployment stop` stops the graph only.
 
 An optional systemd user unit runs that same product command: after `isos init --mode product` and selecting verified builds, run `./install.sh --install-user-service` to install the CLI and enable and start the unit, or run `tools/user-service.sh install` when the CLI is already installed. Run `tools/user-service.sh remove` to disable it. CLI commands and shell completion work without the unit.

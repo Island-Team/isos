@@ -1302,20 +1302,13 @@ fn daemon(paths: &config::Paths, deployment: &str, listener: UnixListener) -> Re
 }
 
 fn ui_source() -> Result<PathBuf> {
-    let source = std::env::var_os("ISOSUI_REPO_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("../IsosUI"));
-    ensure!(
-        source.join("package.json").is_file(),
-        "IsosUI source missing at {}; set ISOSUI_REPO_PATH",
-        source.display()
-    );
+    let source = isosui::source_root()?;
     ensure!(
         source.join("node_modules").is_dir(),
         "IsosUI dependencies missing at {}; run npm ci there",
         source.display()
     );
-    Ok(source.canonicalize()?)
+    Ok(source)
 }
 
 struct Frontend(Child);
@@ -1694,6 +1687,13 @@ fn main_run() -> Result<()> {
             target,
             install_deps,
         } => {
+            if target == "all" {
+                ensure!(
+                    !install_deps,
+                    "--install-deps is unavailable for the Rust v2 build"
+                );
+                isosui::source_root()?;
+            }
             if target == "isos" || target == "all" {
                 ensure!(
                     !install_deps,
