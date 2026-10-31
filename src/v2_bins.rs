@@ -39,11 +39,15 @@ pub fn resolve(name: &str) -> Result<PathBuf> {
         );
         return Ok(path);
     }
-    if let Ok(paths) = Paths::discover()
-        && let Some(receipt) = v2_build::selected(&paths)?
-        && let Some(path) = receipt.binaries.get(name)
-    {
-        return Ok(path.clone());
+    if let Ok(paths) = Paths::discover() {
+        let selected = if paths.mode()? == "dev" {
+            v2_build::selected_verified(&paths)?
+        } else {
+            v2_build::selected(&paths)?
+        };
+        if let Some(path) = selected.and_then(|receipt| receipt.binaries.get(name).cloned()) {
+            return Ok(path);
+        }
     }
     if let Some(dir) = env::var_os("ISOS_AETHER_BIN_DIR") {
         return required_in_dir(name, &PathBuf::from(dir));

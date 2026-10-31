@@ -425,7 +425,11 @@ pub fn check_v2(paths: &Paths, name: &str, active: Option<Value>) -> Result<Valu
     if let Some(version) = graph_version {
         ensure!(version == "2.0.0", "unsupported graph version {version}");
     }
-    let selected_eos = crate::v2_build::selected(paths)?;
+    let selected_eos = crate::v2_build::selected_verified(paths)?;
+    let eos_source_diagnostic = selected_eos
+        .as_ref()
+        .and_then(|receipt| crate::v2_build::verify_source(paths, receipt).err())
+        .map(|error| error.to_string());
     let selected_ui = isosui::selected_receipt(paths)?;
     if paths.mode()? == "product" {
         ensure!(
@@ -480,7 +484,8 @@ pub fn check_v2(paths: &Paths, name: &str, active: Option<Value>) -> Result<Valu
         "configured": {"isos_version": env!("CARGO_PKG_VERSION"), "isos_executable": own_executable, "isos_sha256": own_digest, "graph_version": graph_version, "api_schema_version": 2, "node_type_version": "1.0", "service_contract_version": crate::services::CONTRACT_VERSION},
         "selected": {"isos": {"receipt": selected_isos, "executable": own_executable, "sha256": own_digest}, "eos": selected_eos, "isosui": selected_ui},
         "active": active,
-        "match": {"isos_executable": own_match, "eos_graph": eos_match},
+        "match": {"isos_executable": own_match, "eos_graph": eos_match, "eos_source": eos_source_diagnostic.as_ref().map(|_| false).or_else(|| selected_eos.as_ref().map(|_| true))},
+        "eos_source_diagnostic": eos_source_diagnostic,
         "graph": {"path": graph_path, "revision": graph.map(|bytes| hex::encode(Sha256::digest(bytes)))},
         "packages": packages,
     }))

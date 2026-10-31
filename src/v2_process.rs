@@ -528,6 +528,10 @@ pub fn normalize_source(source: &str) -> Result<Value> {
 }
 
 pub fn validate_value(paths: &Paths, graph: &Value) -> Result<()> {
+    validate_value_with_profile(paths, graph, &v2_bins::resolve("aether-profile")?)
+}
+
+pub fn validate_value_with_profile(paths: &Paths, graph: &Value, profile: &Path) -> Result<()> {
     paths.prepare()?;
     let mut file = tempfile::Builder::new()
         .prefix("isos-v2-graph-")
@@ -536,7 +540,7 @@ pub fn validate_value(paths: &Paths, graph: &Value) -> Result<()> {
     serde_json::to_writer(&mut file, graph)?;
     use std::io::Write;
     file.flush()?;
-    validate_full_graph(file.path())?;
+    validate_with_program(file.path(), profile)?;
     project_with_packages(paths, &serde_json::to_string(graph)?)?;
     Ok(())
 }

@@ -14,7 +14,7 @@ The API binds only to `127.0.0.1` and serves no frontend files. IsosUI calls it 
 | `GET /api/isos/v2/node-types` | `{types:[...]}` | Node type catalog from `aether-profile`. |
 | `GET /api/isos/v2/node-options` | `{adapter_families,primitive_bindings,targets}` | Selector options for the saved graph. |
 | `POST /api/isos/v2/node-options` | `{schema_version:2,graph}` → `{adapter_families,primitive_bindings,targets}` | Selector options for an unapplied draft. |
-| `GET /api/isos/v2/build-binaries` | `{selected:receipt|null}` | Exact staged Rust EOS binary set. |
+| `GET /api/isos/v2/build-binaries` | `{selected:receipt|null,source_current:boolean,stale_reason:string|null}` | Digest-verified selected EOS binaries and source freshness. A stale source is reported as state, not an HTTP error; no selection gives `source_current:false` and `stale_reason:null`. |
 | `POST /api/isos/v2/build-binaries` | `{schema_version:2,target:"eos",install_deps:false}` → `{receipt,suggested_graph}` | Build and stage Rust EOS binaries without changing selection. Preview the suggested graph, then use the select endpoint. |
 | `POST /api/isos/v2/build-binaries/select` | `{schema_version:2,selector,revision}` → `{receipt,graph:{revision,graph}}` | Select a verified staged EOS build and apply its three process commands only if the graph revision still matches. |
 | `GET /api/isos/v2/node-sets` | `{sets:[{package,id,parameters,nodes}]}` | Installed package node sets. |
@@ -61,6 +61,8 @@ IsOS reads `~/.config/isos/config.toml` (or `ISOS_HOME/config/config.toml`) if p
 ## Rust binary and selector contracts
 
 `receipt` contains `schema_version` (integer 2), `component` (`eos`), `product_version` (`2.0.0`), `source_commit` (full Git SHA), `source_dirty` (boolean indicating modified or untracked source), `source_fingerprint` (SHA-256 of commit and source files), `source_root` (optional absolute source path for development drift checks), `binaries` (absolute paths keyed by executable name), and `sha256` (matching file digests). Build stages the five Aether executables together under the private IsOS data directory without changing selection. Product mode admits only clean fingerprinted receipts. Run probes the exact EOS, bridge, config, and profile executable capabilities and returns an error when the set is stale or the graph points elsewhere. `suggested_graph` is `{revision,graph}` or null and is never applied automatically. CLI `isos build eos` calls the same build service; the select endpoint or `isos version select eos <selector>` checks the graph revision before applying the three executable paths and pin. The selector accepts a unique commit prefix, product version, or source fingerprint prefix; use the fingerprint when builds share a commit.
+
+In dev mode, graph validation and editing continue to use the digest-verified selected `aether-profile` when EOS source has changed. Selecting a staged build validates the suggested graph with that candidate's `aether-profile` before updating the graph and pin. Run still requires source freshness. The version check reports source drift in `match.eos_source` (boolean or null if unselected) and `eos_source_diagnostic` (string or null).
 
 IsOS and IsosUI builds use separate immutable receipts with the same source identity fields. `isos build isos` stages a release executable; `isos version select isos <commit>` requires a stopped manager before activating it. An IsosUI receipt additionally binds a directory digest to its manifest; product serving reads only the selected, verified directory.
 
