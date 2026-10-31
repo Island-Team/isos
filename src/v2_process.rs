@@ -721,6 +721,13 @@ pub struct Supervisor {
 }
 
 impl Supervisor {
+    pub fn specs(&self) -> Vec<ProcessSpec> {
+        self.order
+            .iter()
+            .filter_map(|id| self.running.get(id).map(|running| running.spec.clone()))
+            .collect()
+    }
+
     pub fn active_packages(&self) -> Vec<v2_backend::PackageIdentity> {
         self.running
             .values()

@@ -812,6 +812,73 @@ struct V2Deployment {
 }
 type V2Supervisors = BTreeMap<String, V2Deployment>;
 
+fn restart_v2_processes(
+    paths: &config::Paths,
+    managers: &mut V2Supervisors,
+    name: &str,
+    revision: &str,
+    specs: &[v2_process::ProcessSpec],
+) -> Result<Vec<String>> {
+    let mut supervisor = v2_process::Supervisor::new(paths, name)?;
+    let previous = managers.remove(name).map(|mut active| {
+        let old_specs = active.supervisor.specs();
+        active.supervisor.stop();
+        (active, old_specs)
+    });
+    let attempt = (|| -> Result<Vec<String>> {
+        let started = supervisor.start(specs)?;
+        std::thread::sleep(Duration::from_millis(100));
+        let running = supervisor.status()?;
+        ensure!(
+            running.len() == specs.len(),
+            "a managed process exited during restart; inspect categorized child logs"
+        );
+        Ok(started)
+    })();
+    let started = match attempt {
+        Ok(started) => started,
+        Err(error) => {
+            supervisor.stop();
+            if let Some((mut active, old_specs)) = previous {
+                let restore = active.supervisor.start(&old_specs).and_then(|_| {
+                    std::thread::sleep(Duration::from_millis(100));
+                    ensure!(
+                        active.supervisor.status()?.len() == old_specs.len(),
+                        "a previous child exited during restoration"
+                    );
+                    Ok(())
+                });
+                match restore {
+                    Ok(_) => {
+                        active.last_error = None;
+                        managers.insert(name.to_owned(), active);
+                        bail!("restart failed; previous revision restored: {error:#}");
+                    }
+                    Err(restore_error) => {
+                        active.last_error = Some(format!(
+                            "restart failed: {error:#}; previous revision could not be restored: {restore_error:#}"
+                        ));
+                        managers.insert(name.to_owned(), active);
+                        bail!(
+                            "restart failed: {error:#}; previous revision could not be restored: {restore_error:#}"
+                        );
+                    }
+                }
+            }
+            return Err(error);
+        }
+    };
+    managers.insert(
+        name.to_owned(),
+        V2Deployment {
+            active_revision: revision.to_owned(),
+            supervisor,
+            last_error: None,
+        },
+    );
+    Ok(started)
+}
+
 fn manager_identity(paths: &config::Paths) -> Result<Value> {
     let executable = std::env::current_exe()?;
     let stat = fs::read_to_string("/proc/self/stat")?;
@@ -911,31 +978,7 @@ fn api_call(
             }
             let specs = v2_process::project_with_packages(paths, &source)?;
             v2_build::preflight_processes(paths, &specs)?;
-            if let Some(mut active) = managers.remove(&name) {
-                active.supervisor.stop();
-            }
-            let mut supervisor = v2_process::Supervisor::new(paths, &name)?;
-            let started = supervisor.start(&specs)?;
-            std::thread::sleep(Duration::from_millis(100));
-            let running = supervisor.status();
-            if !running
-                .as_ref()
-                .is_ok_and(|running| running.len() == specs.len())
-            {
-                supervisor.stop();
-                bail!(
-                    "a managed process exited during restart; inspect categorized child logs: {:?}",
-                    running.err()
-                );
-            }
-            managers.insert(
-                name,
-                V2Deployment {
-                    active_revision: revision.clone(),
-                    supervisor,
-                    last_error: None,
-                },
-            );
+            let started = restart_v2_processes(paths, managers, &name, &revision, &specs)?;
             Ok(json!({"started":started,"active_revision":revision}))
         }
         "v2_start" => {
@@ -1856,5 +1899,41 @@ fn main() {
     if let Err(error) = main_run() {
         eprintln!("isos: {error:#}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod restart_tests {
+    use super::*;
+
+    #[test]
+    fn failed_restart_restores_previous_revision_and_child() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = config::Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        let spec = |program: &str| v2_process::ProcessSpec {
+            id: "stub".into(),
+            path: "isos/process/component/stub".into(),
+            settings: serde_json::from_value(json!({
+                "command": [program, if program == "/bin/sleep" { "30" } else { "" }],
+                "start_timeout_ms": 200
+            }))
+            .unwrap(),
+            package: None,
+            fingerprint: None,
+        };
+        let mut managers = V2Supervisors::new();
+        restart_v2_processes(&paths, &mut managers, "test", "old", &[spec("/bin/sleep")]).unwrap();
+        let error =
+            restart_v2_processes(&paths, &mut managers, "test", "new", &[spec("/bin/false")])
+                .unwrap_err();
+        assert!(error.to_string().contains("previous revision restored"));
+        let active = managers.get_mut("test").unwrap();
+        assert_eq!(active.active_revision, "old");
+        assert_eq!(active.supervisor.status().unwrap().len(), 1);
+        active.supervisor.stop();
     }
 }
