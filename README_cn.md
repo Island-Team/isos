@@ -4,7 +4,7 @@ IsOS 管理共享 Aether v2 图、后端软件包、本地工作台 API 和直�
 
 ## 启动 MuJoCo 部署
 
-从 v2 `master` 源码目录运行 `./install.sh` 安装 CLI。`isos init --mode dev` 创建配置与初始图后退出；再次执行 `isos init` 会保留模式和已编辑的图。`isos init --mode product` 选择产品模式的准入规则。`isos serve` 在前台运行管理器、API 与固定的静态 IsosUI；开发模式可显式使用 `isos serve --ui-live` 启动受管理的 Webpack。
+从 v2 `master` 源码目录运行 `./install.sh` 安装 CLI，默认不会安装或启动 systemd 用户单元。`isos init --mode dev` 创建配置与初始图后退出；再次执行 `isos init` 会保留模式和已编辑的图。`isos init --mode product` 选择产品模式的准入规则。`isos serve` 在前台运行管理器、API 与固定的静态 IsosUI；开发模式可显式使用 `isos serve --ui-live` 启动受管理的 Webpack。
 
 在受版本管理的 [config/isos.toml](config/isos.toml) 中设置可公开的运行默认值；可选字段见 [config/isos.example.toml](config/isos.example.toml)。相对源码路径以 IsOS 源码目录为基准，与命令工作目录无关。环境变量覆盖配置文件值；`ISOS_CONFIG` 可指定其他绝对配置文件路径。私有部署图和构建选择仍保存在 `~/.config/isos/`。IsOS 不从命令工作目录读取 `.env`。开发模式先构建不可变产物，再显式选择：
 
@@ -19,7 +19,7 @@ isos serve
 
 `isos serve` 在 `http://127.0.0.1:16001/en/isos` 提供 IsosUI，在 `http://127.0.0.1:16000/api/isos/v2` 提供 API。`ISOSUI_PORT` 与 `ISOS_HTTP_PORT` 可修改环回端口。产品模式只使用经校验的固定静态 UI，不需要 npm 或源码目录。Ctrl+C 或 `isos stop` 会停止 UI、API、部署、显式启动的服务及管理器；`isos deployment stop` 只停止图部署。
 
-可选的 systemd 用户单元运行相同的产品模式命令：在 `isos init --mode product` 并选择经验证的构建后，运行 `tools/user-service.sh install`；运行 `tools/user-service.sh remove` 可禁用。CLI 与 shell 补全不依赖此单元。
+可选的 systemd 用户单元运行相同的产品模式命令：在 `isos init --mode product` 并选择经验证的构建后，运行 `./install.sh --install-user-service` 安装 CLI 并启用、启动该单元；如果 CLI 已安装，也可以运行 `tools/user-service.sh install`。运行 `tools/user-service.sh remove` 可禁用。CLI 与 shell 补全不依赖此单元。
 产品模式要求精确选择的 IsOS 可执行文件。管理器停止时，先执行 `isos build isos` 和 `isos version select isos <staged-commit>`，再执行 `isos serve`。
 
 在第二个终端执行：

@@ -4,7 +4,7 @@ IsOS owns the shared Aether v2 graph, backend packages, local workbench API, and
 
 ## Start a MuJoCo deployment
 
-Run `./install.sh` from the v2 `master` checkout to install the CLI. `isos init --mode dev` creates the configuration and starter graph and exits; running `isos init` again preserves the mode and authored graph. Use `isos init --mode product` to select product admission rules. `isos serve` runs the manager, API, and selected static IsosUI in the foreground; `isos serve --ui-live` explicitly uses supervised Webpack in dev mode.
+Run `./install.sh` from the v2 `master` checkout to install the CLI without installing or starting a systemd user unit. `isos init --mode dev` creates the configuration and starter graph and exits; running `isos init` again preserves the mode and authored graph. Use `isos init --mode product` to select product admission rules. `isos serve` runs the manager, API, and selected static IsosUI in the foreground; `isos serve --ui-live` explicitly uses supervised Webpack in dev mode.
 
 Edit the tracked [config/isos.toml](config/isos.toml) for portable runtime defaults; [config/isos.example.toml](config/isos.example.toml) shows optional fields. Relative source paths are resolved from this IsOS checkout, regardless of the command directory. Environment variables override file values; `ISOS_CONFIG` selects another absolute config file. Private deployment graphs and build selections remain under `~/.config/isos/`. IsOS does not load `.env` from the command directory. In dev mode, stage immutable builds and select them explicitly:
 
@@ -19,7 +19,7 @@ isos serve
 
 `isos serve` hosts IsosUI at `http://127.0.0.1:16001/en/isos` and the API at `http://127.0.0.1:16000/api/isos/v2`. `ISOSUI_PORT` and `ISOS_HTTP_PORT` change the loopback ports. Product mode serves only the selected verified static UI and does not need npm or source checkouts. Ctrl+C or `isos stop` stops the UI, API, deployment, explicitly started services, and manager. `isos deployment stop` stops the graph only.
 
-An optional systemd user unit runs that same product command: after `isos init --mode product` and selecting verified builds, run `tools/user-service.sh install`. Run `tools/user-service.sh remove` to disable it. CLI commands and shell completion work without the unit.
+An optional systemd user unit runs that same product command: after `isos init --mode product` and selecting verified builds, run `./install.sh --install-user-service` to install the CLI and enable and start the unit, or run `tools/user-service.sh install` when the CLI is already installed. Run `tools/user-service.sh remove` to disable it. CLI commands and shell completion work without the unit.
 Product mode requires an exact selected IsOS executable. With the manager stopped, run `isos build isos` and `isos version select isos <staged-commit>` before `isos serve`.
 
 In the second terminal:
