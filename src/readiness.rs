@@ -1,6 +1,6 @@
 //! Human-facing readiness for configured core executables.
 
-use crate::{config::Paths, core_setup, isosui, v2_bins, v2_process};
+use crate::{config::Paths, core_bins, core_setup, isosui, process};
 use serde_json::{Value, json};
 use std::fs;
 
@@ -19,7 +19,7 @@ pub fn report(paths: &Paths, name: &str, active: Option<&Value>) -> Value {
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or(Value::Null);
     let projected = if graph.is_object() {
-        v2_process::project_with_packages(paths, &graph.to_string()).ok()
+        process::project_with_packages(paths, &graph.to_string()).ok()
     } else {
         None
     };
@@ -35,7 +35,7 @@ pub fn report(paths: &Paths, name: &str, active: Option<&Value>) -> Value {
                 _ => std::env::var_os("ISOS_EGIA_BIN_DIR").is_some(),
             };
             let path = if core == "eos" {
-                v2_bins::resolve("aether-profile")
+                core_bins::resolve("aether-profile")
             } else {
                 core_setup::adapter_path(paths, core)
             };

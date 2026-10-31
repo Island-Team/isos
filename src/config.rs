@@ -60,8 +60,10 @@ struct DeploymentConfig {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LoggingConfig {
+    default_source: Option<String>,
     max_bytes: Option<u64>,
     backups: Option<u8>,
+    max_sources: Option<u16>,
     level: Option<String>,
 }
 
@@ -94,8 +96,15 @@ fn config_values(source: &str, repo_root: &Path) -> Result<BTreeMap<&'static str
         }
     }
     if let Some(name) = config.deployment.name {
-        crate::v2_process::validate_deployment_name(&name)?;
+        crate::process::validate_deployment_name(&name)?;
         values.insert("ISOS_DEPLOYMENT", name);
+    }
+    if let Some(source) = config.logging.default_source {
+        ensure!(
+            source == "all" || crate::log_store::valid_source(&source),
+            "logging.default_source must be all or a valid log source"
+        );
+        values.insert("ISOS_LOG_DEFAULT_SOURCE", source);
     }
     if let Some(max_bytes) = config.logging.max_bytes {
         ensure!(
@@ -107,6 +116,13 @@ fn config_values(source: &str, repo_root: &Path) -> Result<BTreeMap<&'static str
     if let Some(backups) = config.logging.backups {
         ensure!((1..=10).contains(&backups), "logging.backups must be 1..10");
         values.insert("ISOS_LOG_BACKUPS", backups.to_string());
+    }
+    if let Some(max_sources) = config.logging.max_sources {
+        ensure!(
+            (10..=256).contains(&max_sources),
+            "logging.max_sources must be 10..256"
+        );
+        values.insert("ISOS_LOG_MAX_SOURCES", max_sources.to_string());
     }
     if let Some(level) = config.logging.level {
         ensure!(
@@ -515,10 +531,12 @@ mod tests {
     #[test]
     fn config_toml_maps_settings_and_rejects_invalid_values() {
         let root = Path::new("/tmp/isos-source");
-        let values = config_values("[server]\nhttp_port=16000\n[paths]\nui_repo='../IsosUI'\n[logging]\nlevel='warn'\nmax_bytes=1048576\nbackups=3\n", root).unwrap();
+        let values = config_values("[server]\nhttp_port=16000\n[paths]\nui_repo='../IsosUI'\n[logging]\ndefault_source='all'\nlevel='warn'\nmax_bytes=262144\nbackups=2\nmax_sources=32\n", root).unwrap();
         assert_eq!(values["ISOS_HTTP_PORT"], "16000");
         assert_eq!(values["ISOSUI_REPO_PATH"], "/tmp/isos-source/../IsosUI");
-        assert_eq!(values["ISOS_LOG_BACKUPS"], "3");
+        assert_eq!(values["ISOS_LOG_DEFAULT_SOURCE"], "all");
+        assert_eq!(values["ISOS_LOG_BACKUPS"], "2");
+        assert_eq!(values["ISOS_LOG_MAX_SOURCES"], "32");
         assert_eq!(values["ISOS_LOG_LEVEL"], "warn");
         let selected = config_without_env_overrides(values, |key| key == "ISOS_LOG_LEVEL");
         assert!(!selected.contains_key("ISOS_LOG_LEVEL"));
@@ -526,6 +544,8 @@ mod tests {
         assert!(config_values("[server]\nhttp_port=80\n", root).is_err());
         assert!(config_values("[unknown]\nvalue=1\n", root).is_err());
         assert!(config_values("[logging]\nlevel='verbose'\n", root).is_err());
+        assert!(config_values("[logging]\ndefault_source='../bad'\n", root).is_err());
+        assert!(config_values("[logging]\nmax_sources=9\n", root).is_err());
         assert_eq!(
             runtime_config_path(root, None).unwrap(),
             root.join("config/isos.toml")

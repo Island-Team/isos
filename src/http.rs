@@ -6,7 +6,7 @@ use crate::{
     graph::Deployment,
     lifecycle,
     log_store::LogStore,
-    node_options, node_sets, packages, readiness, v2_process,
+    node_options, node_sets, packages, process, readiness,
 };
 use anyhow::{Context, Result};
 use axum::{
@@ -222,7 +222,7 @@ async fn graph(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
 
 async fn node_graph(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
     authorized(&app, &headers)?;
-    v2_process::validate_deployment_name(&app.deployment)
+    process::validate_deployment_name(&app.deployment)
         .map_err(|error| err(StatusCode::BAD_REQUEST, error))?;
     let bytes = match fs::read(app.paths.v2_node_graph(&app.deployment)) {
         Ok(bytes) => bytes,
@@ -256,7 +256,7 @@ async fn validate_node_graph(
     if edit.schema_version != 2 {
         return Err(err(StatusCode::BAD_REQUEST, "API schema_version must be 2"));
     }
-    let diagnostics: Vec<Value> = v2_process::validate_value(&app.paths, &edit.graph)
+    let diagnostics: Vec<Value> = process::validate_value(&app.paths, &edit.graph)
         .err()
         .map(|error| json!({"path":"/","code":"invalid_graph","message":error.to_string()}))
         .into_iter()
@@ -270,15 +270,15 @@ async fn apply_node_graph(
     Json(edit): Json<NodeGraphEdit>,
 ) -> ApiResult {
     authorized(&app, &headers)?;
-    v2_process::validate_deployment_name(&app.deployment)
+    process::validate_deployment_name(&app.deployment)
         .map_err(|error| err(StatusCode::BAD_REQUEST, error))?;
     if edit.schema_version != 2 {
         return Err(err(StatusCode::BAD_REQUEST, "API schema_version must be 2"));
     }
     let mut graph = edit.graph;
-    v2_process::migrate_component_commands(&mut graph)
+    process::migrate_component_commands(&mut graph)
         .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
-    v2_process::validate_value(&app.paths, &graph)
+    process::validate_value(&app.paths, &graph)
         .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
     let bytes = serde_json::to_vec_pretty(&graph)
         .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
@@ -316,7 +316,7 @@ async fn apply_node_graph(
         }
         return Err(err(StatusCode::INTERNAL_SERVER_ERROR, error));
     }
-    if let Err(error) = crate::clear_saved_setup_error(&app.paths, &app.deployment) {
+    if let Err(error) = crate::cli::clear_saved_setup_error(&app.paths, &app.deployment) {
         tracing::warn!("saved graph applied, but could not clear prior setup error: {error}");
     }
     record(&app, "graph", "Applied node graph revision");
@@ -326,7 +326,7 @@ async fn apply_node_graph(
 async fn node_types(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
     authorized(&app, &headers)?;
     let catalog =
-        v2_process::catalog().map_err(|error| err(StatusCode::SERVICE_UNAVAILABLE, error))?;
+        process::catalog().map_err(|error| err(StatusCode::SERVICE_UNAVAILABLE, error))?;
     ok(catalog)
 }
 
@@ -372,7 +372,7 @@ async fn retired_build_api(State(app): State<Arc<App>>, headers: HeaderMap) -> A
 
 async fn core_readiness(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
     authorized(&app, &headers)?;
-    let status = crate::v2_call(&app.paths, &app.deployment, "v2_status").ok();
+    let status = crate::manager::v2_call(&app.paths, &app.deployment, "v2_status").ok();
     ok(readiness::report(
         &app.paths,
         &app.deployment,
@@ -464,7 +464,7 @@ async fn preview_node_set(
         request.replace_legacy_mujoco,
     )
     .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
-    v2_process::validate_value(&app.paths, &preview["graph"])
+    process::validate_value(&app.paths, &preview["graph"])
         .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
     record(&app, "graph", "Previewed package node set");
     ok(preview)
@@ -472,13 +472,13 @@ async fn preview_node_set(
 
 async fn process_status(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
     authorized(&app, &headers)?;
-    let status = crate::v2_call(&app.paths, &app.deployment, "v2_status")
+    let status = crate::manager::v2_call(&app.paths, &app.deployment, "v2_status")
         .map_err(|error| err(StatusCode::SERVICE_UNAVAILABLE, error))?;
     ok(status)
 }
 async fn backends(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
     authorized(&app, &headers)?;
-    ok(json!({"backends":crate::v2_backend::installed(&app.paths)}))
+    ok(json!({"backends":crate::backend::installed(&app.paths)}))
 }
 
 async fn package_list(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
@@ -578,12 +578,12 @@ async fn setup_status(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiRes
     authorized(&app, &headers)?;
     let graph_path = app.paths.v2_node_graph(&app.deployment);
     let revision = fs::read(&graph_path).ok().map(|bytes| revision(&bytes));
-    let backends = crate::v2_backend::installed(&app.paths);
+    let backends = crate::backend::installed(&app.paths);
     let mut issues: Vec<String> = Vec::new();
     match fs::read(&graph_path) {
         Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
             Ok(graph) => {
-                if let Err(error) = v2_process::validate_value(&app.paths, &graph) {
+                if let Err(error) = process::validate_value(&app.paths, &graph) {
                     issues.push(error.to_string());
                 }
             }
@@ -591,7 +591,7 @@ async fn setup_status(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiRes
         },
         Err(error) => issues.push(format!("graph is missing: {error}")),
     }
-    let process = crate::v2_call(&app.paths, &app.deployment, "v2_status").ok();
+    let process = crate::manager::v2_call(&app.paths, &app.deployment, "v2_status").ok();
     if process.is_none() {
         issues.push("IsOS process manager is not running".into());
     }
@@ -628,35 +628,10 @@ async fn process_control(
             ));
         }
     };
-    let result = crate::v2_call_revision(&app.paths, &app.deployment, op, control.revision)
-        .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
+    let result =
+        crate::manager::v2_call_revision(&app.paths, &app.deployment, op, control.revision)
+            .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
     ok(result)
-}
-
-async fn process_logs(
-    State(app): State<Arc<App>>,
-    headers: HeaderMap,
-    axum::extract::Path(node): axum::extract::Path<String>,
-    axum::extract::Query(query): axum::extract::Query<std::collections::BTreeMap<String, String>>,
-) -> ApiResult {
-    authorized(&app, &headers)?;
-    crate::v2_process::validate_deployment_name(&node)
-        .map_err(|error| err(StatusCode::BAD_REQUEST, error))?;
-    let lines = query
-        .get("lines")
-        .and_then(|n| n.parse::<usize>().ok())
-        .unwrap_or(100)
-        .min(1000);
-    let store = LogStore::new(&app.paths, &app.deployment)
-        .map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR, error))?;
-    let selected = store
-        .tail_filtered(&node, lines.max(1), None)
-        .map_err(|error| err(StatusCode::NOT_FOUND, error))?;
-    let lines: Vec<_> = selected
-        .into_iter()
-        .filter_map(|entry| entry["message"].as_str().map(str::to_owned))
-        .collect();
-    ok(json!({"node":node,"lines":lines}))
 }
 
 async fn logs(
@@ -665,9 +640,8 @@ async fn logs(
     axum::extract::Query(query): axum::extract::Query<std::collections::BTreeMap<String, String>>,
 ) -> ApiResult {
     authorized(&app, &headers)?;
-    let source = query
-        .get("source")
-        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "source is required"))?;
+    let default_source = std::env::var("ISOS_LOG_DEFAULT_SOURCE").unwrap_or_else(|_| "all".into());
+    let source = query.get("source").unwrap_or(&default_source);
     let limit = query
         .get("limit")
         .map(|value| value.parse::<usize>())
@@ -813,7 +787,7 @@ async fn core_setup_route(
             return Err(err(StatusCode::BAD_REQUEST, "API schema_version must be 2"));
         }
         let mut graph = edit.graph;
-        v2_process::migrate_component_commands(&mut graph)
+        process::migrate_component_commands(&mut graph)
             .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
         let revision = edit.revision.unwrap_or_else(|| {
             serde_json::to_vec(&graph)
@@ -846,7 +820,7 @@ pub fn serve(paths: Paths, deployment: String) -> Result<()> {
             .context("bind IsOS loopback API")?;
         axum::serve(listener, router)
             .with_graceful_shutdown(async {
-                while !crate::INTERRUPTED.load(std::sync::atomic::Ordering::SeqCst) {
+                while !crate::foreground::INTERRUPTED.load(std::sync::atomic::Ordering::SeqCst) {
                     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 }
             })
@@ -869,7 +843,7 @@ pub fn serve_ui(directory: PathBuf) -> Result<()> {
         let files = ServeDir::new(directory).fallback(ServeFile::new(index));
         axum::serve(listener, Router::new().fallback_service(files))
             .with_graceful_shutdown(async {
-                while !crate::INTERRUPTED.load(std::sync::atomic::Ordering::SeqCst) {
+                while !crate::foreground::INTERRUPTED.load(std::sync::atomic::Ordering::SeqCst) {
                     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 }
             })
@@ -940,10 +914,6 @@ fn router(app: Arc<App>) -> Router {
         .route(
             "/api/isos/v2/process-control",
             post(process_control).options(preflight),
-        )
-        .route(
-            "/api/isos/v2/process-logs/{node}",
-            get(process_logs).options(preflight),
         )
         .route("/api/isos/v2/logs", get(logs).options(preflight))
         .route(
@@ -1078,7 +1048,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn logs_filter_level_and_legacy_process_view_reads_unified_records() {
+    async fn logs_filter_level_and_default_to_unified_stream() {
         let temp = tempfile::tempdir().unwrap();
         let app = Arc::new(App {
             paths: Paths {
@@ -1094,11 +1064,6 @@ mod tests {
         for (route, status, expected) in [
             (
                 "/api/isos/v2/logs?source=eos&level=warn",
-                StatusCode::OK,
-                "failed",
-            ),
-            (
-                "/api/isos/v2/process-logs/eos?lines=1",
                 StatusCode::OK,
                 "failed",
             ),
@@ -1126,6 +1091,16 @@ mod tests {
                 );
             }
         }
+        let request = Request::builder()
+            .uri("/api/isos/v2/logs?limit=2")
+            .header(header::HOST, "127.0.0.1:16000")
+            .body(Body::empty())
+            .unwrap();
+        let response = router(app).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), 1_000_000).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["data"]["lines"].as_array().unwrap().len(), 2);
     }
 
     #[tokio::test]

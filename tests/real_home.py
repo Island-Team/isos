@@ -262,7 +262,7 @@ def main():
             restarted = api(isos_port, "process-control", "POST",
                             {"schema_version": 2, "operation": "restart", "revision": revision})
             assert restarted["started"][0] == "eos"
-            assert api(isos_port, "process-logs/eos?lines=10")["node"] == "eos"
+            assert isinstance(api(isos_port, "logs?source=eos&limit=10")["lines"], list)
             print("Real MuJoCo discovery, capture, observations, stops, restart, logs: PASS", flush=True)
             running.send_signal(signal.SIGINT)
             assert running.wait(timeout=10) == 0

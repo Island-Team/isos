@@ -26,7 +26,6 @@ The API binds only to `127.0.0.1` and serves no frontend files. IsosUI calls it 
 | `GET /api/isos/v2/setup-status` | `{ready,issues,graph_revision,backends,process}` | Home setup summary. |
 | `POST /api/isos/v2/process-control` | `{schema_version:2,operation,revision?}` | `run`, `start`, `stop`, or `restart`. The optional revision prevents acting on a stale editor view. |
 | `GET /api/isos/v2/process-status` | `{saved_revision,active_revision,state,last_error,package,processes}` | Pinned package and direct-child status. |
-| `GET /api/isos/v2/process-logs/{node}?lines=100` | `{node,lines}` | Compatibility view of recent structured messages, capped at 1000. |
 | `GET /api/isos/v2/logs?source=all&cursor=...&limit=100&level=info` | `{lines:[{timestamp,level,source,event_code,message,pid}],next_cursor,rotated}` | Read the unified rotating JSON stream, filtering entries at or above `level`. At most 200 lines or 64 KiB per call. `cursor` is opaque; `rotated` signals a replaced file. |
 | `GET /api/isos/v2/version` | `{api_schema_version,isos_version}` | Workbench compatibility check. |
 
@@ -46,7 +45,7 @@ The Unix socket accepts one JSON request per line: `{schema_version:1,op,deploym
 
 `manager_shutdown` stops all graph children and independent services, then ends the API, UI, and manager. `v2_stop` affects only the requested deployment. `services_list`, `services_validate`, `services_status`, `services_start`, `services_stop`, `services_restart`, and `services_logs` operate on the [independent service definitions](services.md); start/stop/restart/logs require `service_id`, and logs accepts opaque `cursor` plus `limit` 1–200. A CLI with a different executable digest may still request shutdown but cannot start or restart deployment or services. `isos status --json` combines deployment status, manager identity, and service statuses; `isos version check` reports configured core, graph, and running readiness.
 
-Log `source` may be `all`, `isos`, `services`, a service source such as `service-gateway`, `packages`, `graph`, `ui`, `eos`, `egia`, `mujoco`, `bridge`, `config`, or a validated child ID. `limit` is 1–200 (default 100). Each line has an RFC 3339 UTC `timestamp`, `level`, `source`, `message`, and optional `event_code` and `pid`. IsOS records its own diagnostics and selected structured child events; plain child stdout and stderr are not mirrored. `next_cursor` is a string even when no more lines are available; poll with it for later writes. Files have a `0700` directory and `0600` regular-file permissions, rotate after `[logging].max_bytes` bytes (default 1 MiB), and retain `[logging].backups` copies (default 3). The legacy process endpoint reads messages from this store.
+Log `source` may be `all`, `isos`, `services`, a service source such as `service-gateway`, `packages`, `graph`, `ui`, `eos`, `egia`, `mujoco`, `bridge`, `config`, or a validated child ID. `limit` is 1–200 (default 100). Omitting `source` uses `[logging].default_source` (`all` by default). Each line has an RFC 3339 UTC `timestamp`, `level`, `source`, `message`, and optional `event_code` and `pid`. IsOS records its own diagnostics and selected structured child events; plain child stdout and stderr are not mirrored. `next_cursor` is a string even when no more lines are available; poll with it for later writes. Files have a `0700` directory and `0600` regular-file permissions, rotate after `[logging].max_bytes` bytes (default 256 KiB), and retain `[logging].backups` copies (default 2). `[logging].max_sources` caps source files (default 32); when full, new sources still write to the unified stream and remain filterable there.
 
 `[logging].level` records file entries at or above `trace < debug < info < warn < error` (default `info`). The HTTP `level` parameter and UI selector filter displayed entries without changing recording. Terminal status and command errors are unaffected. `isos logs [source] --level warn` reads the same store.
 
@@ -68,8 +67,10 @@ IsOS reads [config/isos.toml](../../../config/isos.toml) from its source checkou
 | `paths.egia_bin_dir` | path string | One EGIA launcher directory containing `egia-config` and `egia`; relative to IsOS checkout | `ISOS_EGIA_BIN_DIR` |
 | `paths.mujoco_root` | path string | Optional MuJoCo runtime root; relative to IsOS checkout | `MUJOCO_ROOT` |
 | `deployment.name` | slug string | Default graph/log namespace; validated deployment name | `ISOS_DEPLOYMENT` |
-| `logging.max_bytes` | integer bytes | Rotation threshold, 65,536–100,000,000; default 1,048,576 | `ISOS_LOG_MAX_BYTES` |
-| `logging.backups` | integer count | Rotated copies, 1–10; default 3 | `ISOS_LOG_BACKUPS` |
+| `logging.max_bytes` | integer bytes | Rotation threshold, 65,536–100,000,000; default 262,144 | `ISOS_LOG_MAX_BYTES` |
+| `logging.backups` | integer count | Rotated copies, 1–10; default 2 | `ISOS_LOG_BACKUPS` |
+| `logging.default_source` | source string | Default CLI and HTTP log source; `all` selects the unified stream; default `all` | `ISOS_LOG_DEFAULT_SOURCE` |
+| `logging.max_sources` | integer count | Source file cap, 10–256; default 32; excess sources still write to the unified stream | `ISOS_LOG_MAX_SOURCES` |
 | `logging.level` | enum string | Minimum file severity: `trace`, `debug`, `info`, `warn`, or `error`; default `info` | `ISOS_LOG_LEVEL` |
 
 ## Configured builds and version readiness

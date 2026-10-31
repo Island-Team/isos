@@ -15,7 +15,7 @@ fn at<'a>(graph: &'a mut Value, pointer: &str) -> Result<&'a mut Value> {
 }
 
 pub fn draft(paths: &Paths, name: &str) -> Result<Value> {
-    let preset: toml::Value = toml::from_str(include_str!("../templates/generic-graph-v2.toml"))?;
+    let preset: toml::Value = toml::from_str(include_str!("../templates/generic-graph.toml"))?;
     let mut graph = serde_json::to_value(preset)?;
     at(&mut graph, "/robot/id")?.clone_from(&json!(name));
     let graph_path = paths.v2_node_graph(name).to_string_lossy().into_owned();

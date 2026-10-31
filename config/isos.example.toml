@@ -17,6 +17,8 @@ ui_repo = "../IsosUI"
 name = "default"
 
 [logging]
+default_source = "all" # unified stream; a specific source may be selected when needed
 level = "info" # trace, debug, info, warn, error
-max_bytes = 1048576
-backups = 3
+max_bytes = 262144 # bytes per source file
+backups = 2 # rotated files per source
+max_sources = 32 # bounds the number of source files in the log folder

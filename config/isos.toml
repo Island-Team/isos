@@ -15,6 +15,8 @@ ui_dist = "../IsosUI/dist/local"
 name = "default"
 
 [logging]
+default_source = "all"
 level = "info"
-max_bytes = 1048576
-backups = 3
+max_bytes = 262144
+backups = 2
+max_sources = 32

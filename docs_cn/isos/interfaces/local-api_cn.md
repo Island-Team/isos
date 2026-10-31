@@ -26,7 +26,6 @@ API 只绑定 `127.0.0.1`，不提供前端文件。IsosUI 通过地址和端口
 | `GET /api/isos/v2/setup-status` | `{ready,issues,graph_revision,backends,process}` | Home 配置概况。 |
 | `POST /api/isos/v2/process-control` | `{schema_version:2,operation,revision?}` | `run`、`start`、`stop` 或 `restart`；可选修订防止操作过期视图。 |
 | `GET /api/isos/v2/process-status` | `{saved_revision,active_revision,state,last_error,package,processes}` | 固定包与直接子进程状态。 |
-| `GET /api/isos/v2/process-logs/{node}?lines=100` | `{node,lines}` | 结构化消息的兼容视图，最多 1000 行。 |
 | `GET /api/isos/v2/logs?source=all&cursor=...&limit=100&level=info` | `{lines:[{timestamp,level,source,event_code,message,pid}],next_cursor,rotated}` | 读取统一轮转 JSON 日志，并按 `level` 过滤。每次最多 200 行或 64 KiB；文件轮转时 `rotated` 为 true。 |
 | `GET /api/isos/v2/version` | `{api_schema_version,isos_version}` | 工作台兼容性检查。 |
 
@@ -46,7 +45,7 @@ Unix 套接字每行接收一个 JSON 请求：`{schema_version:1,op,deployment?
 
 `manager_shutdown` 停止所有图子进程和独立服务，然后结束 API、界面及管理器。`v2_stop` 只影响指定部署。`services_list`、`services_validate`、`services_status`、`services_start`、`services_stop`、`services_restart` 和 `services_logs` 操作[独立服务定义](services_cn.md)；启动、停止、重启和日志请求需要 `service_id`，日志可带不透明的 `cursor` 及 1–200 的 `limit`。可执行文件摘要不同的 CLI 仍可请求关停，但不能启动或重启部署和服务。`isos status --json` 汇总部署状态、管理器身份和服务状态；`isos version check` 报告已配置核心、图和运行状态的就绪情况。
 
-日志 `source` 可为 `all`、`isos`、`services`、`service-gateway` 等服务来源、`packages`、`graph`、`ui`、`eos`、`egia`、`mujoco`、`bridge`、`config` 或通过校验的子进程 ID。`limit` 范围为 1–200，默认为 100。每行包含 RFC 3339 UTC `timestamp`、`level`、`source`、`message`，并可包含 `event_code` 和 `pid`。IsOS 记录自身诊断及选定的结构化子进程事件，不镜像普通标准输出或标准错误。即使当前文件已读完，`next_cursor` 仍为字符串，后续可用它继续轮询。日志目录权限为 `0700`、普通文件为 `0600`；达到 `[logging].max_bytes`（默认 1 MiB）后轮转，保留 `[logging].backups`（默认 3）份。旧进程端点从统一日志读取消息。
+日志 `source` 可为 `all`、`isos`、`services`、`service-gateway` 等服务来源、`packages`、`graph`、`ui`、`eos`、`egia`、`mujoco`、`bridge`、`config` 或通过校验的子进程 ID。`limit` 范围为 1–200，默认为 100；省略 `source` 时使用 `[logging].default_source`（默认 `all`）。每行包含 RFC 3339 UTC `timestamp`、`level`、`source`、`message`，并可包含 `event_code` 和 `pid`。IsOS 记录自身诊断及选定的结构化子进程事件，不镜像普通标准输出或标准错误。即使当前文件已读完，`next_cursor` 仍为字符串，后续可用它继续轮询。日志目录权限为 `0700`、普通文件为 `0600`；达到 `[logging].max_bytes`（默认 256 KiB）后轮转，保留 `[logging].backups`（默认 2）份。日志源文件数量由 `[logging].max_sources` 限制（默认 32）；达到上限后，新来源只写入统一事件流，仍可按来源筛选。
 
 `[logging].level` 按 `trace < debug < info < warn < error` 记录达到阈值的文件事件，默认为 `info`。HTTP 的 `level` 参数和 UI 选择器只过滤显示，不改变写入。终端状态和命令错误不受影响。`isos logs [source] --level warn` 读取同一日志库。
 
@@ -68,8 +67,10 @@ IsOS 默认读取其源码目录中的 [config/isos.toml](../../../config/isos.t
 | `paths.egia_bin_dir` | 路径字符串 | 包含 `egia-config` 与 `egia` 的 EGIA 启动程序目录；相对路径以 IsOS 源码目录为基准 | `ISOS_EGIA_BIN_DIR` |
 | `paths.mujoco_root` | 路径字符串 | 可选 MuJoCo 运行根目录；相对路径以 IsOS 源码目录为基准 | `MUJOCO_ROOT` |
 | `deployment.name` | slug 字符串 | 默认图与日志命名空间；需通过部署名校验 | `ISOS_DEPLOYMENT` |
-| `logging.max_bytes` | 整数，字节 | 轮转阈值 65,536–100,000,000；默认 1,048,576 | `ISOS_LOG_MAX_BYTES` |
-| `logging.backups` | 整数，份数 | 轮转副本 1–10；默认 3 | `ISOS_LOG_BACKUPS` |
+| `logging.max_bytes` | 整数，字节 | 轮转阈值 65,536–100,000,000；默认 262,144 | `ISOS_LOG_MAX_BYTES` |
+| `logging.backups` | 整数，份数 | 轮转副本 1–10；默认 2 | `ISOS_LOG_BACKUPS` |
+| `logging.default_source` | 来源字符串 | CLI 与 HTTP 日志默认来源；`all` 为统一流，默认 `all` | `ISOS_LOG_DEFAULT_SOURCE` |
+| `logging.max_sources` | 整数，个数 | 来源文件上限 10–256，默认 32；超出后仍写统一流 | `ISOS_LOG_MAX_SOURCES` |
 | `logging.level` | 枚举字符串 | 文件最低级别：`trace`、`debug`、`info`、`warn` 或 `error`；默认 `info` | `ISOS_LOG_LEVEL` |
 
 ## 已配置构建和版本就绪状态

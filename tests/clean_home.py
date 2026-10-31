@@ -23,7 +23,7 @@ from urllib.error import HTTPError
 ROOT = Path(__file__).resolve().parents[1]
 EOS_BIN = Path(os.environ.get("AETHER_BIN_DIR", str(ROOT.parent / "Island-eos/target/debug")))
 ISOS = Path(os.environ.get("ISOS_BIN", str(ROOT / "target/debug/isos")))
-MOCK = ROOT / "tests/mock_mujoco_v2.py"
+MOCK = ROOT / "tests/mock_mujoco.py"
 CONTRIBUTIONS = ROOT.parent / "isos-mujoco-sim/tools/node_contributions.py"
 
 
@@ -323,7 +323,7 @@ def main():
             assert f"Active revision: {saved_hash}" in run_output
             assert f"IsOS API: http://127.0.0.1:{isos_port}" in run_output
             assert f"IsosUI: http://127.0.0.1:{ui_port}/en/isos" in run_output
-            assert f"IsOS log: {home / 'data/logs/default/isos.log'}" in run_output
+            assert f"Unified log: {home / 'data/logs/default/events.log'}" in run_output
             print("ISOS RUN Ctrl+C stopped managed children: PASS")
             assert json.loads(run("status", "--json", env=env).stdout)["state"] == "stopped"
             assert isos_api("process-status")["state"] == "stopped"
@@ -356,7 +356,7 @@ def main():
             assert serve_process.poll() is None
             with urlopen(f"http://127.0.0.1:{ui_port}/en/isos", timeout=2) as response:
                 assert b"<html" in response.read().lower()
-            assert isos_api("process-logs/eos?lines=5")["node"] == "eos"
+            assert isinstance(isos_api("logs?source=eos&limit=5")["lines"], list)
             categorized = isos_api("logs?source=eos&limit=5")
             assert isinstance(categorized["lines"], list) and isinstance(categorized["next_cursor"], str)
             assert isinstance(isos_api("logs?source=ui&limit=5")["lines"], list)
@@ -402,7 +402,7 @@ def main():
             serve_output = (root / "serve.log").read_text()
             assert f"http://127.0.0.1:{ui_port}/en/isos" in serve_output
             assert f"IsOS API: http://127.0.0.1:{isos_port}" in serve_output
-            assert f"IsOS log: {home / 'data/logs/default/isos.log'}" in serve_output
+            assert f"Unified log: {home / 'data/logs/default/events.log'}" in serve_output
             assert "#token=" not in serve_output
             assert not (home / "run/ui-token").exists()
             with socket.socket() as probe:
