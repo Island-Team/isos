@@ -370,6 +370,40 @@ pub fn prepare_run(paths: &Paths, name: &str, expected_revision: &str) -> Result
     write_rendered(paths, name, files)
 }
 
+/// Revalidate a previously applied graph against the currently configured cores.
+/// A fresh draft has no launch inputs and remains unapplied.
+pub fn refresh_after_init(paths: &Paths, name: &str) -> Result<Option<String>> {
+    if !paths
+        .generated(name)
+        .join("core-setup/launch-inputs.json")
+        .is_file()
+    {
+        return Ok(None);
+    }
+    let graph_path = paths.node_graph_path(name);
+    let bytes = fs::read(&graph_path).with_context(|| format!("read {}", graph_path.display()))?;
+    ensure!(bytes.len() <= MAX_REQUEST, "node graph exceeds 1 MiB");
+    let graph: Value = serde_json::from_slice(&bytes)?;
+    ensure!(
+        graph["version"] == "1.0.0",
+        "saved graph version {} cannot be refreshed by IsOS 1.0.0; back up {}, run `isos init` to create a v1 starter, then add nodes and Save graph; the old file was left untouched",
+        graph["version"],
+        graph_path.display()
+    );
+    crate::process::validate_value(paths, &graph)?;
+    let specs = crate::process::project_with_packages(paths, &serde_json::to_string(&graph)?)?;
+    crate::preflight::verify_processes(paths, &specs)?;
+    let expected_revision = revision(&bytes);
+    let files = render_graph(paths, name, &graph, &expected_revision)?;
+    let _lock = crate::lock::Lock::take(paths)?;
+    ensure!(
+        revision(&fs::read(&graph_path)?) == expected_revision,
+        "node graph changed during init; retry after saving the graph"
+    );
+    write_rendered(paths, name, files)?;
+    Ok(Some(expected_revision))
+}
+
 pub fn render_graph(
     paths: &Paths,
     name: &str,
@@ -460,7 +494,7 @@ pub fn verify_launch_inputs(paths: &Paths, name: &str) -> Result<()> {
         };
         ensure!(
             path == configured,
-            "configured path for {} changed since graph Apply; save the graph, then restart",
+            "configured path for {} changed since graph Apply; run `isos init`, then restart",
             input["binary"]
         );
         let current = revision(&fs::read(path).with_context(|| {
@@ -471,7 +505,7 @@ pub fn verify_launch_inputs(paths: &Paths, name: &str) -> Result<()> {
         })?);
         ensure!(
             input["sha256"] == current,
-            "configured file {} changed since graph Apply; save the graph, then restart",
+            "configured file {} changed since graph Apply; run `isos init`, then restart",
             path.display()
         );
     }
@@ -588,5 +622,27 @@ mod tests {
         assert!(!paths.generated("default").exists());
         let revision = crate::starter::revision(&paths.node_graph_path("default")).unwrap();
         prepare_run(&paths, "default", &revision).unwrap();
+    }
+
+    #[test]
+    fn init_refresh_requires_applied_v1_graph_and_preserves_obsolete_graph() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path());
+        paths.prepare().unwrap();
+        let graph_path = paths.node_graph_path("default");
+        let old_graph = br#"{"version":"2.0.0","robot":{},"cores":{}}"#;
+        config::atomic_write(&graph_path, old_graph).unwrap();
+        assert!(refresh_after_init(&paths, "default").unwrap().is_none());
+        let launch_inputs = paths
+            .generated("default")
+            .join("core-setup/launch-inputs.json");
+        config::atomic_write(&launch_inputs, b"[]").unwrap();
+        let error = refresh_after_init(&paths, "default")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("saved graph version"));
+        assert!(error.contains("run `isos init` to create a v1 starter"));
+        assert_eq!(fs::read(&graph_path).unwrap(), old_graph);
+        assert_eq!(fs::read(launch_inputs).unwrap(), b"[]");
     }
 }

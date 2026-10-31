@@ -2,7 +2,7 @@
 
 [English](../../../docs/isos/interfaces/local-api.md)
 
-`isos init --mode dev|product` 创建配置和初始图后退出。`isos serve` 默认在 `127.0.0.1:16000` 启动 IsOS API（`ISOS_HTTP_PORT` 可调整端口），在 `127.0.0.1:16001` 提供已配置的预构建 IsosUI 文件（`ISOSUI_PORT` 可调整端口），并在 `$XDG_RUNTIME_DIR/isos/`（或 `ISOS_HOME/run/`）下创建仅所有者可访问的 Unix 管理套接字。`isos serve --ui-live` 才会管理 Webpack。运行目录权限为 `0700`，管理套接字为 `0600`。HTTP 响应封装为 `{schema_version:1,ok,data,error}`；内部单行 Unix 封装仍为 schema 1。
+`isos init --mode dev|product` 在缺少配置或初始图时创建它们。若图曾应用，则校验已保存的 v1 图，并根据已配置的程序目录刷新生成的核心配置和程序摘要；不会修改图或启动进程。旧版图或不兼容核心会中止刷新并给出指引，图文件保持原样。`isos serve` 默认在 `127.0.0.1:16000` 启动 IsOS API（`ISOS_HTTP_PORT` 可调整端口），在 `127.0.0.1:16001` 提供已配置的预构建 IsosUI 文件（`ISOSUI_PORT` 可调整端口），并在 `$XDG_RUNTIME_DIR/isos/`（或 `ISOS_HOME/run/`）下创建仅所有者可访问的 Unix 管理套接字。`isos serve --ui-live` 才会管理 Webpack。运行目录权限为 `0700`，管理套接字为 `0600`。HTTP 响应封装为 `{schema_version:1,ok,data,error}`；内部单行 Unix 封装仍为 schema 1。
 
 API 只绑定 `127.0.0.1`，不提供前端文件。IsosUI 通过地址和端口直接调用 API，无需 URL 或 bearer 令牌。API `Host` 必须匹配其环回地址和配置的端口。浏览器请求可来自 UI 来源 `127.0.0.1:16001`（或配置的 `ISOSUI_PORT`）、API 自身来源，或托管 IsosUI 来源 `https://www.os-island.com`、`https://os-island.com`；其他 Origin 会被拒绝。跨域预检允许 GET、POST、PUT 和 Content-Type。Ctrl+C 或 `isos stop` 会停止两个服务、部署、显式启动的服务以及管理器。
 
@@ -78,6 +78,6 @@ IsOS 默认读取其源码目录中的 [config/isos.toml](../../../config/isos.t
 
 IsOS 在 `aether-profile setup --json` 或 `egia-config setup --json` 上发送 `{schema_version:1,op:"identity",core:"eos"|"egia"}` 探测核心。成功响应为 `{schema_version:1,ok:true,diagnostics:[],files:[],identity:{core,product_version,graph_version:"1.0.0",node_type_version:"1.0",setup_schema_version:1}}`。此操作无需图或端点，也不启动运行时。Run 和 Restart 在启动硬件前拒绝缺失或不兼容的程序，复查已保存修订与软件包输入，并在输入变化时重建已启用核心的配置。
 
-请在 EOS、EGIA 和 IsosUI 所属仓库构建，再在 IsOS 中配置路径。配置的构建会一直使用到操作员修改路径并重启；IsOS 不根据 Git 提交推断选择。
+请在 EOS、EGIA 和 IsosUI 所属仓库构建，再在 IsOS 中配置路径。重建已配置的核心后执行 `isos init`（或 `isos config init`），刷新已应用图的启动输入，再 Run 或显式 Restart。运行中的进程在重启前继续使用原有程序。尚未应用的图仍需 Save graph；`init` 不会暗中应用。IsOS 不根据 Git 提交推断选择。
 
 `adapter_families` 包含 `id`（稳定适配器 ID）、`device_kinds`（设备类别）、可选精确版本 `package:{id,version}`、布尔值 `compiled`／`available`、字符串 `transport`／`description`、可选 `supported_primitives` 及不可用时的 `reason`。`primitive_bindings` 包含 `node_type`、`device_kind`、`movement_types`、`available`、`reason`、以及具有精确名称、版本、运动类型和描述的 `primitives`。`targets` 包含四段式 `path`、`node_type`、`device_kind`、`adapter_type`、`movement_types`、`available`、`reason`。`GET /node-types` 同时透传 EOS 的 `primitive_specs` 与有类型的 `data_types`。

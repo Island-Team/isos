@@ -18,6 +18,17 @@ pub fn report(paths: &Paths, name: &str, active: Option<&Value>) -> Value {
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or(Value::Null);
+    let graph_version_issue = graph
+        .is_object()
+        .then(|| {
+            (graph["version"] != "1.0.0").then(|| {
+                format!(
+                    "saved graph version {} is incompatible with IsOS 1.0.0",
+                    graph["version"]
+                )
+            })
+        })
+        .flatten();
     let projected = if graph.is_object() {
         process::project_with_packages(paths, &graph.to_string()).ok()
     } else {
@@ -97,15 +108,25 @@ pub fn report(paths: &Paths, name: &str, active: Option<&Value>) -> Value {
             let endpoint_issue = endpoints.as_ref().err().map(ToString::to_string);
             let ready = compatible
                 && graph_configured
+                && graph_version_issue.is_none()
                 && inputs_issue.is_none()
                 && endpoint_issue.is_none()
                 && !running_changed;
-            let reason = reason.or(inputs_issue).or(endpoint_issue).or_else(|| {
-                running_changed.then(|| {
-                    "running from an earlier configured build; restart to use the saved build"
-                        .into()
-                })
-            });
+            let reason = if enabled {
+                graph_version_issue
+                    .clone()
+                    .or(reason)
+                    .or(inputs_issue)
+                    .or(endpoint_issue)
+                    .or_else(|| {
+                        running_changed.then(|| {
+                            "running from an earlier configured build; restart to use the saved build"
+                                .into()
+                        })
+                    })
+            } else {
+                None
+            };
             let configured_endpoint = endpoints.as_ref().ok().and_then(|endpoints| {
                 endpoints.as_ref().and_then(|value| match core {
                     "eos" => value.get("eos_control"),
@@ -115,6 +136,8 @@ pub fn report(paths: &Paths, name: &str, active: Option<&Value>) -> Value {
             });
             let action = if !enabled {
                 "Core is not enabled in the saved graph".into()
+            } else if graph_version_issue.is_some() {
+                "Back up the old graph, run `isos init` to create a v1 starter, then add nodes and Save graph".into()
             } else if !compatible {
                 format!("Build {core} in its repository and configure its binary directory")
             } else if !graph_configured {
@@ -122,7 +145,7 @@ pub fn report(paths: &Paths, name: &str, active: Option<&Value>) -> Value {
             } else if running_changed {
                 "Restart the deployment to use the saved build".into()
             } else if reason.is_some() {
-                "Save the graph with the configured build, then restart".into()
+                "Run `isos init` to refresh the configured build, then restart".into()
             } else if running {
                 "Running from the configured build".into()
             } else {
@@ -142,4 +165,35 @@ pub fn report(paths: &Paths, name: &str, active: Option<&Value>) -> Value {
     json!({"cores":cores,"graph":{"path":graph_path,"configured":graph.is_object()},
         "isos":{"version":env!("CARGO_PKG_VERSION"),"path":std::env::current_exe().ok()},
         "isosui":ui})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_graph_version_takes_priority_over_changed_binary_guidance() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        paths.prepare().unwrap();
+        crate::config::atomic_write(
+            &paths.node_graph_path("default"),
+            br#"{"version":"2.0.0","robot":{},"cores":{"isos":{"layers":{"process":{"groups":{"component":{"nodes":{"eos":{"id":"eos","node_type":"isos.process.component@v1.1","settings":{"role":"eos","args":[]}}}}}}}}}}"#,
+        )
+        .unwrap();
+        let status = report(&paths, "default", None);
+        let eos = &status["cores"][0];
+        assert!(eos["reason"].as_str().unwrap().contains("incompatible"));
+        assert!(
+            eos["action"]
+                .as_str()
+                .unwrap()
+                .contains("Back up the old graph")
+        );
+        assert!(status["cores"][1]["reason"].is_null());
+    }
 }
