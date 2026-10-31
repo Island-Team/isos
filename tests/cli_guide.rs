@@ -35,7 +35,7 @@ fn init_prints_next_steps_without_starting_manager() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("editable graph:"));
     assert!(stdout.contains("Next steps:"));
-    assert!(stdout.contains("isos build eos"));
+    assert!(stdout.contains("isos build"));
     assert!(stdout.contains("isos serve"));
     assert!(stdout.contains("isos open"));
     assert!(home.join("config/deployments/default.nodes.json").exists());
@@ -51,5 +51,6 @@ fn product_init_mentions_isos_build_selection_without_starting_manager() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("isos build isos"));
     assert!(stdout.contains("isos version select isos"));
+    assert!(stdout.contains("isos version select isos 2.0.0"));
     assert!(!home.join("run/manager.sock").exists());
 }

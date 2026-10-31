@@ -16,7 +16,7 @@ This page tracks the current IsOS boundary. The [v2 graph](../interfaces/node-gr
 
 `isos init` creates configuration and a generic graph, then exits. `isos serve` runs the API, selected UI, and manager; `isos run` starts the applied graph and stays attached. `isos stop` shuts down all IsOS-owned work; `isos deployment stop` scopes the shutdown to the graph. Services use versioned TOML files outside the graph and start only through `isos services start <id>`. Product launch uses pinned, verified artifacts and no source checkout or npm.
 
-A build stages immutable artifacts. Selection is explicit: EOS selection applies its three graph executable paths at the expected revision, IsosUI selection pins a static build, and IsOS selection activates a staged executable only while the manager is stopped. `isos version check` compares configured, selected, and active identities. Package install or link alone does not activate graph changes.
+Builds stage immutable artifacts. CLI `isos build` defaults to all components and activates the just-built EOS and IsosUI artifacts; EOS activation applies its three graph executable paths at the expected revision. The HTTP build API still stages for preview and explicit selection. IsOS product selection activates a staged executable only while the manager is stopped; dev mode uses the executable on disk. `isos version check` compares configured, selected, and active identities. MuJoCo is an external IsOS package: package install or link alone does not activate graph changes.
 
 ## Remaining work
 

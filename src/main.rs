@@ -89,7 +89,7 @@ struct Cli {
 enum CommandLine {
     /// Build IsOS, EOS, EGIA, or IsosUI from configured source checkouts.
     Build {
-        #[arg(value_parser = ["isos", "eos", "egia", "all", "isosui"])]
+        #[arg(default_value = "all", value_parser = ["isos", "eos", "egia", "all", "isosui"])]
         target: String,
         #[arg(long)]
         install_deps: bool,
@@ -1421,7 +1421,7 @@ fn serve_foreground(paths: config::Paths, name: String, ui_live: bool) -> Result
     let static_ui = if ui_live {
         None
     } else {
-        let directory = isosui::selected_bundle(&paths)?;
+        let directory = isosui::bundle_for_serve(&paths)?;
         Some(std::thread::spawn(move || http::serve_ui(directory)))
     };
     let listener = bind_daemon(&paths)?;
@@ -1635,10 +1635,7 @@ fn print_first_use_guide() {
         r#"IsOS quick start
 
   1. Set up once:       isos init --mode dev
-  2. Build and select:  isos build eos
-                       isos version select eos <build-selector>
-                       isos build isosui
-                       isos version select isosui <build-selector>
+  2. Build locally:    isos build
   3. Open the editor:  isos serve          (terminal 1)
                        isos open           (terminal 2)
   4. In Graph, add a backend, then Validate and Apply.
@@ -1652,12 +1649,11 @@ Use `isos doctor` to check readiness or `isos --help` for all commands."#
 fn print_init_next_steps(mode: &str) {
     println!("\nNext steps:");
     if mode == "product" {
-        println!("  isos build isos && isos version select isos <build-selector>");
-        println!("  isos build eos && isos version select eos <build-selector>");
-        println!("  isos build isosui && isos version select isosui <build-selector>");
+        println!("  isos build isos && isos version select isos 2.0.0");
+        println!("  isos build eos");
+        println!("  isos build isosui");
     } else {
-        println!("  isos build eos && isos version select eos <build-selector>");
-        println!("  isos build isosui && isos version select isosui <build-selector>");
+        println!("  isos build                  # build local IsOS, EOS, and IsosUI");
     }
     println!("  isos serve                         # start the workbench in this terminal");
     println!("  isos open                          # open Graph from another terminal");
@@ -1716,6 +1712,7 @@ fn main_run() -> Result<()> {
                     "--install-deps is unavailable for the Rust v2 build"
                 );
                 let receipt = isosui::build(&paths)?;
+                isosui::activate_built(&paths, &receipt)?;
                 println!(
                     "built isosui {} {} sha256:{}",
                     receipt.manifest.version, receipt.manifest.source_commit, receipt.sha256
@@ -1734,6 +1731,8 @@ fn main_run() -> Result<()> {
                 if role == "eos" {
                     ensure!(!install_deps, "Rust EOS build does not use --install-deps");
                     let receipt = v2_build::build_eos(&paths)?;
+                    let revision = v2_starter::revision(&paths.v2_node_graph(&name))?;
+                    v2_build::activate_eos(&paths, &name, &receipt, &revision)?;
                     println!(
                         "built Rust EOS {} {} at {}",
                         receipt.product_version,
@@ -1750,6 +1749,7 @@ fn main_run() -> Result<()> {
             }
             if target == "all" {
                 let receipt = isosui::build(&paths)?;
+                isosui::activate_built(&paths, &receipt)?;
                 println!(
                     "built IsosUI {} {} sha256:{}",
                     receipt.manifest.version, receipt.manifest.source_commit, receipt.sha256

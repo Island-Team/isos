@@ -8,14 +8,11 @@
 
 ```sh
 isos init --mode dev
-isos build eos
-isos version select eos <暂存提交或源码指纹>
-isos build isosui
-isos version select isosui <暂存提交>
+isos build
 isos serve
 ```
 
-`isos serve` 在前台运行管理器、API 和经验证的静态 IsosUI。在另一终端执行 `isos open`。仅开发前端时，使用 `isos serve --ui-live` 启动 IsosUI 源码目录中已安装依赖的 npm 服务。产品模式要求选择干净构建，无须 npm 或源码目录；详见 [README](../../../README_cn.md)。
+`isos build` 使用本地源码并启用新的 EOS 和 IsosUI 构建。MuJoCo 仍是外部 IsOS 软件包。`isos serve` 会先构建缺失或过期的开发版界面，再在前台运行管理器、API 和经验证的静态 IsosUI。在另一终端执行 `isos open`。仅开发前端时，使用 `isos serve --ui-live` 启动 IsosUI 源码目录中已安装依赖的 npm 服务。产品模式要求选择干净构建，无须 npm 或源码目录；详见 [README](../../../README_cn.md)。
 
 构建 MuJoCo 仿真器，用其仓库的 `tools/build-backend-bundle.py` 制作 `2.0.0` 包，并将 `MUJOCO_ROOT` 指向匹配的运行环境。链接包后在 Graph 工作台预览 `sim-hardware` 节点集合。起始图包含 EOS 进程和调度器节点，不包含硬件包。预览加入 MuJoCo 进程、相机、底盘、机械臂、闸门与 Vision 节点。选择场景、检查草稿，再执行 Validate 和 Apply。对应命令为：
 

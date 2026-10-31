@@ -134,16 +134,29 @@ pub fn install_isos(paths: &Paths, selector: &str) -> Result<IsosReceipt> {
             continue;
         }
         let receipt: IsosReceipt = serde_json::from_slice(&fs::read(&path)?)?;
-        if receipt.source_commit.starts_with(selector) || receipt.sha256.starts_with(selector) {
-            matches.push(receipt);
+        if receipt.product_version == selector
+            || receipt.source_commit.starts_with(selector)
+            || receipt.sha256.starts_with(selector)
+        {
+            matches.push((receipt, fs::metadata(&path)?.modified()?));
         }
     }
-    ensure!(
-        matches.len() == 1,
-        "expected one IsOS build matching {selector}; found {}",
-        matches.len()
-    );
-    let receipt = matches.remove(0);
+    ensure!(!matches.is_empty(), "no IsOS build matches {selector}");
+    if matches
+        .iter()
+        .all(|(receipt, _)| receipt.product_version == selector)
+    {
+        // A release version selects the most recently built receipt. Exact
+        // commit or digest selectors retain their uniqueness requirement.
+        matches.sort_by_key(|(_, modified)| *modified);
+    } else {
+        ensure!(
+            matches.len() == 1,
+            "expected one IsOS build matching {selector}; found {}",
+            matches.len()
+        );
+    }
+    let receipt = matches.pop().unwrap().0;
     verify_isos(&receipt)?;
     ensure!(
         paths.mode()? != "product"
@@ -174,6 +187,11 @@ pub fn install_isos(paths: &Paths, selector: &str) -> Result<IsosReceipt> {
 }
 
 pub fn verify_active_isos(paths: &Paths) -> Result<()> {
+    // Development runs the executable on disk. A product pin must not prevent
+    // an updated local CLI from opening the workbench.
+    if paths.mode()? == "dev" {
+        return Ok(());
+    }
     let pin = paths.config.join("pins/isos.json");
     if !pin.exists() {
         ensure!(
@@ -188,20 +206,10 @@ pub fn verify_active_isos(paths: &Paths) -> Result<()> {
         digest(&std::env::current_exe()?)? == receipt.sha256,
         "this IsOS executable differs from the selected build; run `isos version select isos <commit>` while the manager is stopped"
     );
-    if paths.mode()? == "product" {
-        ensure!(
-            !receipt.source_dirty && !receipt.source_fingerprint.is_empty(),
-            "product mode requires a clean, fingerprinted IsOS receipt"
-        );
-    } else if let Some(root) = &receipt.source_root
-        && root.is_dir()
-    {
-        let (commit, _, fingerprint) = source_identity(root)?;
-        ensure!(
-            commit == receipt.source_commit && fingerprint == receipt.source_fingerprint,
-            "IsOS source changed since selected build; run `isos build isos`, then `isos version select isos <commit>`"
-        );
-    }
+    ensure!(
+        !receipt.source_dirty && !receipt.source_fingerprint.is_empty(),
+        "product mode requires a clean, fingerprinted IsOS receipt"
+    );
     Ok(())
 }
 
@@ -616,8 +624,20 @@ pub fn select_eos(
         matches.len()
     );
     let receipt = matches.into_iter().next().unwrap();
-    verify(&receipt)?;
-    verify_source(paths, &receipt)?;
+    activate_eos(paths, name, &receipt, expected_revision)?;
+    Ok(receipt)
+}
+
+/// Activate the exact build returned by `build_eos`, without a commit selector.
+pub fn activate_eos(
+    paths: &Paths,
+    name: &str,
+    receipt: &BuildReceipt,
+    expected_revision: &str,
+) -> Result<()> {
+    crate::v2_process::validate_deployment_name(name)?;
+    verify(receipt)?;
+    verify_source(paths, receipt)?;
     let _lock = crate::lifecycle::Lock::take(paths)?;
     let graph_path = paths.v2_node_graph(name);
     let previous = fs::read(&graph_path)?;
@@ -626,7 +646,7 @@ pub fn select_eos(
         "node graph revision changed; reload before selecting EOS"
     );
     let graph: serde_json::Value = serde_json::from_slice(&previous)?;
-    let suggested = suggest_graph(&graph, &receipt)?;
+    let suggested = suggest_graph(&graph, receipt)?;
     crate::v2_process::validate_value_with_profile(
         paths,
         &suggested,
@@ -643,7 +663,7 @@ pub fn select_eos(
         }
         return Err(error);
     }
-    Ok(receipt)
+    Ok(())
 }
 
 fn eos_selector_matches(receipt: &BuildReceipt, selector: &str) -> bool {
@@ -760,6 +780,22 @@ mod tests {
         assert!(selected_verified(&paths).unwrap().is_some());
         assert!(selected(&paths).is_err());
         assert!(preflight_processes(&paths, &[]).is_err());
+    }
+
+    #[test]
+    fn development_serve_uses_disk_executable_despite_old_isos_pin() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        paths.prepare().unwrap();
+        paths.set_mode("dev").unwrap();
+        config::atomic_write(&paths.config.join("pins/isos.json"), b"old receipt").unwrap();
+        assert!(verify_active_isos(&paths).is_ok());
+        paths.set_mode("product").unwrap();
+        assert!(verify_active_isos(&paths).is_err());
     }
 
     #[test]

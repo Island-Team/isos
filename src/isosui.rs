@@ -231,9 +231,7 @@ pub fn verify(receipt: &Receipt) -> Result<()> {
 }
 
 pub fn selected_bundle(paths: &Paths) -> Result<PathBuf> {
-    let receipt = read_pin(paths)?.context(
-        "IsosUI is unselected; run `isos build isosui` and `isos version select isosui <commit>`",
-    )?;
+    let receipt = read_pin(paths)?.context("IsosUI has no build; run `isos build isosui`")?;
     verify(&receipt)?;
     if paths.mode()? == "product" {
         ensure!(
@@ -249,9 +247,36 @@ pub fn selected_bundle(paths: &Paths) -> Result<PathBuf> {
         let (commit, _, fingerprint) = crate::v2_build::source_identity(root)?;
         ensure!(
             commit == receipt.manifest.source_commit && fingerprint == receipt.source_fingerprint,
-            "IsosUI source changed since selected build; run `isos build isosui`, then `isos version select isosui <commit>`"
+            "IsosUI source changed since its build; run `isos build isosui`"
         );
     }
+    Ok(receipt.directory)
+}
+
+pub fn activate_built(paths: &Paths, receipt: &Receipt) -> Result<()> {
+    verify(receipt)?;
+    config::atomic_write(&pin_path(paths), &serde_json::to_vec_pretty(receipt)?)
+}
+
+/// Development serves the current disk source; product serves only an explicit receipt.
+pub fn bundle_for_serve(paths: &Paths) -> Result<PathBuf> {
+    if paths.mode()? != "dev" {
+        return selected_bundle(paths);
+    }
+    let root = source_root()?;
+    bundle_for_serve_at(paths, &root)
+}
+
+fn bundle_for_serve_at(paths: &Paths, root: &Path) -> Result<PathBuf> {
+    let (_, _, fingerprint) = crate::v2_build::source_identity(root)?;
+    if let Some(receipt) = read_pin(paths)?
+        && receipt.source_fingerprint == fingerprint
+    {
+        verify(&receipt)?;
+        return Ok(receipt.directory);
+    }
+    let receipt = build(paths)?;
+    activate_built(paths, &receipt)?;
     Ok(receipt.directory)
 }
 
@@ -378,5 +403,73 @@ mod tests {
         assert_eq!(check(&paths).unwrap()["status"], "pinned");
         fs::write(directory.join("index.html"), "damaged").unwrap();
         assert!(check(&paths).is_err());
+    }
+
+    #[test]
+    fn development_serve_uses_current_verified_bundle_without_rebuilding() {
+        let temporary = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config: temporary.path().join("config"),
+            data: temporary.path().join("data"),
+            runtime: temporary.path().join("run"),
+        };
+        paths.prepare().unwrap();
+        paths.set_mode("dev").unwrap();
+        let source = temporary.path().join("IsosUI");
+        fs::create_dir(&source).unwrap();
+        assert!(
+            Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(&source)
+                .status()
+                .unwrap()
+                .success()
+        );
+        fs::write(source.join("package.json"), "{}").unwrap();
+        assert!(
+            Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.invalid",
+                    "commit",
+                    "-q",
+                    "--allow-empty",
+                    "-m",
+                    "test",
+                ])
+                .current_dir(&source)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let (commit, dirty, fingerprint) = crate::v2_build::source_identity(&source).unwrap();
+        let directory = build_root(&paths).join("current-ui");
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("index.html"), "<html></html>").unwrap();
+        let identity = Manifest {
+            schema_version: 1,
+            version: "2.0.0".into(),
+            source_commit: commit,
+            api_schema_version: 2,
+            build_target: "local".into(),
+        };
+        fs::write(
+            directory.join("manifest.json"),
+            serde_json::to_vec(&identity).unwrap(),
+        )
+        .unwrap();
+        let receipt = Receipt {
+            schema_version: 1,
+            manifest: identity,
+            directory: directory.clone(),
+            sha256: digest(&directory).unwrap(),
+            source_dirty: dirty,
+            source_fingerprint: fingerprint,
+            source_root: Some(source.clone()),
+        };
+        activate_built(&paths, &receipt).unwrap();
+        assert_eq!(bundle_for_serve_at(&paths, &source).unwrap(), directory);
     }
 }

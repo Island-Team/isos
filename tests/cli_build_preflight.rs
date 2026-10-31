@@ -6,7 +6,7 @@ fn build_all_rejects_missing_ui_source_before_building_components() {
     let home = temporary.path().join("isos-home");
     let missing_ui = temporary.path().join("missing-ui");
     let output = Command::new(env!("CARGO_BIN_EXE_isos"))
-        .args(["build", "all"])
+        .arg("build")
         .env("ISOS_HOME", &home)
         .env("ISOSUI_REPO_PATH", &missing_ui)
         .env_remove("ISOS_CONFIG")

@@ -16,7 +16,7 @@
 
 `isos init` 创建配置和通用图后退出。`isos serve` 运行 API、选中界面和管理器；`isos run` 启动已应用图并保持前台。`isos stop` 关闭所有 IsOS 所属工作；`isos deployment stop` 只停止图部署。服务使用图外的版本化 TOML 文件，且只能通过 `isos services start <id>` 显式启动。产品模式使用固定且经验证的产物，不依赖源码目录或 npm。
 
-构建会暂存不可变产物。选择是显式操作：选择 EOS 时按预期修订应用图中的三个可执行文件路径；选择 IsosUI 时固定静态构建；选择 IsOS 时仅可在管理器停止后激活暂存的可执行文件。`isos version check` 比较配置、选中与运行中的身份。单独安装或链接软件包不会激活图修改。
+构建会暂存不可变产物。CLI `isos build` 默认构建全部组件，并启用刚构建的 EOS 与 IsosUI；EOS 启用时按预期修订应用图中的三个可执行文件路径。HTTP 构建接口仍暂存产物供预览和显式选择。产品模式仅可在管理器停止后激活暂存的 IsOS 程序；开发模式使用磁盘上的程序。`isos version check` 比较配置、选中与运行中的身份。MuJoCo 是外部 IsOS 软件包：单独安装或链接软件包不会激活图修改。
 
 ## 待完成工作
 

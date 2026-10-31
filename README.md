@@ -6,23 +6,20 @@ IsOS owns the shared Aether v2 graph, backend packages, local workbench API, and
 
 Run `./install.sh` from the v2 `master` checkout to install the CLI without installing or starting a systemd user unit. `isos init --mode dev` creates the configuration and starter graph and exits; running `isos init` again preserves the mode and authored graph. Use `isos init --mode product` to select product admission rules. `isos serve` runs the manager, API, and selected static IsosUI in the foreground; `isos serve --ui-live` explicitly uses supervised Webpack in dev mode.
 
-Edit the tracked [config/isos.toml](config/isos.toml) for portable runtime defaults; [config/isos.example.toml](config/isos.example.toml) shows optional fields. Relative source paths are resolved from this IsOS checkout, regardless of the command directory. Environment variables override file values; `ISOS_CONFIG` selects another absolute config file. Private deployment graphs and build selections remain under `~/.config/isos/`. IsOS does not load `.env` from the command directory. In dev mode, stage immutable builds and select them explicitly:
+Edit the tracked [config/isos.toml](config/isos.toml) for portable runtime defaults; [config/isos.example.toml](config/isos.example.toml) shows optional fields. Relative source paths are resolved from this IsOS checkout, regardless of the command directory. Environment variables override file values; `ISOS_CONFIG` selects another absolute config file. Private deployment graphs and build selections remain under `~/.config/isos/`. IsOS does not load `.env` from the command directory. In dev mode, `isos build` builds IsOS, EOS, and IsosUI from the local source. It activates the just-built EOS and IsosUI artifacts automatically; MuJoCo remains a separate IsOS package:
 
 ```sh
 isos init --mode dev
-isos build eos
-isos version select eos <staged-commit>
-isos build isosui
-isos version select isosui <staged-commit>
+isos build
 isos serve
 ```
 
-`isos build isosui` and `isos build all` use a sibling `IsosUI` checkout beside the IsOS source by default. Set the absolute `ISOSUI_REPO_PATH` or `[paths].ui_repo` in `config.toml` for another checkout. `build all` checks for the UI source before starting any component build; it stages builds but does not select them.
+`isos build isosui` and `isos build` use a sibling `IsosUI` checkout beside the IsOS source by default. Set the absolute `ISOSUI_REPO_PATH` or `[paths].ui_repo` in `config.toml` for another checkout. `build all` checks for the UI source before starting any component build; it selects the new EOS and IsosUI builds after verification. The IsOS executable on disk is used in dev mode.
 
-`isos serve` hosts IsosUI at `http://127.0.0.1:16001/en/isos` and the API at `http://127.0.0.1:16000/api/isos/v2`. `ISOSUI_PORT` and `ISOS_HTTP_PORT` change the loopback ports. Product mode serves only the selected verified static UI and does not need npm or source checkouts. Ctrl+C or `isos stop` stops the UI, API, deployment, explicitly started services, and manager. `isos deployment stop` stops the graph only.
+`isos serve` builds the local IsosUI source when its dev bundle is missing or stale, then hosts IsosUI at `http://127.0.0.1:16001/en/isos` and the API at `http://127.0.0.1:16000/api/isos/v2`. `ISOSUI_PORT` and `ISOS_HTTP_PORT` change the loopback ports. Product mode serves only the selected verified static UI and does not need npm or source checkouts. Ctrl+C or `isos stop` stops the UI, API, deployment, explicitly started services, and manager. `isos deployment stop` stops the graph only.
 
 An optional systemd user unit runs that same product command: after `isos init --mode product` and selecting verified builds, run `./install.sh --install-user-service` to install the CLI and enable and start the unit, or run `tools/user-service.sh install` when the CLI is already installed. Run `tools/user-service.sh remove` to disable it. CLI commands and shell completion work without the unit.
-Product mode requires an exact selected IsOS executable. With the manager stopped, run `isos build isos` and `isos version select isos <staged-commit>` before `isos serve`.
+Product mode requires an exact selected IsOS executable. With the manager stopped, run `isos build isos` and `isos version select isos 2.0.0` before `isos serve`.
 
 In the second terminal:
 

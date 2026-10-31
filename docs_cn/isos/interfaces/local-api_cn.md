@@ -2,7 +2,7 @@
 
 [English](../../../docs/isos/interfaces/local-api.md)
 
-`isos init --mode dev|product` 创建配置和初始图后退出。`isos serve` 默认在 `127.0.0.1:16000` 启动 IsOS API（`ISOS_HTTP_PORT` 可调整端口），在 `127.0.0.1:16001` 提供选定的静态 IsosUI 构建（`ISOSUI_PORT` 可调整端口），并在 `$XDG_RUNTIME_DIR/isos/`（或 `ISOS_HOME/run/`）下创建仅所有者可访问的 Unix 管理套接字。开发模式下的 `isos serve --ui-live` 才会管理 Webpack。运行目录权限为 `0700`，管理套接字为 `0600`。HTTP 响应封装为 `{schema_version:2,ok,data,error}`；内部单行 Unix 封装仍为 schema 1。
+`isos init --mode dev|product` 创建配置和初始图后退出。`isos serve` 默认在 `127.0.0.1:16000` 启动 IsOS API（`ISOS_HTTP_PORT` 可调整端口），在 `127.0.0.1:16001` 提供静态 IsosUI（`ISOSUI_PORT` 可调整端口），并在 `$XDG_RUNTIME_DIR/isos/`（或 `ISOS_HOME/run/`）下创建仅所有者可访问的 Unix 管理套接字。开发模式下，`isos serve` 会从本地源码构建缺失或过期的界面；`isos serve --ui-live` 才会管理 Webpack。运行目录权限为 `0700`，管理套接字为 `0600`。HTTP 响应封装为 `{schema_version:2,ok,data,error}`；内部单行 Unix 封装仍为 schema 1。
 
 API 只绑定 `127.0.0.1`，不提供前端文件。IsosUI 通过地址和端口直接调用 API，无需 URL 或 bearer 令牌。API `Host` 必须匹配其环回地址和配置的端口。浏览器请求可来自 UI 来源 `127.0.0.1:16001`（或配置的 `ISOSUI_PORT`）、API 自身来源，或托管 IsosUI 来源 `https://www.os-island.com`、`https://os-island.com`；其他 Origin 会被拒绝。跨域预检允许 GET、POST、PUT 和 Content-Type。Ctrl+C 或 `isos stop` 会停止两个服务、部署、显式启动的服务以及管理器。
 
@@ -62,10 +62,10 @@ IsOS 默认读取其源码目录中的 [config/isos.toml](../../../config/isos.t
 
 ## Rust 程序与选择器契约
 
-`receipt` 包含 `schema_version`（整数 2）、`component`（`eos`）、`product_version`（`2.0.0`）、`source_commit`（完整 Git SHA）、`source_dirty`（源码有修改或未跟踪文件时为 true）、`source_fingerprint`（提交和源码文件的 SHA-256）、`source_root`（用于开发环境漂移检查的可选绝对源码路径）、`binaries`（按程序名索引的绝对路径）和 `sha256`（文件摘要）。构建会将五个 Aether 程序作为同一集合放入 IsOS 私有数据目录，但不会改变已选构建。产品模式仅接纳干净且带源码指纹的收据。Run 会探测 EOS、bridge、config 与 profile 的精确能力；程序过旧或图指向其他程序时直接报错。`suggested_graph` 为 `{revision,graph}` 或 null，不会自动应用。CLI `isos build eos` 使用同一构建服务；选择接口或 `isos version select eos <selector>` 校验图修订后再应用三个程序路径和固定选择。选择器接受唯一的提交前缀、产品版本或源码指纹前缀；同一提交有多个构建时使用指纹。
+`receipt` 包含 `schema_version`（整数 2）、`component`（`eos`）、`product_version`（`2.0.0`）、`source_commit`（完整 Git SHA）、`source_dirty`（源码有修改或未跟踪文件时为 true）、`source_fingerprint`（提交和源码文件的 SHA-256）、`source_root`（用于开发环境漂移检查的可选绝对源码路径）、`binaries`（按程序名索引的绝对路径）和 `sha256`（文件摘要）。构建会将五个 Aether 程序作为同一集合放入 IsOS 私有数据目录，但不会改变已选构建。产品模式仅接纳干净且带源码指纹的收据。Run 会探测 EOS、bridge、config 与 profile 的精确能力；程序过旧或图指向其他程序时直接报错。`suggested_graph` 为 `{revision,graph}` 或 null，不会自动应用。CLI `isos build eos` 会启用新构建，并按当前图修订应用三个进程路径。API 构建接口仍只暂存；选择接口或 `isos version select eos <selector>` 可启用经检查的候选构建。选择器接受唯一的提交前缀、产品版本或源码指纹前缀；同一提交有多个构建时使用指纹。
 
 在开发模式下，EOS 源码变化后，图编辑与校验继续使用摘要校验通过的已选 `aether-profile`。选择暂存构建时，先使用候选构建的 `aether-profile` 校验建议图，再更新图和固定选择；Run 仍要求源码与所选构建一致。版本检查使用 `match.eos_source`（布尔值；未选择时为 null）和 `eos_source_diagnostic`（字符串或 null）报告源码漂移。
 
-IsOS 和 IsosUI 构建使用独立的不可变收据，并记录相同的源码身份字段。`isos build isos` 暂存 release 可执行文件；`isos version select isos <commit>` 要求先停止管理器，再激活该程序。IsosUI 收据还将目录摘要绑定到清单；产品模式仅从已选择且校验通过的目录提供页面。
+IsOS 和 IsosUI 构建使用独立的不可变收据，并记录相同的源码身份字段。`isos build` 默认构建全部组件；成功后启用 EOS 与 IsosUI。`isos build isos` 暂存 release 可执行文件；产品模式使用 `isos version select isos <selector>` 激活时要求先停止管理器。开发模式使用磁盘上的 IsOS 程序。IsosUI 收据还将目录摘要绑定到清单；产品模式仅从已选择且校验通过的目录提供页面。
 
 `adapter_families` 包含 `id`（稳定适配器 ID）、`device_kinds`（设备类别）、可选精确版本 `package:{id,version}`、布尔值 `compiled`／`available`、字符串 `transport`／`description`、可选 `supported_primitives` 及不可用时的 `reason`。`primitive_bindings` 包含 `node_type`、`device_kind`、`movement_types`、`available`、`reason`、以及具有精确名称、版本、运动类型和描述的 `primitives`。`targets` 包含四段式 `path`、`node_type`、`device_kind`、`adapter_type`、`movement_types`、`available`、`reason`。`GET /node-types` 同时透传 EOS 的 `primitive_specs` 与有类型的 `data_types`。
