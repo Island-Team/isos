@@ -15,6 +15,16 @@ pub(crate) fn config_command(paths: &config::Paths, name: &str, cmd: ConfigComma
                 config::atomic_write(&output, &fs::read(default)?)?;
                 println!("created {}", output.display());
             } else {
+                if let Some(revision) = core_setup::refresh_after_init(paths, name)? {
+                    println!(
+                        "refreshed core launch inputs for graph {revision}; Run or Restart to use the configured build"
+                    );
+                    if let Err(error) = clear_saved_setup_error(paths, name) {
+                        eprintln!(
+                            "core inputs refreshed, but could not clear prior setup error: {error}"
+                        );
+                    }
+                }
                 println!("editable graph: {}", default.display());
             }
         }

@@ -180,6 +180,22 @@ def main():
         legacy_path.write_text(json.dumps(legacy_graph))
         assert run("config", "validate", str(legacy_path), env=env, expect=False).returncode != 0
         run("config", "apply", str(graph_path), env=env)
+        applied_graph = graph_path.read_bytes()
+        profile = configured_bins / "aether-profile"
+        original_profile = profile.read_bytes()
+        profile.write_bytes(original_profile + b"\nIsOS refresh test\n")
+        changed = json.loads(run("version", "check", "--json", env=env).stdout)
+        eos = next(core for core in changed["cores"] if core["core"] == "eos")
+        assert not eos["ready"] and "changed since graph Apply" in eos["reason"]
+        assert "isos init" in eos["action"]
+        assert "refreshed core launch inputs" in run("init", env=env).stdout
+        assert graph_path.read_bytes() == applied_graph
+        refreshed = json.loads(run("version", "check", "--json", env=env).stdout)
+        assert next(core for core in refreshed["cores"] if core["core"] == "eos")["ready"]
+        profile.write_bytes(original_profile)
+        assert "refreshed core launch inputs" in run("config", "init", env=env).stdout
+        assert graph_path.read_bytes() == applied_graph
+        print("ISOS init refreshed rebuilt core without changing applied graph: PASS")
         assert run("pkg", "remove", "island/mujoco-sim", "2.0.0", env=env, expect=False).returncode != 0
         saved_hash = hashlib.sha256(graph_path.read_bytes()).hexdigest()
         try:

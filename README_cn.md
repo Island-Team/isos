@@ -37,7 +37,7 @@ isos run
 
 `isos run` 会在工作台尚未运行时先启动工作台，再通过按需核心适配器准备已保存的图，并按依赖顺序启动已配置的核心。它保持前台运行。按 Ctrl+C 会按依赖逆序停止部署。源码修改应在所属仓库构建，必要时更新已配置路径。可在其他终端执行 `isos status --json`、`isos version check`、`isos services status` 或 `isos stop`。
 
-`isos init` 仅在图不存在时创建可编辑图。Home 展示软件包准备情况和修订；Graph 编辑唯一的 `1.0.0` IsOS/EOS/EGIA 图，节点类型有独立版本。Check graph 校验草稿；Save graph 应用修订并生成核心配置；Run 会重新校验固定版本的软件包、图、场景、可执行文件、资源和 MuJoCo 依赖。仅安装或链接不会改变运行中部署。工作台有单独的 EOS 和 EGIA 页面；EGIA 运行控制留待后续实现。
+`isos init` 仅在图不存在时创建可编辑图。重建已配置核心后再次运行 `isos init`（或 `isos config init`），校验并刷新已应用 v1 图的启动输入，然后 Run 或 Restart。Home 展示软件包准备情况和修订；Graph 编辑唯一的 `1.0.0` IsOS/EOS/EGIA 图，节点类型有独立版本。Check graph 校验草稿；Save graph 应用修订并生成核心配置；Run 会重新校验固定版本的软件包、图、场景、可执行文件、资源和 MuJoCo 依赖。仅安装或链接不会改变运行中部署。工作台有单独的 EOS 和 EGIA 页面；EGIA 运行控制留待后续实现。
 
 新图包含 EOS 进程节点和调度器；操作员在 Graph 中添加已安装软件包的节点集合后再应用。已有编写图会保留。对旧 MuJoCo 图，节点集合预览可显式替换旧后端、硬件及依赖它们的控制节点，然后由操作员应用返回的草稿。
 

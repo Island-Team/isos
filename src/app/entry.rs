@@ -4,7 +4,7 @@ use crate::{
         AuthCommand, Cli, CommandLine, DeploymentCommand, VersionCommand, config_command, library,
         package_command, print_init_next_steps, services_command,
     },
-    config,
+    config, core_setup,
     foreground::{
         catch_interrupts, ensure_setup, open_browser, print_run_startup, serve_foreground,
         wait_for_interrupt,
@@ -116,13 +116,26 @@ pub(crate) fn run() -> Result<()> {
                 paths.set_mode("dev")?;
             }
             let graph_path = starter::init(&paths, &name)?;
+            let refreshed = core_setup::refresh_after_init(&paths, &name)?;
             println!("editable graph: {}", graph_path.display());
-            if backend::installed(&paths).is_empty() {
+            if let Some(revision) = refreshed {
                 println!(
-                    "MuJoCo package missing: install or link island/mujoco-sim 2.0.0, then validate and apply the graph"
+                    "refreshed core launch inputs for graph {revision}; Run or Restart to use the configured build"
                 );
+                if let Err(error) = crate::cli::clear_saved_setup_error(&paths, &name) {
+                    eprintln!(
+                        "core inputs refreshed, but could not clear prior setup error: {error}"
+                    );
+                }
+                println!("Run `isos version check` to confirm readiness.");
+            } else {
+                if backend::installed(&paths).is_empty() {
+                    println!(
+                        "MuJoCo package missing: install or link island/mujoco-sim 2.0.0, then validate and apply the graph"
+                    );
+                }
+                print_init_next_steps(paths.mode()?);
             }
-            print_init_next_steps(paths.mode()?);
         }
         CommandLine::Open => {
             if UnixStream::connect(paths.socket()).is_err() {
