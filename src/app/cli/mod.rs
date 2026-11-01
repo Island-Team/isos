@@ -178,6 +178,17 @@ pub(crate) enum ConfigCommand {
     },
     Apply {
         file: PathBuf,
+        #[arg(long)]
+        revision: Option<String>,
+    },
+    /// Preview or commit an explicit saved-graph migration.
+    Migrate {
+        #[arg(long)]
+        preview: bool,
+        #[arg(long)]
+        revision: String,
+        #[arg(long)]
+        proposed_revision: Option<String>,
     },
     Show,
 }

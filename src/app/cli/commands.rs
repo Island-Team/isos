@@ -1,8 +1,8 @@
 use super::{ConfigCommand, InstallArgs, LibraryCommand, PackageCommand, ServiceCommand};
 use crate::manager::service_call;
 use crate::{
-    config, core_setup, graph_compat, lock, node_sets, packages, process, release, services,
-    starter,
+    config, core_setup, graph_compat, graph_migration, lock, node_sets, packages, process, release,
+    services, starter,
 };
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
@@ -32,13 +32,56 @@ pub(crate) fn config_command(paths: &config::Paths, name: &str, cmd: ConfigComma
             }
         }
         ConfigCommand::Validate { file } => {
-            process::validate_full_graph(&file)?;
-            let specs = process::project_with_packages(paths, &fs::read_to_string(&file)?)?;
+            let source = fs::read_to_string(&file)?;
+            let graph = process::normalize_source(&source)?;
+            let specs = if graph["version"] == "0.1.0" {
+                let bytes = serde_json::to_vec_pretty(&graph)?;
+                let proposal = graph_migration::Proposal {
+                    revision: graph_compat::revision(&bytes),
+                    graph,
+                    bytes,
+                    changes: Vec::new(),
+                };
+                graph_migration::prepare(paths, name, &proposal)
+                    .map_err(|diagnostic| anyhow::anyhow!(diagnostic.to_string()))?
+                    .specs
+            } else {
+                process::validate_full_graph(&file)?;
+                process::project_with_packages(paths, &source)?
+            };
             println!("valid node graph: {} IsOS processes", specs.len());
         }
-        ConfigCommand::Apply { file } => {
-            let specs = apply_graph_file(paths, name, &file)?;
+        ConfigCommand::Apply { file, revision } => {
+            let specs = apply_graph_file(paths, name, &file, revision.as_deref())?;
             println!("applied node graph: {} IsOS processes", specs.len());
+        }
+        ConfigCommand::Migrate {
+            preview,
+            revision,
+            proposed_revision,
+        } => {
+            if preview {
+                ensure!(
+                    proposed_revision.is_none(),
+                    "--preview does not accept --proposed-revision"
+                );
+                let result = graph_migration::preview(paths, name, &revision)
+                    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "revision":revision,"proposed_revision":result.proposal.revision,
+                        "graph":result.proposal.graph,"changes":result.proposal.changes,
+                        "can_apply":result.diagnostic.is_none(),"diagnostics":result.diagnostic.into_iter().collect::<Vec<_>>()
+                    }))?
+                );
+            } else {
+                let proposed_revision = proposed_revision
+                    .context("--proposed-revision is required without --preview")?;
+                let result = graph_migration::commit(paths, name, &revision, &proposed_revision)
+                    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                println!("migrated node graph: {}", result.revision);
+            }
         }
         ConfigCommand::Show => {
             println!("{}", fs::read_to_string(paths.node_graph_path(name))?);
@@ -51,9 +94,16 @@ pub(crate) fn apply_graph_file(
     paths: &config::Paths,
     name: &str,
     file: &Path,
+    expected_revision: Option<&str>,
 ) -> Result<Vec<process::ProcessSpec>> {
     let source = fs::read_to_string(file)?;
     let graph = process::normalize_source(&source)?;
+    if graph["version"] == "0.1.0" {
+        let expected = expected_revision.context("0.1.0 Apply requires --revision")?;
+        let (_, specs) = graph_migration::apply_new(paths, name, graph, expected)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        return Ok(specs);
+    }
     graph_compat::admit(&graph, process::catalog().ok().as_ref())?;
     let destination = paths.node_graph_path(name);
     let mut expected_saved_revision = None;

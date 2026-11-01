@@ -134,4 +134,8 @@ IsOS 只迁移**已保存**且安全的 `1.0.0` 图。预览与提交读取该�
 
 对于 `0.1.0`，生成文件位于 `data/generated/<deployment>/<saved-revision>/`，包含 `core-setup/launch-inputs.json`、`eos/graph.json` 和已启用 core 的覆盖文件。清单记录来源修订、精确图／软件包／程序摘要，以及生成文件路径和摘要；Run 或 Restart 前重新校验。IsOS **仅根据当前已保存图的 SHA-256** 选择此目录并校验清单；不存在可变的 `current` 指针或 symlink。EOS runtime 与 config-server 的启动 `--profile` 参数替换为该目录下经验证的 `eos/graph.json`；已保存图的 `settings.args` 保持不变。旧 `data/generated/<deployment>/core-setup/launch-inputs.json` 布局只为 `1.0.0` Run/Restart 和 GET 已应用状态保留只读兼容；`0.1.0` reader 不回退到它。`GET /node-graph` 按版本、准入和旧版应用状态决定 `read_only`，不依据无关快照目录。`GET /process-status` 从 manager 的已启动修订取得 `active_revision`，不从生成路径推断。
 
+Run 和 Restart 会将已保存的生成字节与从精确已保存图重新执行的归属方 render 比较，因此同时修改文件和清单不能授权不同投影。重新构建核心程序会使启动输入摘要失效。`isos init` 报告过期输入且不修改不可变快照；恢复固定的程序，或创建新的图修订并 Apply 后才能启动。
+
+在归属方投影前，IsOS 会在 `/cores/<core>` 以 `unsupported_core` 拒绝 `eos`、`isos`、`egia` 之外的任何 `0.1.0` core 键。每个节点须匹配精确批准的目标类型身份及其注册的 `core/layer/group` 位置；错误在节点 `/node_type` 返回 `unsupported_node_type` 或 `invalid_node_placement`。旧版 IsOS／IsosUI Vision 身份与未映射的 EOS 控制身份不能进入新图，即使旧版目录仍列出它们。
+
 `0.1.0` 校验握手按归属方分区。IsOS 解析并校验完整图，包括精确节点路径、引用、软件包 pin 和全部跨 core 连线；其自有 registry 校验 `isos.process.component@v0.1` 和其他 IsOS 类型。IsOS 聚合目录合并这些自有定义、EOS 定义及已验证的软件包 contribution。对于 `0.1.0`，IsOS 把完整图交给 EOS setup Validate/Render，由 EOS 仅投影并校验 `eos` core；EGIA setup 校验自己的子树。IsOS **不会**对 `0.1.0` 使用旧整图 `aether-profile validate --file`，否则会错误要求 EOS 拥有 IsOS 进程类型。旧 `1.0.0` 保留既有整图校验。在 G06 之前，建议 `0.1.0` 图中的任意跨 core 边或引用都在精确路径阻塞迁移、Apply 和 Run，包括从旧图保留的连线。启用的归属方 adapter 必须声明 `0.1.0`、成功 Validate/Render，且已启动的 EOS runtime 能读取生成投影，IsOS 才发布图。

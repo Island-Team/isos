@@ -157,4 +157,4 @@ setup 适配器 `identity` 保留 `core`、`product_version`、`setup_schema_ver
 
 CLI 使用同一迁移引擎：`isos config migrate --preview --revision <saved-sha256>` 只输出建议修订、变更和诊断；`isos config migrate --revision <saved-sha256> --proposed-revision <preview-sha256>` 提交。它不接收图文件，也不从当前磁盘隐式推断预期修订。实现必须保持 HTTP 与 CLI 的错误等价。
 
-缺失图的 GET 与 Init 在 G03 写入器启用后生成 `0.1.0` 草稿；PUT 首次 Apply 使用 `revision:""`，后续 `0.1.0` 修改使用保存修订号。CLI 的新图／`0.1.0` 修改 Apply 使用显式 `--revision`。旧 `1.0.0` 图不因 Init 改写，结构相同的 Apply 保持无写入。新版本的 Run/Restart 只从 `data/generated/<deployment>/<saved-revision>/` 加载经摘要校验的清单与 EOS 投影；旧版平面 `generated/<deployment>/core-setup/launch-inputs.json` 仅用于 `1.0.0` 兼容。详情见[图契约](node-graph_cn.md#g03-写入器与快照选择目标设计)。
+缺失图的 GET 与 Init 在 G03 写入器启用后生成 `0.1.0` 草稿；PUT 首次 Apply 必须显式使用 `revision:""`，后续 `0.1.0` 修改使用保存修订号。CLI 的新图／`0.1.0` 修改 Apply 使用显式 `--revision`。旧 `1.0.0` 图不因 Init 改写，结构相同的 Apply 保持无写入。新版本的 Run/Restart 从 `data/generated/<deployment>/<saved-revision>/` 选择经摘要校验的清单与 EOS 投影，并在启动前将每个已保存生成文件与精确已保存图的新归属方 render 比较；旧版平面 `generated/<deployment>/core-setup/launch-inputs.json` 仅用于 `1.0.0` 兼容。详情见[图契约](node-graph_cn.md#g03-写入器与快照选择目标设计)。

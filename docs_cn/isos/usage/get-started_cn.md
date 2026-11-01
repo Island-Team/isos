@@ -4,7 +4,7 @@
 
 ## 按实际运行顺序阅读
 
-**当前可用：**以下命令使用现有 `1.0.0` 图读取器和 `@v1.*` 类型。拟议的 `0.1.0` 图写入器、设置选择器、统一事件字段和 EGIA 集成列在[实现里程碑](../maintenance/roadmap_cn.md)。操作时先看状态，再查同一阶段的日志；启动事件证明发生过一次状态变化，而状态才代表当前事实。
+**当前可用：**新图写入 `0.1.0` 和已注册的 `@v0.1` 类型。已知安全的 `1.0.0` 图仍可读取；应用后编辑须显式迁移。设置选择器、统一事件字段和 EGIA 集成属于[后续里程碑](../maintenance/roadmap_cn.md)。操作时先看状态，再查同一阶段的日志；启动事件记录状态变化，状态才代表当前事实。
 
 1. 安装 IsOS 后运行 `isos`。它会创建缺失的开发配置和图，在 16000 启动 API、16001 启动 IsosUI，并打开浏览器；EOS、EGIA 与 MuJoCo 仍停止。再次运行会复用工作台。`isos init` 只初始化文件并退出。
 
@@ -13,6 +13,8 @@ isos
 ```
 
 2. 在 EOS、EGIA 与 IsosUI 各自的仓库构建，在 IsOS 仓库的 `config/isos.toml` 中设置 `paths.aether_bin_dir`、`paths.egia_bin_dir` 与 `paths.ui_dist`。执行 `isos version check`（脚本可加 `--json`）。先修复报告的程序缺失或 setup 不匹配，再启动硬件。Rust EOS gateway 完成前，EGIA 可能仍显示阻塞。`isos serve` 不打开浏览器；`isos open` 会按需启动。`isos serve --ui-live` 仅用于前端开发。
+
+新的 `0.1.0` 草稿在 Graph 中显示保存修订号。先 Validate，再用该修订号 Apply。目标图文件不存在时，首次 API PUT 须显式携带空修订号（`"revision":""`）；`isos init` 已保存起始图后则须使用其实际 SHA-256。CLI Apply 对已保存起始图或后续修改使用 `--revision <saved-sha256>`；只有目标文件不存在时才使用 `--revision ""`。归属方 reader 不可用会阻止 Apply，草稿字节保持不变。
 
 3. 构建 MuJoCo 仿真器，用其仓库的 `tools/build-backend-bundle.py` 制作 `0.1.1` 包，并将 `MUJOCO_ROOT` 指向匹配环境。链接后在 Graph 预览 `sim-hardware`。起始图只有 EOS 进程和调度器，没有硬件包；预览加入 MuJoCo 进程、相机、底盘、机械臂、闸门与 Vision 节点。选可用场景，检查草稿，在 Graph 中 Validate 后 Apply。仅安装或链接不会修改图。以下 CLI 只用于链接及列出包；CLI 预览见[软件包操作](packages_cn.md)：
 
@@ -27,8 +29,22 @@ isos pkg node-sets
 
 运行前会重新校验精确的图修订、已配置程序、软件包、场景和资源。EOS 启动并持有 MuJoCo 子进程。安装包、修改程序路径或编辑草稿都不会改变运行中的部署；需显式 Apply 和 Restart。参见[软件包命令](packages_cn.md)、[图字段](../interfaces/node-graph_cn.md)及[独立服务契约](../interfaces/services_cn.md)。
 
+对于已应用的 `0.1.0` 图，Run 会在启动前将按修订保存的生成文件与新的归属方 render 比较。如果配置的 EOS 或 EGIA 程序发生变化，`isos init` 会报告过期的启动输入并保留不可变快照。恢复固定的程序，或创建新的图修订并 Apply，然后再运行。
+
 若重启时新子进程启动失败，IsOS 会停止本次启动，并按先前的进程配置重新启动先前的运行中修订。若先前的子进程也无法恢复，状态会显示部署已降级及重启错误。
 
-### 计划中的旧图迁移
+### 迁移已保存的旧图
 
-编辑已应用的 `1.0.0` 图之前，先检查保存修订号。计划中的 `isos config migrate --preview --revision <saved-sha256>` 不改变文件或运行中子进程，只报告精确类型替换、完整的 `0.1.0` 建议图和阻塞原因。审查并解决归属方 reader／软件包问题后，`isos config migrate --revision <saved-sha256> --proposed-revision <preview-sha256>` 只提交该建议结果。修订过期时须重新预览。`isos status --json` 随后显示新的保存修订号；运行中修订号在显式 Restart 前保持不变。当前程序尚无这些命令，详见[迁移指南](../maintenance/migration_cn.md#计划中的已保存图-100--010-迁移)。
+编辑已应用的 `1.0.0` 图之前，先从 Graph 或 `GET /api/isos/v1/node-graph` 读取保存修订号。预览会报告精确类型替换、完整的 `0.1.0` 建议图及阻塞原因，且不改变保存字节或运行中的子进程：
+
+```sh
+isos config migrate --preview --revision <saved-sha256>
+```
+
+检查建议结果并解决归属方 reader 或软件包问题，再用**预览给出的摘要**和两个修订号提交：
+
+```sh
+isos config migrate --revision <saved-sha256> --proposed-revision <preview-sha256>
+```
+
+来源或建议摘要过期时须重新预览。`isos status --json` 随后显示新的保存修订号；运行中修订号在显式 Restart 前保持不变。未匹配的旧类型保持只读，须按[迁移指南](../maintenance/migration_cn.md#计划中的已保存图-100--010-迁移)显式修复。
