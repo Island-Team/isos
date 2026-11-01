@@ -213,6 +213,21 @@ class GeneratedConfigReplay(unittest.TestCase):
         )
         self.assertEqual(set(first), {"code", "path", "message", "stage"})
 
+    def assert_apply_failure(self, candidate, revision, expected_case):
+        expected = next(case for case in CASES["cases"] if case["id"] == expected_case)
+        graph_before = self.case.graph_path.read_bytes()
+        selection_before = (self.case.generated / "selection.json").read_bytes()
+        result = self.case.command("config", "apply", candidate,
+                                   "--revision", revision, success=False)
+        self.assertNotEqual(result.returncode, 0)
+        output = result.stdout + result.stderr
+        self.assertIn('"code":"' + expected["expected_code"] + '"', output)
+        self.assertIn('"path":"' + expected["expected_path"] + '"', output)
+        self.assertIn('"stage":"' + expected["expected_stage"] + '"', output)
+        self.assertEqual(self.case.graph_path.read_bytes(), graph_before)
+        self.assertEqual((self.case.generated / "selection.json").read_bytes(),
+                         selection_before)
+
     def test_immutable_selection_and_repeat_apply(self):
         graph_before = self.case.graph_path.read_bytes()
         self.case.apply()
@@ -330,17 +345,44 @@ class GeneratedConfigReplay(unittest.TestCase):
         self.assertTrue((leaf / "egia/extra/nested.toml").is_file())
         self.assertIn(b"mode = 'isos'", (leaf / "egia/egia.toml").read_bytes())
         graph_before = self.case.graph_path.read_bytes()
-        selection_before = (self.case.generated / "selection.json").read_bytes()
-        (component / "prompts.toml").unlink()
         candidate = self.case.root / "candidate.nodes.json"
-        result = self.case.command("config", "apply", candidate,
-                                   "--revision", revision, success=False)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("generated_missing_input", result.stdout + result.stderr)
+        for relative, fixture in (("prompts.toml", "missing_prompts"),
+                                  ("missions.toml", "missing_missions"),
+                                  ("safety/gate.toml", "missing_safety_gate")):
+            path = component / relative
+            original = path.read_bytes()
+            path.unlink()
+            self.assert_apply_failure(candidate, revision, fixture)
+            path.write_bytes(original)
+
+        models = component / "models.toml"
+        original_models = models.read_bytes()
+        models.unlink()
+        models.symlink_to(self.case.root / "outside-models.toml")
+        self.assert_apply_failure(candidate, revision, "default_symlink")
+        models.unlink()
+        models.write_bytes(original_models)
+
+        adapter = self.case.root / "egia-install/bin/egia-config"
+        original_adapter = adapter.read_text()
+        adapter.write_text(original_adapter.replace(
+            'print(json.dumps(reply))',
+            'if request["op"] == "render":\n    reply["ok"] = False\n'
+            '    reply["diagnostics"] = [{"path": "/cores/egia", '
+            '"code": "stub_rejected", "message": "rejected"}]\n'
+            'print(json.dumps(reply))'))
+        self.assert_apply_failure(candidate, revision, "owner_rejection")
+        adapter.write_text(original_adapter.replace(
+            'print(json.dumps(reply))',
+            'if request["op"] == "render":\n'
+            '    reply["files"] = [{"path": "egia/../escape.toml", '
+            '"content": "bad = true\\n"}]\n'
+            'print(json.dumps(reply))'))
+        self.assert_apply_failure(candidate, revision, "overlay_escape")
+        adapter.write_text(original_adapter)
+
         self.assertEqual(self.case.graph_path.read_bytes(), graph_before)
-        self.assertEqual((self.case.generated / "selection.json").read_bytes(), selection_before)
         self.assertEqual(self.case.selected()[:2], (revision, generation))
-        (component / "prompts.toml").write_text("enabled = true\n")
         (factory / "models.toml").write_text("enabled = false\n")
         self.case.start_server()
         status, reply = self.case.control("run")
