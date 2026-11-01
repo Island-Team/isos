@@ -2,7 +2,7 @@
 
 [中文](../../../docs_cn/isos/interfaces/configuration_cn.md)
 
-**Status:** The XDG/`ISOS_HOME` roots, `config/isos.toml`, schema-1 local API, rotating source logs, and `isos version check` exist today. The P04 generated configuration contract below, cross-core event fields, and supported-version arrays are the **0.x target**. See [current API fields](local-api.md#local-runtime-configuration) and [first-use workflow](../usage/get-started.md).
+**Status:** The XDG/`ISOS_HOME` roots, `config/isos.toml`, schema-1 local API, rotating source logs, and `isos version check` exist. The P04 generated configuration and launch preflight below are implemented in IsOS. Cross-core event fields and supported-version arrays remain **0.x targets**. See [current API fields](local-api.md#local-runtime-configuration) and [first-use workflow](../usage/get-started.md).
 
 ## Paths and precedence
 

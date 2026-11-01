@@ -77,6 +77,10 @@ Validate 只在内存构造候选字节。Apply 在最终锁下复查精确修�
 
 P04 契约冻结了[29 个机器可检查用例](../../../tests/fixtures/generated_config_preflight/README_cn.md)。仅设计阶段的基线通过 `python3 -m json.tool tests/fixtures/generated_config_preflight/cases.json`、`cargo fmt --check`、`cargo clippy --all-targets --no-default-features -- -D warnings` 和 `cargo test --no-default-features`（102 个单元、5 个 CLI、1 个已移除命令、9 个连线测试）。完整本机输出与命令位于忽略的 `logs/test/20261101-p04-contract-design/`。这些夹具不宣称 P04 已实现或 EGIA 运行时已就绪。
 
+P04 实现证据（2026-11-01）：在 P04 分支上运行 `cargo fmt --all -- --check`、`cargo clippy --all-targets --no-default-features -- -D warnings`、`cargo test --no-default-features` 和 `cargo build --no-default-features` 均通过（112 个 Rust 单元、5 个软件包 CLI、1 个已移除命令和 9 个连线测试）。用重建的程序完成五项干净主目录 HTTP 重放：同修订幂等 Apply 与私有 schema-2 生成目录、选择记录缺失、生成文件篡改、精确的缺失密钥指针，以及活动 EOS 子进程 PID 不变的 Restart 拒绝。完整输出与命令位于忽略的 `logs/test/20261101-p04-generated-config/` 和 `logs/test/20261101-p04-cli/`。
+
+冻结用例按边界归组。P04 直接重放覆盖 `clean_home_stub`、`same_inputs_idempotent`、`manifest_file_tamper`、`deleted_selection_after_v2_apply` 和 `missing_child_secret`；活动 Restart 用例检查子进程 PID 不变。Rust 测试覆盖 `paired_manifest_tamper`、`stale_selection`、未来修订条目、标记恢复、后续子进程缺失密钥及默认目录拒绝。既有 G03／P01 测试覆盖旧版读取和精确软件包收据校验。剩余冻结故障点仍需在集成阶段注入或使用 EGIA 发行版重放：程序／默认值变化引起的新生成版本、各必需 EGIA 文件与工厂回退、归属方拒绝及覆盖路径、变更图后选择记录丢失，以及选择记录／标记／图重命名后的 fsync 故障。契约保持冻结；本地证据不宣称 29 项全部通过。
+
 G03 实现证据（2026-11-01）：使用 `/home/ashex/projects/Island-eos/target/debug` 中的 EOS `fb57a0c5` 调试程序，以及 `logs/test/2026-11-01-g03/` 下的新 `ISOS_HOME` 目录，`cargo fmt --all -- --check`、`cargo clippy --all-targets --no-default-features -- -D warnings` 和 `cargo test --all-targets` 均通过（87 个单元测试及 5 个 CLI 测试）。CLI 重放执行 `isos config init`，预览已保存的 1.0 图（`can_apply:true`），用两个摘要提交，随后 `isos run` 在迁移后的活动修订号下启动 EOS、bridge 和 config；`isos version check --json` 显示 EOS 就绪。重复提交过期来源失败，保存字节不变。HTTP 重放依次调用 `GET /api/isos/v1/node-graph`、POST `/node-graph/migration/preview`、POST `/node-graph/migration/apply` 及重复的过期 POST：首次提交返回 0.1，重复请求返回 409，前后 SHA-256 相同。回归测试覆盖同时篡改投影和清单、跨 core 输入的精确路径、未知 core／旧 UI／类型位置拒绝、PUT 缺失修订号、精确软件包及适配器 pin 保留、Init 不可变行为及已保存 0.1 图的可编辑性。完整命令与输出位于 `logs/test/2026-11-01-g03/`。
 
 ### G06 整图连线准入——已实现

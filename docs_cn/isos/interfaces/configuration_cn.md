@@ -2,7 +2,7 @@
 
 [English](../../../docs/isos/interfaces/configuration.md)
 
-**状态：** XDG／`ISOS_HOME` 目录、`config/isos.toml`、schema-1 本地 API、按来源轮转的日志和 `isos version check` 已实现。下文 P04 生成配置契约、跨核心事件字段及受支持版本数组是 **0.x 目标**。当前字段见[本地 API](local-api_cn.md#本地运行配置)，操作顺序见[首次使用](../usage/get-started_cn.md)。
+**状态：** XDG／`ISOS_HOME` 目录、`config/isos.toml`、schema-1 本地 API、按来源轮转的日志和 `isos version check` 已实现。下文 P04 生成配置与启动预检已在 IsOS 实现。跨核心事件字段及受支持版本数组仍是 **0.x 目标**。当前字段见[本地 API](local-api_cn.md#本地运行配置)，操作顺序见[首次使用](../usage/get-started_cn.md)。
 
 ## 目录与优先级
 
