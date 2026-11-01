@@ -58,3 +58,5 @@ IsOS 选择所有者版本 `df481774d80e8988cb8e17170fa071dfbf267672` 已通过�
 ## 精确诊断路径
 
 Validate、Apply、Run 和 Restart 必须在通用 `ProcessSettings` 反序列化之前对原始图运行 R04 预验证器；现有通用解析器会把嵌套错误收缩为节点路径，丢失字段或数组索引。只有位于 `isos/process/component/eos`、解析到 `aether-runtime` 的 `@v0.1` 节点可以选择库；`bridge`、`config` 和其他 EOS-role 节点即使 `role` 同为 `eos` 仍须在各自 `/settings/skill_libraries` 指针失败。
+
+前置合并版本更新（2026-11-02）：候选预检已变基到 IsOS `master` `c716b20942f294a6f59e58a19af596cd1c8b1e4b`，包含通过审查的选择与受控子进程事件。组合版本通过 `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test --no-fail-fast`（220 个单元、七个 CLI、一个移除命令和九个边检查测试）、`cargo build --all-targets`、20 个选择、18 个预检、31 个子进程事件、37 个 JSONL、22 个 wire／12 个状态游标用例，以及 `git diff --check`。完整输出和命令位于忽略的 `logs/test/20261102-r04-candidate-merge-refresh/`。关闭 R04 前仍需独立复核本分支并在最终合并版本上进行跨所有者重放。

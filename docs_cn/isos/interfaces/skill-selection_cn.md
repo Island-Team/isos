@@ -17,7 +17,7 @@
 
 P01 图 pin 收集器把每个选中 `package` 计入，并使用精确 `/cores/isos/layers/process/groups/component/nodes/<id>/settings/skill_libraries/<index>/package` 指针。IsOS 对每项重新取得 P01 `VerifiedPackage`，要求发布 `kind:"skill"`，检查 payload 根、文件身份与 SHA-256；变更的链接 payload 失败。只有明列的库被选中。EOS 随后检查所有库中重复的技能身份。旧 `1.0.0` 图和 `eos.control.skill@v1.0` 不因此获得执行行为。
 
-**剩余候选预检门禁：**当前实现候选尚未执行上述所选技能专属的 96／64 字节与版本语法限制。Validate／Apply 必须在发布前于数组索引下的 `package/id` 或 `package/version` 指针拒绝；Run／Restart 必须在停止活动部署前重新检查。这样可防止包已通过 IsOS 却在启动后使 EOS 事件发射器拒绝。此门禁关联[R04 事件设计](../design/events_cn.md#r04-所选技能事件准入设计)与[夹具](../../../tests/fixtures/r04_skill_events/README_cn.md)；通用 P01 包语法不变。
+所选技能门禁在 Validate／Apply 和 Run／Restart 停止活动部署前，均于数组索引下的 `package` 指针执行上述 96／64 字节与版本语法限制。P01 已验证但版本超过 64 字节的链接发布以 `skill_selection_invalid` 拒绝，且不分配候选授权或探测进程。[R04 事件设计](../design/events_cn.md#r04-所选技能事件准入设计)与[夹具](../../../tests/fixtures/r04_skill_events/README_cn.md)覆盖这一边界；通用 P01 包语法不变。
 
 对于选中的技能发布，IsOS 还检查打开的库文件、P01 `receipt.json` 与 `release.json`，以及已验证 payload 树中的每个普通文件。每个文件都必须由 IsOS 的有效 UID 拥有，且 group/other 均不可写（`mode & 0o022 == 0`）。选中库另需满足 1–64 MiB 限制；元数据与 payload 文件沿用 P01/EOS 大小限制。不安全文件在 Apply 发布或 Run/Restart 停止旧进程前失败；EOS 暂存前重复相同的所有者与权限检查。即使未选中的 payload 文件可被其他用户写入，整个技能包也会被拒绝。
 
