@@ -47,4 +47,4 @@ isos config migrate --preview --revision <saved-sha256>
 isos config migrate --revision <saved-sha256> --proposed-revision <preview-sha256>
 ```
 
-来源或建议摘要过期时须重新预览。`isos status --json` 随后显示新的保存修订号；运行中修订号在显式 Restart 前保持不变。未匹配的旧类型保持只读，须按[迁移指南](../maintenance/migration_cn.md#计划中的已保存图-100--010-迁移)显式修复。
+来源或建议摘要过期时须重新预览。`isos status --json` 随后显示新的保存修订号；运行中修订号在显式 Restart 前保持不变。未匹配的旧类型保持只读，须按[迁移指南](../maintenance/migration_cn.md#已保存图-100--010-迁移)显式修复。
