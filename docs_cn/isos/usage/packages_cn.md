@@ -26,7 +26,7 @@ isos run
 
 预览仅改变草稿。Validate 和 Apply 在发布新保存修订前复查精确收据、场景 profile／XML 摘要及引用资源、设备类别与场景适用性和主机库。Run 和 Restart 在替换子进程前重复检查。修改场景须按修订 Apply 后 Restart。场景／设备／库缺失或已链接资源变化，均不得修改保存字节或活动子进程。[P03 节点选项](../interfaces/node-options_cn.md)通过通用 API 展示这些已验证 ID；P02 检查不依赖该 UI。
 
-### P03 选择流程（目标）
+### P03 选择流程
 
 预览 `sim-hardware` 后，把该**草稿**以 `{"schema_version":1,"graph":<草稿>}` 发送到 `POST /api/isos/v1/node-options`。从 `data.setting_options` 读取 `eos/process/mujoco/simulator` 的 `scene` 设置，以及每个通用相机／底盘／机械臂节点的 `adapter.settings.device_id`、`adapter.settings.simulator_node`。值为稳定 ID；名称与说明只供展示。选择一个可用场景和各类别对该场景适用的设备，同时写入每个适配器的两个设备字段。修改场景、软件包固定版本、backend 引用或节点类型后重新获取选项。使用 GET 时，将 `data.graph_revision` 与 `GET /node-graph` 的修订号比较，不同则重新读取；使用 POST 时只接受当前草稿最后一次请求的响应。不可用的已保存 ID 仍显示 `reason_code` 和修复提示；应选择已验证选项或重新链接精确发行版本。随后对最新保存图修订执行 Validate 和 Apply。修订过期返回 409；已链接字节变化、错误固定版本、运行库缺失或所选 ID 不再适用时返回精确 422 诊断，不改变保存字节和活动子进程。精确路径见[响应与负例夹具](../../../tests/fixtures/node_options/README.md)。
 

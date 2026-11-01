@@ -2,7 +2,7 @@
 
 [中文](../../../docs_cn/isos/interfaces/local-api_cn.md)
 
-**Implementation status:** The route table and first compatibility-reader slice describe implemented behavior. The [P03 setting-options contract](node-options.md) and supported-version identity remain target contracts. The `/api/isos/v1` path and schema-1 envelope are compatibility identities, not a product `1.0.0` declaration.
+**Implementation status:** The route table, compatibility reader, and [P03 setting-options contract](node-options.md) describe implemented behavior. Later `0.x` extensions remain targets until their owner gates pass. The `/api/isos/v1` path and schema-1 envelope are compatibility identities, not a product `1.0.0` declaration.
 
 `isos init --mode dev|product` creates configuration and a starter graph when absent. If the graph was previously applied, it validates the saved v1 graph and refreshes generated core configuration and executable digests from the configured binary directories; it never edits the graph or starts processes. An incompatible saved graph or core stops the refresh with guidance, leaving the graph untouched. `isos serve` starts the IsOS API on `127.0.0.1:16000` by default (`ISOS_HTTP_PORT` selects another loopback port), serves the configured prebuilt IsosUI bundle on `127.0.0.1:16001` (`ISOSUI_PORT` selects another port), and opens an owner-only Unix manager socket below `$XDG_RUNTIME_DIR/isos/` (or `ISOS_HOME/run/`). `isos serve --ui-live` supervises Webpack only in dev mode. The runtime directory is mode `0700`, and the manager socket is mode `0600`. The HTTP response envelope is `{schema_version:1,ok,data,error}`. The manager's one-line Unix envelope remains schema 1 internally.
 
@@ -19,8 +19,8 @@ The API binds only to `127.0.0.1` and serves no frontend files. IsosUI calls it 
 | `GET /api/isos/v1/core-setup/{role}/catalog` | Setup reply with `catalog` | Query the configured `eos` or `egia` adapter without starting its runtime. |
 | `POST /api/isos/v1/core-setup/{role}/validate` | `{schema_version:1,graph,revision?}` → setup reply | Validate an editor draft with a core's own rules, without saving it. |
 | `POST /api/isos/v1/core-setup/{role}/render` | `{schema_version:1,graph,revision?}` → setup reply | Preview generated core configuration; the API does not write the preview. |
-| `GET /api/isos/v1/node-options` | `{adapter_families,primitive_bindings,targets,setting_options}` | Options for the saved graph; P03 adds setting groups. |
-| `POST /api/isos/v1/node-options` | `{schema_version:1,graph}` → `{adapter_families,primitive_bindings,targets,setting_options}` | Options for an unapplied draft; no write. |
+| `GET /api/isos/v1/node-options` | `{adapter_families,primitive_bindings,targets,setting_options,graph_revision,read_only}` | Options and exact saved-byte revision; missing graph returns the editable draft. |
+| `POST /api/isos/v1/node-options` | `{schema_version:1,graph}` → `{adapter_families,primitive_bindings,targets,setting_options,graph_revision:null,read_only:false}` | Options for an unapplied draft; no write. |
 | `GET /api/isos/v1/core-readiness` | `{cores,graph,isos,isosui}` | Inspect configured core paths, compatibility, whether each core is enabled in the saved graph, graph configuration, configured endpoint, and running state. The endpoint describes configuration, not an active listener. |
 | `GET /api/isos/v1/node-sets` | `{sets:[{package,id,parameters,nodes}]}` | Installed package node sets. |
 | `POST /api/isos/v1/node-sets/preview` | `{package:{id,version},set_id,graph,values:{name:string}}` → `{graph,added_paths}` | Compose a set into a draft without saving it; invalid composition returns 422. |

@@ -2,7 +2,7 @@
 
 [English](../../../docs/isos/interfaces/local-api.md)
 
-**实现状态：**路由表与当前选择器说明对应已实现行为；末尾 `0.x` 扩展是目标，使用前须实现。`/api/isos/v1` 路径与 schema-1 封装是兼容身份，并非产品 `1.0.0` 声明。
+**实现状态：**路由表、兼容读取器与 [P03 节点选项契约](node-options_cn.md)对应已实现行为；后续 `0.x` 扩展仍须通过各归属方里程碑。`/api/isos/v1` 路径与 schema-1 封装是兼容身份，并非产品 `1.0.0` 声明。
 
 `isos init --mode dev|product` 在缺少配置或初始图时创建它们。若图曾应用，则校验已保存的 v1 图，并根据已配置的程序目录刷新生成的核心配置和程序摘要；不会修改图或启动进程。旧版图或不兼容核心会中止刷新并给出指引，图文件保持原样。`isos serve` 默认在 `127.0.0.1:16000` 启动 IsOS API（`ISOS_HTTP_PORT` 可调整端口），在 `127.0.0.1:16001` 提供已配置的预构建 IsosUI 文件（`ISOSUI_PORT` 可调整端口），并在 `$XDG_RUNTIME_DIR/isos/`（或 `ISOS_HOME/run/`）下创建仅所有者可访问的 Unix 管理套接字。`isos serve --ui-live` 才会管理 Webpack。运行目录权限为 `0700`，管理套接字为 `0600`。HTTP 响应封装为 `{schema_version:1,ok,data,error}`；内部单行 Unix 封装仍为 schema 1。
 
@@ -19,8 +19,8 @@ API 只绑定 `127.0.0.1`，不提供前端文件。IsosUI 通过地址和端口
 | `GET /api/isos/v1/core-setup/{role}/catalog` | 含 `catalog` 的配置响应 | 查询已配置的 `eos` 或 `egia` 适配器，不启动核心运行时。 |
 | `POST /api/isos/v1/core-setup/{role}/validate` | `{schema_version:1,graph,revision?}` → 配置响应 | 按核心规则校验编辑草稿，不保存。 |
 | `POST /api/isos/v1/core-setup/{role}/render` | `{schema_version:1,graph,revision?}` → 配置响应 | 预览生成的核心配置；API 不写入预览。 |
-| `GET /api/isos/v1/node-options` | `{adapter_families,primitive_bindings,targets,setting_options}` | 已保存图的适配器、原语绑定与目标选项。 |
-| `POST /api/isos/v1/node-options` | `{schema_version:1,graph}` → `{adapter_families,primitive_bindings,targets,setting_options}` | 未应用草稿的选择器选项。 |
+| `GET /api/isos/v1/node-options` | `{adapter_families,primitive_bindings,targets,setting_options,graph_revision,read_only}` | 选项及保存图的精确字节修订；无图时返回可编辑草稿。 |
+| `POST /api/isos/v1/node-options` | `{schema_version:1,graph}` → `{adapter_families,primitive_bindings,targets,setting_options,graph_revision:null,read_only:false}` | 未应用草稿的选项；不写入。 |
 | `GET /api/isos/v1/core-readiness` | `{cores,graph,isos,isosui}` | 检查已配置核心路径、兼容性、核心是否在已保存节点图中启用、图配置、已配置端点与运行状态。端点表示配置，不代表正在监听。 |
 | `GET /api/isos/v1/node-sets` | `{sets:[{package,id,parameters,nodes}]}` | 已安装软件包提供的节点集合。 |
 | `POST /api/isos/v1/node-sets/preview` | `{package:{id,version},set_id,graph,values:{name:string}}` → `{graph,added_paths}` | 将集合合成到草稿，不保存；无效合成返回 422。 |
