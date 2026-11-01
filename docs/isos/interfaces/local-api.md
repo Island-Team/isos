@@ -130,7 +130,7 @@ Build EOS, EGIA, and IsosUI in their owning repositories and configure their pat
 
 `adapter_families` entries contain `id` (stable adapter ID), `device_kinds` (device classes), `package` (optional exact `{id,version}`), `compiled` and `available` (booleans), `transport` and `description` (strings), optional `supported_primitives`, and `reason` when unavailable. `primitive_bindings` entries contain `node_type`, `device_kind`, `movement_types`, `available`, `reason`, and `primitives` with exact name, version, movement type, and description. `targets` entries contain the four-segment `path`, `node_type`, `device_kind`, `adapter_type`, `movement_types`, `available`, and `reason`. `GET /node-types` also forwards EOS `primitive_specs` and typed `data_types`.
 
-## Release target: setting options — not implemented
+## Setting options
 
 The [P03 owner contract](node-options.md) defines the additive `setting_options` groups, saved-byte `graph_revision` correlation, nested EOS adapter selectors, stable ID syntax, exact-pin resolution, availability reasons, and Apply-time recheck. Its [frozen fixtures](../../../tests/fixtures/node_options/README.md) replace the earlier illustrative `warehouse` response; that ID is not in the verified MuJoCo `0.1.1` catalog. The existing three response collections remain. A selector response never authorizes Apply.
 

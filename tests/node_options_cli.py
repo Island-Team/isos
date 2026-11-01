@@ -4,6 +4,7 @@
 import copy
 import json
 from pathlib import Path
+import shutil
 import tempfile
 import unittest
 
@@ -13,6 +14,7 @@ Home = p02.Home
 digest = p02.digest
 SIMULATOR = p02.SIMULATOR
 DEVICE = p02.DEVICE
+EOS_BIN = p02.EOS_BIN
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,6 +57,7 @@ class NodeOptionsReplay(unittest.TestCase):
         status, body = self.case.api("node-graph", "PUT", {
             "schema_version": 1, "revision": digest(original), "graph": graph})
         self.assertEqual(status, 422, body)
+        self.assertIn("stage", body["data"]["diagnostics"][0], body)
         self.assertEqual({key: body["data"]["diagnostics"][0][key]
                           for key in ("code", "path", "stage")},
                          {"code": code, "path": path, "stage": stage})
@@ -62,6 +65,15 @@ class NodeOptionsReplay(unittest.TestCase):
         new_status = self.case.status()
         for key in ("saved_revision", "active_revision", "state", "processes"):
             self.assertEqual(new_status[key], old_status[key])
+
+    def assert_invalid(self, graph, code, path, stage):
+        status, body = self.case.api("node-graph/validate", "POST", {
+            "schema_version": 1, "graph": graph})
+        self.assertEqual(status, 200, body)
+        self.assertFalse(body["data"]["valid"], body)
+        self.assertEqual({key: body["data"]["diagnostics"][0][key]
+                          for key in ("code", "path", "stage")},
+                         {"code": code, "path": path, "stage": stage})
 
     def test_real_catalog_rows_get_revision_and_no_write(self):
         initial, graph = self.preview()
@@ -156,6 +168,79 @@ class NodeOptionsReplay(unittest.TestCase):
         self.assertEqual(self.case.graph_path.read_bytes(), saved)
         self.assertEqual(after["active_revision"], before["active_revision"])
         self.assertEqual({process["id"]: process["pid"] for process in after["processes"]}, pids)
+
+    def test_second_verified_release_cannot_change_exact_process_options(self):
+        initial, graph = self.case.init_link_preview()
+        second = self.case.root / "bundle-second"
+        shutil.copytree(self.case.bundle, second)
+        descriptor = json.loads((second / "backend-v2.json").read_text())
+        descriptor["package"]["version"] = "0.1.2"
+        (second / "backend-v2.json").write_text(json.dumps(descriptor))
+        release = json.loads((second / "release.json").read_text())
+        release["version"] = "0.1.2"
+        release["release_url"] = release["release_url"].replace("v0.1.1", "v0.1.2")
+        for asset in release["assets"]:
+            asset["name"] = asset["name"].replace("v0.1.1", "v0.1.2")
+            asset["url"] = asset["url"].replace("v0.1.1", "v0.1.2")
+        for node in release["node_contributions"]["node_sets"][0]["nodes"]:
+            adapter = node["profile"].get("adapter")
+            if adapter and adapter.get("package", {}).get("id") == "island/mujoco-sim":
+                adapter["package"]["version"] = "0.1.2"
+        (second / "release.json").write_text(json.dumps(release))
+        self.case.command("pkg", "link", "island/mujoco-sim", "0.1.2", second,
+                          "--manifest", second / "release.json")
+        self.case.start_server()
+        baseline = self.options(graph)["setting_options"]
+        self.assertEqual(baseline, EXPECTED["expected"]["data"]["setting_options"])
+        self.assertEqual(self.case.graph_path.read_bytes(), initial)
+        status, accepted = self.case.api("node-graph", "PUT", {
+            "schema_version": 1, "revision": digest(initial), "graph": graph})
+        self.assertEqual(status, 200, accepted)
+        wrong_pin = copy.deepcopy(graph)
+        wrong_pin["cores"]["eos"]["layers"]["hardware"]["groups"]["manipulator"]["nodes"]["arm"]["adapter"]["package"]["version"] = "0.1.2"
+        data = self.options(wrong_pin)
+        row = next(row for row in data["setting_options"] if row["node_path"] == "eos/hardware/manipulator/arm" and row["setting"] == "adapter.settings.device_id")
+        self.assertEqual(row["options"][0]["reason_code"], "mujoco_device_unavailable")
+        self.assert_invalid(wrong_pin, "mujoco_device_unavailable", DEVICE, "admission")
+        self.assert_rejected(wrong_pin, "mujoco_device_unavailable", DEVICE, "admission")
+
+    def test_uncompiled_eos_catalog_marks_rows_and_blocks_apply(self):
+        _, graph = self.case.init_link_preview()
+        stub = self.case.root / "eos-uncompiled"
+        stub.mkdir()
+        for executable in ("aether-runtime", "aether-http-bridge", "aether-config-server"):
+            (stub / executable).symlink_to(EOS_BIN / executable)
+        wrapper = stub / "aether-profile"
+        wrapper.write_text("""#!/usr/bin/env python3
+import json
+import subprocess
+import sys
+result = subprocess.run([%s, *sys.argv[1:]], capture_output=True)
+if result.returncode == 0 and sys.argv[1:2] == ['catalog']:
+    value = json.loads(result.stdout)
+    for family in value.get('adapter_families', []):
+        if family.get('id') == 'mujoco-v2':
+            family['compiled'] = False
+            family['reason'] = 'no EOS adapter implementation'
+    sys.stdout.write(json.dumps(value))
+else:
+    sys.stdout.buffer.write(result.stdout)
+sys.stderr.buffer.write(result.stderr)
+sys.exit(result.returncode)
+""" % json.dumps(str(EOS_BIN / "aether-profile")))
+        wrapper.chmod(0o700)
+        self.case.env["ISOS_AETHER_BIN_DIR"] = str(stub)
+        self.case.start_server()
+        data = self.options(graph)
+        row = next(row for row in data["setting_options"] if row["node_path"] == "eos/hardware/base/drive" and row["setting"] == "adapter.settings.device_id")
+        self.assertEqual(row["options"][0]["reason_code"], "adapter_unavailable")
+        self.assertFalse(row["options"][0]["available"])
+        self.assert_invalid(graph, "adapter_unavailable",
+                            "/cores/eos/layers/hardware/groups/base/nodes/drive/adapter/type",
+                            "admission")
+        self.assert_rejected(graph, "adapter_unavailable",
+                             "/cores/eos/layers/hardware/groups/base/nodes/drive/adapter/type",
+                             "admission")
 
     def test_unknown_scene_device_and_malformed_id(self):
         _, graph = self.preview()

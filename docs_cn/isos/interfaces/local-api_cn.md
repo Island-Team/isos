@@ -130,7 +130,7 @@ IsOS 在 `aether-profile setup --json` 或 `egia-config setup --json` 上发送 
 
 `adapter_families` 包含 `id`（稳定适配器 ID）、`device_kinds`（设备类别）、可选精确版本 `package:{id,version}`、布尔值 `compiled`／`available`、字符串 `transport`／`description`、可选 `supported_primitives` 及不可用时的 `reason`。`primitive_bindings` 包含 `node_type`、`device_kind`、`movement_types`、`available`、`reason`、以及具有精确名称、版本、运动类型和描述的 `primitives`。`targets` 包含四段式 `path`、`node_type`、`device_kind`、`adapter_type`、`movement_types`、`available`、`reason`。`GET /node-types` 同时透传 EOS 的 `primitive_specs` 与有类型的 `data_types`。
 
-## 发行目标：设置选项——尚未实现
+## 设置选项
 
 [P03 归属方契约](node-options_cn.md)定义新增 `setting_options` 分组、保存字节 `graph_revision` 关联、EOS 适配器嵌套选择器、稳定 ID 语法、精确固定版本解析、不可用原因及 Apply 前复查。[冻结夹具](../../../tests/fixtures/node_options/README.md)取代先前仅作说明的 `warehouse` 响应；该 ID 不在已验证的 MuJoCo `0.1.1` 目录中。原有三个响应集合保留。选择器响应不能授权 Apply。
 
