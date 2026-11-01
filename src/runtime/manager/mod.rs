@@ -60,11 +60,25 @@ pub(crate) fn next_run_id() -> String {
     )
 }
 
-static RUN_START_EPOCH: AtomicU64 = AtomicU64::new(0);
+std::thread_local! {
+    static RUN_STARTED_IN_REQUEST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn stop_log_gate() -> &'static (std::sync::Barrier, std::sync::Barrier) {
+    static GATE: OnceLock<(std::sync::Barrier, std::sync::Barrier)> = OnceLock::new();
+    GATE.get_or_init(|| (std::sync::Barrier::new(2), std::sync::Barrier::new(2)))
+}
 
 fn log_deployment(paths: &config::Paths, name: &str, run_id: &str, code: &str, level: &str) {
+    #[cfg(test)]
+    if name == "p06-stop-order" && code == "deployment_stopped" {
+        let gate = stop_log_gate();
+        gate.0.wait();
+        gate.1.wait();
+    }
     if code == "deployment_starting" {
-        RUN_START_EPOCH.fetch_add(1, Ordering::Relaxed);
+        RUN_STARTED_IN_REQUEST.with(|started| started.set(true));
     }
     if let Ok(logs) = log_store::LogStore::new(paths, name) {
         let correlation = next_correlation_id();
@@ -90,7 +104,12 @@ fn log_deployment(paths: &config::Paths, name: &str, run_id: &str, code: &str, l
     }
 }
 
-fn log_prelaunch_failure(paths: &config::Paths, name: &str, error: &anyhow::Error) {
+fn log_prelaunch_failure(
+    paths: &config::Paths,
+    name: &str,
+    error: &anyhow::Error,
+    correlation: &str,
+) {
     let Some(logs) = log_store::LogStore::new(paths, name).ok() else {
         return;
     };
@@ -112,11 +131,10 @@ fn log_prelaunch_failure(paths: &config::Paths, name: &str, error: &anyhow::Erro
     let mut fields = serde_json::Map::new();
     if let Some((code, path)) = diagnostic {
         fields.insert("diagnostic_code".into(), json!(code));
-        if path.len() <= 256 {
+        if path.len() <= 256 && !path.chars().any(char::is_control) {
             fields.insert("diagnostic_path".into(), json!(path));
         }
     }
-    let correlation = next_correlation_id();
     let _ = logs.append_event_context(
         "isos",
         "error",
@@ -124,31 +142,48 @@ fn log_prelaunch_failure(paths: &config::Paths, name: &str, error: &anyhow::Erro
         "Deployment preflight failed before launch",
         log_store::LogContext {
             run_id: Some(manager_session_id()),
-            correlation_id: Some(&correlation),
+            correlation_id: Some(correlation),
             node_path: None,
             fields: Value::Object(fields),
         },
     );
 }
 
-fn log_package_load_failure(paths: &config::Paths, name: &str, error: &anyhow::Error) {
-    let Some(failure) = error.downcast_ref::<process::PackageLoadFailure>() else {
+fn log_package_load_failure(
+    paths: &config::Paths,
+    name: &str,
+    error: &anyhow::Error,
+    correlation: &str,
+) {
+    let Some(failure) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<process::PackageLoadFailure>())
+    else {
         return;
     };
     if let Ok(logs) = log_store::LogStore::new(paths, name) {
-        let correlation = next_correlation_id();
         let _ = logs.append_event_context(
             "packages", "error", "package_load_failed",
             "Deployment package load failed before launch",
             log_store::LogContext {
                 run_id: Some(manager_session_id()),
-                correlation_id: Some(&correlation),
+                correlation_id: Some(correlation),
                 node_path: failure.node_path.as_deref(),
                 fields: json!({"package_id":failure.id,"package_version":failure.version,"stage":failure.stage,
                     "source_kind":null,"source_commit":null,"asset_sha256":null,"release_sha256":null,"payload_sha256":null}),
             },
         );
     }
+}
+
+fn log_request_preflight_failure(
+    paths: &config::Paths,
+    name: &str,
+    error: &anyhow::Error,
+    correlation: &str,
+) {
+    log_package_load_failure(paths, name, error, correlation);
+    log_prelaunch_failure(paths, name, error, correlation);
 }
 
 fn preflight_packages(
@@ -166,9 +201,7 @@ fn preflight_packages(
         None
     };
     reader_features::check_setup_basics(paths, &graph)?;
-    let mut specs = process::project_with_packages(paths, source).inspect_err(|error| {
-        log_package_load_failure(paths, name, error);
-    })?;
+    let mut specs = process::project_with_packages(paths, source)?;
     core_setup::verify_launch_inputs(paths, name)?;
     if let Some(selected) = selected {
         let generated = selected.join("eos/graph.json");
@@ -238,6 +271,8 @@ fn restart_processes_with_plan(
     let mut supervisor = process::Supervisor::new(paths, name)?;
     let candidate_run = supervisor.run_id().to_owned();
     let previous = managers.remove(name).map(|mut active| {
+        let old_specs = active.supervisor.specs();
+        active.supervisor.stop();
         if active.last_error.is_none() {
             log_deployment(
                 paths,
@@ -247,8 +282,6 @@ fn restart_processes_with_plan(
                 "info",
             );
         }
-        let old_specs = active.supervisor.specs();
-        active.supervisor.stop();
         (active, old_specs)
     });
     log_deployment(paths, name, &candidate_run, "deployment_starting", "info");
@@ -316,6 +349,81 @@ fn restart_processes_with_plan(
         },
     );
     Ok(started)
+}
+
+fn start_prepared_processes(
+    paths: &config::Paths,
+    managers: &mut Deployments,
+    name: &str,
+    revision: &str,
+    specs: &[process::ProcessSpec],
+    plan: &crate::generated_v2::SecretPlan,
+) -> Result<(Vec<String>, String)> {
+    if let Some(active) = managers.get_mut(name) {
+        ensure!(
+            active.active_revision == revision,
+            "saved graph changed while running; stop before restart"
+        );
+        active.supervisor.verify_specs(specs)?;
+    } else {
+        let supervisor = process::Supervisor::new(paths, name)?;
+        log_deployment(
+            paths,
+            name,
+            supervisor.run_id(),
+            "deployment_starting",
+            "info",
+        );
+        managers.insert(
+            name.to_owned(),
+            ActiveDeployment {
+                active_revision: revision.to_owned(),
+                supervisor,
+                last_error: None,
+                expected_processes: specs.len(),
+            },
+        );
+    }
+    let active = managers.get_mut(name).expect("start inserted active run");
+    let attempt = active
+        .supervisor
+        .start_with_secrets(specs, plan)
+        .and_then(|started| {
+            std::thread::sleep(Duration::from_millis(100));
+            let running = active.supervisor.status()?;
+            ensure!(
+                running.len() == specs.len(),
+                "a managed process exited during startup; inspect categorized child logs"
+            );
+            Ok(started)
+        });
+    let started = match attempt {
+        Ok(started) => started,
+        Err(error) => {
+            let mut failed = managers.remove(name).expect("failed run exists");
+            failed.supervisor.stop();
+            log_deployment(
+                paths,
+                name,
+                failed.supervisor.run_id(),
+                "deployment_failed",
+                "error",
+            );
+            return Err(error);
+        }
+    };
+    let active = managers.get_mut(name).expect("active run exists");
+    active.last_error = None;
+    if !started.is_empty() {
+        log_deployment(
+            paths,
+            name,
+            active.supervisor.run_id(),
+            "deployment_ready",
+            "info",
+        );
+    }
+    Ok((started, active.supervisor.run_id().to_owned()))
 }
 
 pub(crate) fn manager_identity(paths: &config::Paths) -> Result<Value> {
@@ -498,73 +606,8 @@ pub(crate) fn api_call(
                 starter::revision(&path)? == revision,
                 "saved graph revision changed during core setup; reload before run"
             );
-            let manager = if let Some(active) = managers.get_mut(&name) {
-                ensure!(
-                    active.active_revision == revision,
-                    "saved graph changed while running; stop before restart"
-                );
-                active.supervisor.verify_specs(&specs)?;
-                &mut active.supervisor
-            } else {
-                let supervisor = process::Supervisor::new(paths, &name)?;
-                log_deployment(
-                    paths,
-                    &name,
-                    supervisor.run_id(),
-                    "deployment_starting",
-                    "info",
-                );
-                managers.insert(
-                    name.clone(),
-                    ActiveDeployment {
-                        active_revision: revision.clone(),
-                        supervisor,
-                        last_error: None,
-                        expected_processes: specs.len(),
-                    },
-                );
-                &mut managers.get_mut(&name).unwrap().supervisor
-            };
-            let started = match manager
-                .start_with_secrets(&specs, &plan)
-                .and_then(|started| {
-                    std::thread::sleep(Duration::from_millis(100));
-                    let running = manager.status()?;
-                    ensure!(
-                        running.len() == specs.len(),
-                        "a managed process exited during startup; inspect categorized child logs"
-                    );
-                    Ok(started)
-                }) {
-                Ok(started) => started,
-                Err(error) => {
-                    if let Some(active) = managers.get_mut(&name) {
-                        active.supervisor.stop();
-                        log_deployment(
-                            paths,
-                            &name,
-                            active.supervisor.run_id(),
-                            "deployment_failed",
-                            "error",
-                        );
-                        active.last_error = Some(error.to_string());
-                    }
-                    return Err(error);
-                }
-            };
-            if let Some(active) = managers.get_mut(&name) {
-                active.last_error = None;
-                if !started.is_empty() {
-                    log_deployment(
-                        paths,
-                        &name,
-                        active.supervisor.run_id(),
-                        "deployment_ready",
-                        "info",
-                    );
-                }
-            }
-            let run_id = managers.get(&name).map(|active| active.supervisor.run_id());
+            let (started, run_id) =
+                start_prepared_processes(paths, managers, &name, &revision, &specs, &plan)?;
             Ok(json!({"started":started,"active_revision":revision,"run_id":run_id}))
         }
         "deployment_stop" => {
@@ -680,7 +723,8 @@ pub(crate) fn handle_client(
             "deployment_start" | "deployment_restart"
         )
     });
-    let start_epoch = RUN_START_EPOCH.load(Ordering::Relaxed);
+    RUN_STARTED_IN_REQUEST.with(|started| started.set(false));
+    let request_correlation = next_correlation_id();
     let outcome = request
         .map_err(anyhow::Error::from)
         .and_then(|request| api_call(paths, managers, service_manager, request));
@@ -688,9 +732,9 @@ pub(crate) fn handle_client(
         if let Some(name) = failed_deployment.as_deref().filter(|name| {
             clear_error
                 && process::validate_deployment_name(name).is_ok()
-                && RUN_START_EPOCH.load(Ordering::Relaxed) == start_epoch
+                && !RUN_STARTED_IN_REQUEST.with(std::cell::Cell::get)
         }) {
-            log_prelaunch_failure(paths, name, error);
+            log_request_preflight_failure(paths, name, error, &request_correlation);
         }
         tracing::warn!(
             event_code = "manager_request_failed",
@@ -990,6 +1034,36 @@ mod restart_tests {
     }
 
     #[test]
+    fn hostile_diagnostic_path_is_omitted_without_losing_preflight_event() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = config::Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        let error = anyhow::Error::new(graph_compat::Diagnostic {
+            path: "/cores/bad\nkey".into(),
+            code: "unsupported_core",
+            message: "unsupported core".into(),
+            context: BTreeMap::new(),
+        });
+        log_prelaunch_failure(&paths, "default", &error, "p-hostile");
+        let lines = log_store::LogStore::new(&paths, "default")
+            .unwrap()
+            .read("isos", None, 10)
+            .unwrap();
+        assert_eq!(
+            lines["lines"][0]["event_code"],
+            "deployment_preflight_failed"
+        );
+        assert_eq!(
+            lines["lines"][0]["fields"]["diagnostic_code"],
+            "unsupported_core"
+        );
+        assert!(lines["lines"][0]["fields"]["diagnostic_path"].is_null());
+    }
+
+    #[test]
     fn run_rejects_unowned_core_before_projecting_children() {
         let temp = tempfile::tempdir().unwrap();
         let paths = config::Paths {
@@ -1024,11 +1098,12 @@ mod restart_tests {
             node_path: Some("/cores/eos/layers/process/groups/mujoco/nodes/sim".into()),
             source: anyhow::anyhow!("private path /tmp/secret"),
         });
-        log_package_load_failure(&paths, "default", &failure);
+        log_request_preflight_failure(&paths, "default", &failure, "p-request");
         log_package_load_failure(
             &paths,
             "default",
             &anyhow::anyhow!("unrelated EOS binary missing"),
+            "p-other",
         );
         let lines = log_store::LogStore::new(&paths, "default")
             .unwrap()
@@ -1047,8 +1122,13 @@ mod restart_tests {
         assert!(line["fields"]["release_sha256"].is_null());
         assert!(line["fields"]["payload_sha256"].is_null());
         assert_eq!(line["run_id"], manager_session_id());
-        assert!(line["correlation_id"].as_str().is_some());
+        assert_eq!(line["correlation_id"], "p-request");
         assert!(!line.to_string().contains("/tmp/secret"));
+        let preflight = log_store::LogStore::new(&paths, "default")
+            .unwrap()
+            .read("isos", None, 10)
+            .unwrap();
+        assert_eq!(preflight["lines"][0]["correlation_id"], "p-request");
     }
 
     #[test]
@@ -1158,5 +1238,122 @@ mod restart_tests {
                     && line["run_id"] == recovery_run)
         );
         active.supervisor.stop();
+    }
+
+    #[test]
+    fn failed_initial_start_is_removed_and_retry_mints_new_run() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = config::Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        let spec = |program: &str| process::ProcessSpec {
+            id: "stub".into(),
+            path: "isos/process/component/stub".into(),
+            settings: serde_json::from_value(json!({
+                "command": [program, if program == "/bin/sleep" { "30" } else { "" }],
+                "start_timeout_ms": 200
+            }))
+            .unwrap(),
+            package: None,
+            fingerprint: None,
+        };
+        let plan = crate::generated_v2::SecretPlan::new();
+        let mut managers = Deployments::new();
+        assert!(
+            start_prepared_processes(
+                &paths,
+                &mut managers,
+                "test",
+                "revision",
+                &[spec("/bin/false")],
+                &plan
+            )
+            .is_err()
+        );
+        assert!(managers.is_empty());
+        let (_, successful_run) = start_prepared_processes(
+            &paths,
+            &mut managers,
+            "test",
+            "revision",
+            &[spec("/bin/sleep")],
+            &plan,
+        )
+        .unwrap();
+        let events = log_store::LogStore::new(&paths, "test")
+            .unwrap()
+            .read("all", None, 20)
+            .unwrap();
+        let events = events["lines"].as_array().unwrap();
+        let failed_run = events
+            .iter()
+            .find(|line| line["event_code"] == "deployment_failed")
+            .unwrap()["run_id"]
+            .as_str()
+            .unwrap();
+        assert_ne!(failed_run, successful_run);
+        assert!(events.iter().any(|line| {
+            line["event_code"] == "deployment_ready" && line["run_id"] == successful_run
+        }));
+        assert!(!events.iter().any(|line| {
+            line["event_code"] == "deployment_ready" && line["run_id"] == failed_run
+        }));
+        managers.get_mut("test").unwrap().supervisor.stop();
+    }
+
+    #[test]
+    fn restart_reaps_old_child_before_stalled_stop_event() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = config::Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        let spec = |program: &str| process::ProcessSpec {
+            id: "stub".into(),
+            path: "isos/process/component/stub".into(),
+            settings: serde_json::from_value(json!({
+                "command": [program, if program == "/bin/sleep" { "30" } else { "" }],
+                "start_timeout_ms": 200
+            }))
+            .unwrap(),
+            package: None,
+            fingerprint: None,
+        };
+        let mut managers = Deployments::new();
+        restart_processes(
+            &paths,
+            &mut managers,
+            "p06-stop-order",
+            "old",
+            &[spec("/bin/sleep")],
+        )
+        .unwrap();
+        let old_pid = managers["p06-stop-order"].supervisor.status_snapshot()[0].pid;
+        let thread = std::thread::spawn(move || {
+            let result = restart_processes(
+                &paths,
+                &mut managers,
+                "p06-stop-order",
+                "new",
+                &[spec("/bin/false")],
+            );
+            if let Some(active) = managers.get_mut("p06-stop-order") {
+                active.supervisor.stop();
+            }
+            result.is_err()
+        });
+        let gate = stop_log_gate();
+        gate.0.wait();
+        let reaped = unsafe { libc::kill(old_pid as i32, 0) } == -1
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+        gate.1.wait();
+        assert!(thread.join().unwrap());
+        assert!(
+            reaped,
+            "old child remained live while stop event was stalled"
+        );
     }
 }

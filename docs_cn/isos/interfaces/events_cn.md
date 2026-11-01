@@ -28,7 +28,7 @@ IsOS 发行版在目标 `src/runtime/event_policy.rs` 中携带经过审核的�
 
 schema-1 管理套接字 `log_append` 只认证同 UID 本地 peer，无法证明其是所选 EOS、EGIA、bridge 或 config 进程。调用方传入的 `role`、`source`、`event_code`、`message` 不能建立归属或就绪。P06 保留历史请求形状，对语法有效且非保留来源的请求继续返回 `{"accepted":true}`，包括历史 `source:"eos"` 请求；但所有此类追加都规范化为 `source:legacy_external`、`core:isos`、固定 `event_code:legacy_external_event`、固定安全 `message:"Legacy external event received"`、调用方级别、管理器会话 `run_id`、新生成的请求关联和管理器 PID。不可信的请求来源、事件码与消息不会写入共享流。已有保留来源拒绝规则仍有效。`legacy_external_event` 不影响所选子进程就绪或部署健康。经过验证的所选子进程 stderr 管道是 P06 向权威 `eos`、`bridge`、`config` 或 `egia` 来源写记录的唯一途径。
 
-启动前的 IsOS 包失败使用管理器会话和请求关联。`null` 表示收据值不可用，不得猜测：
+启动前的 IsOS 包失败使用管理器会话和同一个请求关联；`package_load_failed` 详情与 `deployment_preflight_failed` 摘要共享该关联。`null` 表示收据值不可用，不得猜测：
 
 ```json
 {"timestamp":"2026-11-01T10:00:00.000Z","level":"error","source":"packages","core":"isos","node_path":"/cores/eos/layers/process/groups/mujoco/nodes/sim","event_code":"package_load_failed","run_id":"m42-abc","correlation_id":"p3","message":"Deployment package load failed before launch","fields":{"package_id":"island/mujoco-sim","package_version":"0.1.1","source_kind":null,"release_sha256":null,"payload_sha256":null,"stage":"payload"},"pid":42}
@@ -46,7 +46,7 @@ schema-1 管理套接字 `log_append` 只认证同 UID 本地 peer，无法证�
 
 自动重启子进程时，IsOS 发出 `child_restart_attempt`（`warn`），在归属方就绪后发出 `child_restart_ready`（`info`）；两者使用相同的新 `correlation_id`，部署 `run_id` 不变。唯一字段 `process_id` 是经过验证的 1–48 字节 ASCII 子进程 ID，用于标识重启的所选进程。这些管理器事件不包含原始命令或环境值。
 
-部署 API 操作返回启动前失败之前，IsOS 以管理器会话 ID 和新关联 ID 发出 `source:isos`、`error` 级别的 `deployment_preflight_failed`。固定消息为 `Deployment preflight failed before launch`；已知结构化诊断提供有界的 `diagnostic_code` 和 `diagnostic_path` 字段。`deployment_starting` 之后的失败属于该运行。
+部署 API 操作返回启动前失败之前，IsOS 以管理器会话 ID 和新关联 ID 发出 `source:isos`、`error` 级别的 `deployment_preflight_failed`。固定消息为 `Deployment preflight failed before launch`；已知结构化诊断提供有界的 `diagnostic_code` 和 `diagnostic_path` 字段。路径超过 256 字节或含控制字符时省略路径，但保留固定失败事件。`deployment_starting` 之后的失败属于该运行。首次 Start 失败后停止并移除活动项；后续重试分配新运行 ID，不会让失败运行转为就绪。
 
 IsOS 在首个子进程前记录一条 `deployment_starting`，在全部必需就绪检查后记录一条 `deployment_ready`，之后只记录状态变化，并为每次运行记录一条终结 `deployment_stopped` 或 `deployment_failed`。EOS 和 EGIA 各自在自身前提完成后记录一次启动／就绪摘要，随后记录变化和终结结果。监听端口、已启动 PID 或探针成功都不是归属就绪事件。启动前失败在 API／CLI 返回已脱敏错误前使用管理器会话 ID 记录；分配运行 ID 后的子进程失败使用该运行 ID。无法持久化的事件通过有界丢弃／错误计数可见；日志故障不能阻塞执行器停止或进程回收。
 
@@ -62,4 +62,4 @@ IsOS 向所选 EOS runtime 传入 `--run-id <id>`。对经过验证的受管 MuJ
 
 状态首次就绪、警告、失败与终结事件不被抑制。重复且非关键的周期健康或帧诊断按 `(run_id,source,node_path,event_code)` 计数，以不快于每 60 秒一次以及终结时的一条有界 `events_suppressed` 摘要替代。同一故障的高频重复日志不能逐出首次故障。收集器内存有界，并为生命周期／失败事件保留通道；过载时先丢弃低级别重复，增加可见计数，不能声称被丢弃事件已写入。单次日志写入或收集器故障不能延迟停止。P07 增加当前运行游标导航及跨文件轮转的留存；P06 保持现有私有轮转上限并及时发出首事件。
 
-`GET /api/isos/v1/logs?source=all&limit=100` 与 `isos logs all --level info` 通过现有 API／CLI 读取已准入事件。被拒绝的子进程行，包括规范化存储记录超过 8,192 字节的行，不是 API 错误；它增加带有有界原因码、且不含原始行的可见 `log_ingest_rejected` 计数。IsOS 写入失败在管理器 status／诊断中显示 `log_write_failed`，不能递归记录。现有 schema-1 `log_append` 仍限同 UID 所有者调用，接受历史小请求，但遵循上述不可信旧请求规范化；成功回复仍含 `{"accepted":true}`。[P06 夹具](../../../tests/fixtures/jsonl_events/README.md)冻结正例、反例、高频和停止案例；关闭任务前须回放真实 EOS 与 EGIA 子进程流。
+`GET /api/isos/v1/logs?source=all&limit=100` 与 `isos logs all --level info` 通过现有 API／CLI 读取已准入事件。被拒绝的子进程行，包括规范化存储记录超过 8,192 字节的行，不是 API 错误；它增加带有有界原因码、且不含原始行的可见 `log_ingest_rejected` 计数。IsOS 写入或日志存储初始化失败在管理器 status／诊断中显示 `log_write_failed`，不能递归记录。Restart 在写入旧运行的 `deployment_stopped` 事件前先回收旧子进程，因此停滞的收集器不会让旧子进程继续运行。现有 schema-1 `log_append` 仍限同 UID 所有者调用，接受历史小请求，但遵循上述不可信旧请求规范化；成功回复仍含 `{"accepted":true}`。[P06 夹具](../../../tests/fixtures/jsonl_events/README.md)冻结正例、反例、高频和停止案例；关闭任务前须回放真实 EOS 与 EGIA 子进程流。

@@ -142,7 +142,10 @@ fn record_graph_failure(app: &App, result: &ApiResult) {
         if let Some(code) = diagnostic["code"].as_str().filter(|s| s.len() <= 256) {
             fields.insert("diagnostic_code".into(), json!(code));
         }
-        if let Some(path) = diagnostic["path"].as_str().filter(|s| s.len() <= 256) {
+        if let Some(path) = diagnostic["path"]
+            .as_str()
+            .filter(|s| s.len() <= 256 && !s.chars().any(char::is_control))
+        {
             fields.insert("diagnostic_path".into(), json!(path));
         }
         let correlation = crate::manager::next_correlation_id();
@@ -1451,6 +1454,21 @@ mod tests {
         assert_eq!(event["fields"]["diagnostic_path"], "/cores/evil");
         record_graph_failure(
             &app,
+            &Ok(Json(json!({"data":{"valid":false,"diagnostics":[
+                {"code":"unsupported_core","path":"/cores/bad\nkey"}
+            ]}}))),
+        );
+        let lines = LogStore::new(&app.paths, "default")
+            .unwrap()
+            .read("isos", None, 10)
+            .unwrap();
+        assert_eq!(
+            lines["lines"][1]["event_code"],
+            "deployment_preflight_failed"
+        );
+        assert!(lines["lines"][1]["fields"]["diagnostic_path"].is_null());
+        record_graph_failure(
+            &app,
             &Err(err(
                 StatusCode::FORBIDDEN,
                 "cross-site request requires Origin",
@@ -1464,7 +1482,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            1
+            2
         );
     }
 

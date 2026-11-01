@@ -123,6 +123,10 @@ fn private_dir(path: &Path) -> Result<()> {
 
 impl LogStore {
     pub fn new(paths: &Paths, deployment: &str) -> Result<Self> {
+        Self::try_new(paths, deployment).inspect_err(|_| saturating_increment(&WRITE_FAILED))
+    }
+
+    fn try_new(paths: &Paths, deployment: &str) -> Result<Self> {
         ensure!(source_valid(deployment), "invalid deployment for logs");
         let max_bytes = std::env::var("ISOS_LOG_MAX_BYTES")
             .ok()
@@ -697,6 +701,21 @@ mod tests {
         };
         let store = LogStore::new(&paths, "default").unwrap();
         (temp, store)
+    }
+
+    #[test]
+    fn failed_store_initialization_is_visible_in_write_health() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("not-a-directory");
+        fs::write(&file, b"occupied").unwrap();
+        let paths = Paths {
+            config: temp.path().join("config"),
+            data: file,
+            runtime: temp.path().join("run"),
+        };
+        let before = counters().1;
+        assert!(LogStore::new(&paths, "default").is_err());
+        assert!(counters().1 > before);
     }
 
     #[test]
