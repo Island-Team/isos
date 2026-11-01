@@ -2,6 +2,7 @@
 
 use crate::{
     config::Paths,
+    mujoco_catalog::{self, Mode},
     packages,
     release::{NodeSet, Release},
 };
@@ -16,11 +17,25 @@ pub fn installed_release(paths: &Paths, id: &str, version: &str) -> Result<Relea
 pub fn list(paths: &Paths) -> Result<Value> {
     let mut sets = Vec::new();
     for receipt in packages::list(paths)? {
-        let Ok(release) = installed_release(paths, &receipt.id, &receipt.version) else {
+        let Ok(verified) = packages::verify(paths, &receipt.id, &receipt.version) else {
             continue;
         };
+        let mujoco_mode = if verified.release.id == "island/mujoco-sim" {
+            match mujoco_catalog::inspect_verified(&verified) {
+                Ok(catalog) => Some(catalog.mode),
+                Err(_) => continue,
+            }
+        } else {
+            None
+        };
+        let release = verified.release;
         if let Some(contributions) = release.node_contributions {
             for set in contributions.node_sets {
+                if mujoco_catalog::is_target_set(&set.id, &release.id)
+                    && mujoco_mode != Some(Mode::Target)
+                {
+                    continue;
+                }
                 let mut value = serde_json::to_value(set)?;
                 value["package"] = json!({"id":release.id,"version":release.version});
                 sets.push(value);
@@ -150,6 +165,30 @@ pub fn compose(
         values.keys().all(|name| set.parameters.contains_key(name)),
         "unknown node set parameter"
     );
+    let target_set = mujoco_catalog::is_target_set(set_id, id);
+    if target_set {
+        let verified = packages::verify(paths, id, version)?;
+        let catalog = mujoco_catalog::inspect_verified(&verified)
+            .map_err(|issue| issue.into_error(id, version, ""))?;
+        ensure!(
+            catalog.mode == Mode::Target,
+            "MuJoCo preset requires catalog_version 0.1.0"
+        );
+        let scene = parameters.get("scene").context("missing scene selection")?;
+        mujoco_catalog::selected_scene(&catalog, scene)
+            .map_err(|issue| issue.into_error(id, version, ""))?;
+        for (kind, parameter) in [
+            ("camera", "camera_device"),
+            ("base", "base_device"),
+            ("manipulator", "manipulator_device"),
+        ] {
+            let selected = parameters
+                .get(parameter)
+                .context("missing device selection")?;
+            mujoco_catalog::selected_device(&catalog, scene, kind, selected)
+                .map_err(|issue| issue.into_error(id, version, ""))?;
+        }
+    }
     let mut paths_by_ref = BTreeMap::new();
     let default_group = id.split_once('/').unwrap().1;
     for node in &set.nodes {
@@ -164,9 +203,16 @@ pub fn compose(
     }
     let mut draft = graph.clone();
     ensure!(
-        draft["version"] == "1.0.0",
-        "node graph must be version 1.0.0"
+        draft["version"] == if target_set { "0.1.0" } else { "1.0.0" },
+        "node graph version is incompatible with the selected node set"
     );
+    if target_set {
+        ensure!(
+            draft.pointer("/cores/eos/layers/dispatcher/groups/control/nodes/command/node_type")
+                == Some(&json!("eos.dispatcher.control@v0.1")),
+            "new MuJoCo preset requires the starter Dispatcher"
+        );
+    }
     rewrite_paths(&mut draft, &BTreeMap::new());
     let mut added_paths = Vec::new();
     let mut seen = BTreeSet::new();

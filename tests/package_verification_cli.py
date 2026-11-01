@@ -45,14 +45,16 @@ def contributions():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     catalog = module.contributions()
-    # P02 will publish the new process identity. Include the frozen target in
-    # this P01 fixture so legacy migration can verify its exact package pin.
-    current = copy.deepcopy(catalog["node_types"][0])
-    current["id"] = "eos.process.mujoco@v0.1"
-    current["description"] = "Starts the verified simulator and publishes process health."
-    for setting in current["settings"]:
-        setting["description"] = f"Verified simulator {setting['name']} setting"
-    catalog["node_types"].append(current)
+    # The P01 fixture predates the owner's target identity. Keep the fallback
+    # only when replaying against an older contribution module.
+    if not any(item["id"] == "eos.process.mujoco@v0.1"
+               for item in catalog["node_types"]):
+        current = copy.deepcopy(catalog["node_types"][0])
+        current["id"] = "eos.process.mujoco@v0.1"
+        current["description"] = "Starts the verified simulator and publishes process health."
+        for setting in current["settings"]:
+            setting["description"] = f"Verified simulator {setting['name']} setting"
+        catalog["node_types"].append(current)
     return catalog
 
 
@@ -115,6 +117,33 @@ class CleanHome:
         }
         self.manifest.write_text(json.dumps(manifest))
         return manifest
+
+    def upgrade_target_catalog(self):
+        """Give the P01 new-graph regression a valid P02 candidate before link."""
+        descriptor = json.loads((ROOT / "tests/fixtures/scene_catalog/target-descriptor.json").read_text())
+        for scene in descriptor["scenes"]:
+            path = self.bundle / scene["path"]
+            path.parent.mkdir(parents=True, exist_ok=True)
+            xml = [f'<mujoco><custom><numeric name="{scene["profile"]}"/></custom><worldbody>']
+            xml += [f'<site name="{name}"/>' for name in
+                    ("gr_pinch", "attachment_site", "navigation_goal")]
+            xml += ['<body name="benchmark_object"><freejoint name="object_free"/></body>']
+            xml += [f'<geom name="{name}"/>' for name in ("gr_left_pad1", "gr_right_pad1")]
+            xml += ['<camera name="robot_camera"/>']
+            xml += [f'<joint name="{name}"/>' for name in
+                    ("base_x", "base_y", "base_yaw", "shoulder_pan_joint",
+                     "shoulder_lift_joint", "elbow_joint", "wrist_1_joint",
+                     "wrist_2_joint", "wrist_3_joint")]
+            xml += ['</worldbody><actuator>']
+            xml += [f'<velocity name="{name}"/>' for name in
+                    ("base_x_motor", "base_y_motor", "base_yaw_motor")]
+            xml += [f'<general name="{name}"/>' for name in
+                    ("gr_fingers_actuator", "shoulder_pan", "shoulder_lift",
+                     "elbow", "wrist_1", "wrist_2", "wrist_3")]
+            xml += ['</actuator></mujoco>']
+            path.write_text(''.join(xml))
+            scene["sha256"] = sha256(path.read_bytes())
+        (self.bundle / "backend-v2.json").write_text(json.dumps(descriptor))
 
     def init(self):
         self.run("init", "--mode", "dev")
@@ -339,6 +368,7 @@ class PackageVerificationReplay(unittest.TestCase):
 
     def test_new_graph_pin_revalidation_on_link_change(self):
         self.case.init()
+        self.case.upgrade_target_catalog()
         self.case.link()
         applied_bytes = self.case.apply_bundle_graph(legacy=False)
         self.case.start_http()

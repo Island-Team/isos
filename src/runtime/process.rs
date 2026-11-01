@@ -3,7 +3,10 @@
 //! The graph remains the authored source. This module admits only registered
 //! IsOS process nodes and keeps direct child handles in the manager process.
 
-use crate::{backend, config::Paths, core_bins, graph_compat, log_store, packages};
+use crate::{
+    backend, config::Paths, core_bins, edge_admission, graph_compat, graph_migration, log_store,
+    mujoco_catalog, packages,
+};
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -310,6 +313,9 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
         .map(|paths| packages::node_type_sidecars_for_graph(paths, &value))
         .transpose()?
         .unwrap_or_default();
+    if let Some(paths) = paths {
+        mujoco_catalog::validate_graph(paths, &value)?;
+    }
     let graph: Graph = serde_json::from_value(value)?;
     ensure!(
         matches!(graph.version.as_str(), "1.0.0" | "0.1.0"),
@@ -775,20 +781,38 @@ pub fn normalize_source(source: &str) -> Result<Value> {
 
 pub fn validate_value(paths: &Paths, graph: &Value) -> Result<()> {
     packages::verify_graph_packages(paths, graph)?;
+    mujoco_catalog::validate_graph(paths, graph)?;
     graph_compat::admit_legacy_mapped(graph, catalog().ok().as_ref())?;
     validate_value_with_profile(paths, graph, &core_bins::resolve("aether-profile")?)
 }
 
 pub fn validate_value_with_profile(paths: &Paths, graph: &Value, profile: &Path) -> Result<()> {
     packages::verify_graph_packages(paths, graph)?;
+    mujoco_catalog::validate_graph(paths, graph)?;
     graph_compat::admit_legacy_mapped(graph, catalog().ok().as_ref())?;
     reject_obsolete_nodes(graph)?;
+    let eos_graph = if graph["version"] == "0.1.0" {
+        if let Some(diagnostic) = graph_migration::cross_core_diagnostic(graph) {
+            bail!(diagnostic);
+        }
+        let catalog = catalog_for_graph(paths, graph)?;
+        edge_admission::admit(graph, &catalog)
+            .map_err(|diagnostic| anyhow::anyhow!("{diagnostic}"))?;
+        let mut projection = graph.clone();
+        projection["cores"]
+            .as_object_mut()
+            .context("graph cores must be an object")?
+            .retain(|owner, _| owner == "eos");
+        projection
+    } else {
+        graph.clone()
+    };
     paths.prepare()?;
     let mut file = tempfile::Builder::new()
         .prefix("isos-graph-")
         .suffix(".json")
         .tempfile_in(&paths.runtime)?;
-    serde_json::to_writer(&mut file, graph)?;
+    serde_json::to_writer(&mut file, &eos_graph)?;
     use std::io::Write;
     file.flush()?;
     validate_with_program(file.path(), profile)?;
@@ -796,14 +820,12 @@ pub fn validate_value_with_profile(paths: &Paths, graph: &Value, profile: &Path)
     Ok(())
 }
 
-/// Full graph admission is delegated to EOS's node-type registry. IsOS then
-/// validates the process projection again before supervising any child.
+/// Admit the full owner graph, then validate only the EOS projection with its
+/// registry. IsOS rechecks process nodes before supervising any child.
 pub fn validate_full_graph(path: &Path) -> Result<()> {
     let graph = normalize_source(&fs::read_to_string(path)?)?;
-    packages::verify_graph_packages(&Paths::discover()?, &graph)?;
-    graph_compat::admit_legacy_mapped(&graph, catalog().ok().as_ref())?;
-    reject_obsolete_nodes(&graph)?;
-    validate_with_program(path, &core_bins::resolve("aether-profile")?)
+    let paths = Paths::discover()?;
+    validate_value(&paths, &graph)
 }
 
 pub fn catalog() -> Result<Value> {
@@ -1496,6 +1518,25 @@ command = ["/bin/sleep", "1"]
         validate_with_program(&graph_path, Path::new("/bin/true")).unwrap();
         assert!(validate_with_program(&graph_path, Path::new("/bin/false")).is_err());
         assert!(validate_with_program(&graph_path, Path::new("/missing/validator")).is_err());
+    }
+
+    #[test]
+    fn target_validation_rejects_cross_owner_reference_before_eos_projection() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        paths.prepare().unwrap();
+        let mut graph = crate::starter::draft(&paths, "default").unwrap();
+        graph["cores"]["eos"]["layers"]["dispatcher"]["groups"]["control"]["nodes"]["command"]["references"] =
+            serde_json::json!(["isos/process/component/eos"]);
+        let error = validate_value_with_profile(&paths, &graph, Path::new("/bin/true"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("cross_core_link_unavailable"), "{error}");
+        assert!(error.contains("/references/0"), "{error}");
     }
 
     #[test]

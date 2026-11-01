@@ -79,6 +79,28 @@ fn package_err(error: &anyhow::Error, id: &str, version: &str) -> (StatusCode, J
         ),
     )
 }
+fn admission_err(error: &anyhow::Error) -> (StatusCode, Json<Value>) {
+    if let Some(failure) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<packages::PackageFailure>())
+    {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"schema_version":1,"ok":false,
+                "data":{"diagnostics":[failure.diagnostic()]},"error":failure.to_string()})),
+        );
+    }
+    err(StatusCode::UNPROCESSABLE_ENTITY, error)
+}
+fn admission_diagnostic(error: &anyhow::Error) -> Value {
+    error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<packages::PackageFailure>())
+        .map_or_else(
+            || json!({"path":"/","code":"invalid_graph","message":error.to_string()}),
+            packages::PackageFailure::diagnostic,
+        )
+}
 fn ok(data: Value) -> ApiResult {
     Ok(Json(
         json!({"schema_version":1,"ok":true,"data":data,"error":null}),
@@ -487,7 +509,7 @@ async fn validate_node_graph(
     let diagnostics: Vec<Value> = if edge_diagnostics.is_empty() {
         process::validate_value(&app.paths, &edit.graph)
             .err()
-            .map(|error| json!({"path":"/","code":"invalid_graph","message":error.to_string()}))
+            .map(|error| admission_diagnostic(&error))
             .into_iter()
             .collect()
     } else {
@@ -564,7 +586,7 @@ async fn apply_node_graph(
                 }
                 if graph_compat::changed_legacy_diagnostic(&saved, &graph).is_none() {
                     process::validate_value(&app.paths, &saved.value)
-                        .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
+                        .map_err(|error| admission_err(&error))?;
                     let rendered = core_setup::render_graph(
                         &app.paths,
                         &app.deployment,
@@ -629,8 +651,7 @@ async fn apply_node_graph(
                 .unwrap_or("edge type mismatch"),
         ));
     }
-    process::validate_value(&app.paths, &graph)
-        .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
+    process::validate_value(&app.paths, &graph).map_err(|error| admission_err(&error))?;
     let bytes = serde_json::to_vec_pretty(&graph)
         .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
     let next_revision = revision(&bytes);
@@ -824,7 +845,7 @@ async fn preview_node_set(
     )
     .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
     process::validate_value(&app.paths, &preview["graph"])
-        .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
+        .map_err(|error| admission_err(&error))?;
     record(&app, "graph", "Previewed package node set");
     ok(preview)
 }

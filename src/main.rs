@@ -32,6 +32,8 @@ mod log_store;
 mod manager;
 #[path = "runtime/manager_log.rs"]
 mod manager_log;
+#[path = "domain/mujoco_catalog.rs"]
+mod mujoco_catalog;
 #[path = "domain/node_options.rs"]
 mod node_options;
 #[path = "domain/node_sets.rs"]

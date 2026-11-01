@@ -4,6 +4,7 @@ use crate::{
     auth,
     config::{self, Paths},
     lock::Lock,
+    mujoco_catalog,
     release::{self, Release},
 };
 use anyhow::{Context, Result, ensure};
@@ -472,6 +473,14 @@ fn validate_payload(root: &Path, release: &Release) -> Result<()> {
     Ok(())
 }
 
+fn validate_catalog_candidate(root: &Path, release: &Release) -> Result<()> {
+    if release.id == "island/mujoco-sim" || root.join("backend-v2.json").exists() {
+        mujoco_catalog::inspect(root, &release.id, &release.version)
+            .map_err(|issue| issue.into_error(&release.id, &release.version, ""))?;
+    }
+    Ok(())
+}
+
 /// Revalidate an exact schema-2 receipt and return only verified payload paths.
 pub fn verify(paths: &Paths, id: &str, version: &str) -> Result<VerifiedPackage> {
     let store = package_path(paths, id, version)?;
@@ -922,6 +931,7 @@ pub fn install(
         fs::remove_file(&archive)?;
         validate_payload(&payload, release)
             .map_err(|error| descriptor_failure(&release.id, &release.version, &error))?;
+        validate_catalog_candidate(&payload, release)?;
         let tree = payload_digest(&payload, false).map_err(|_| {
             failure(
                 &release.id,
@@ -1054,6 +1064,7 @@ pub fn link_with_manifest(
         let (tree, release_bytes, sidecar) = if let Some(release) = &release {
             validate_payload(&source, release)
                 .map_err(|error| descriptor_failure(id, version, &error))?;
+            validate_catalog_candidate(&source, release)?;
             (
                 Some(
                     payload_digest(&source, false)
