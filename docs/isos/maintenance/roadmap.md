@@ -1,12 +1,17 @@
-# Integration roadmap
+# IsOS 0.x implementation milestones
 
-[中文](../../../docs_cn/isos/maintenance/roadmap_cn.md)
+[中文](../../../docs_cn/isos/maintenance/roadmap_cn.md) · [Architecture](../design/system.md) · [Node catalog](../layers/README.md) · [Current baseline](plan.md)
 
-The [integration plan](plan.md) records implemented behavior. Remaining milestones are:
+This is the **single ordered milestone list** for IsOS implementation. It is a target, not a claim that the 0.x graph reader or selector UI already works. Each milestone has a dependency, a concrete output and a gate. The [integration plan](plan.md) remains a historical/current-state record; interface field definitions stay in `interfaces/`. No WorkflowService, ActionList or workflow DAG is introduced. A saved deployment graph and explicitly started independent services are the two current control surfaces.
 
-1. Qualify and publish exact IsOS, IsosUI, EOS, and MuJoCo artifacts on supported Linux targets, including a product-mode clean-home test without npm or source checkout.
-2. Run real MuJoCo and configured Island-models service checks, including failure, stop, and descendant cleanup.
-3. Version and test cross-repository API, graph, node-type, and service contracts before release.
-4. Integrate EGIA runtime control after its contract is available. EGIA common nodes are design-only today.
-5. Design future service graph representation without coupling the current independent TOML service manager to EOS or EGIA nodes.
-6. Keep the optional user systemd unit as a launcher for the same product `isos serve` command.
+| Milestone | Depends on | Output and acceptance gate |
+| --- | --- | --- |
+| **I0 — contract fixtures** | Current `1.0.0` reader and `@v1.*` catalog | Freeze new/legacy graph, node-type, package-sidecar, selector, API and version-identity fixtures. EN/CN examples parse; each field has type, unit, default, validation, owner and extension rule; owners approve their contract boundaries. |
+| **I1 — graph reader and catalog** | I0 | Author new `0.1.0`/`@v0.1`; read safe existing `1.0.0`/known `@v1.*` without rewriting bytes or SHA-256 revision. Add nonblank type descriptions with display-only old-sidecar fallback; expose core/layer/group/node catalog. Reject future versions and legacy arbitrary-command nodes with path-specific guidance. Migration requires expected revision and a preview. |
+| **I2 — verified packages and selectors** | I1, registry receipts | Install exact verified releases and expose registered node kinds, node sets and asset IDs. Extend `node-options` additively; keep unavailable selected values visible with reasons and block Apply. Reject changed linked content, duplicate IDs, unsafe paths and incompatible EOS adapters. |
+| **I3 — generated config, version and log system** | I1–I2, EOS/EGIA setup identities | Render immutable per-revision EOS/EGIA config from installed defaults, with environment secret references. Compare advertised supported graph/type sets with the actual graph and package pins. Emit sanitized bounded JSONL with one startup summary, state changes, run/correlation/node IDs, rotation and cursor reads. Clean-home test proves first-use log order. |
+| **I4 — managed lifecycle** | I3; EOS gateway and MuJoCo child readiness from their owners | Launch EOS before EGIA, require health beyond an open port, preserve active revision until Restart, and stop dependents before providers. Exercise MuJoCo failure, EGIA discovery failure, restart rollback, process-group descendant cleanup and EOS safe actuator stop. Independent services stay outside graph admission. |
+| **I5 — operator surfaces and routed edges** | I2–I4; IsosUI selector/editor and EOS route scheduler | Validate per-wire nice-scale priority and optional positive Hz, display/edit both values, label design-only edges, and report queue overflow. Apply and Run confirm selector IDs and package pins. Floating control, monitor, Vision and logs panels persist layout without becoming process nodes. |
+| **I6 — integration and release qualification** | I0–I5 plus EGIA stages | Run IsOS → EOS → MuJoCo → EGIA from a clean installed home without source checkout/npm; test failure, restart, safe stop, new/legacy graph fixtures, log redaction/rotation and selector recovery. Save full output in `logs/test/<run-id>/`; publish only approved 0.x artifacts. Historical 1.x tags and published wire identities remain intact. |
+
+Measure fixed-workload throughput, median and p99 before setting any performance target. Physical ROS/vendor deployment, `egia.tensor`, package-managed model weights, and a graph representation of independent services are later design work.

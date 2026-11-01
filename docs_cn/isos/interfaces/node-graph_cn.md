@@ -2,6 +2,8 @@
 
 [English](../../../docs/isos/interfaces/node-graph.md)
 
+按 `core → layer → group → node` 从[节点目录](../layers/README_cn.md)查找 IsOS 自有类型。本页仍负责序列化字段、校验和兼容规则。
+
 **实现状态：**上文 `1.0.0` 图与 `@v1.*` 类型为当前行为；末尾的 `0.1.0`／`@v0.1` 契约及兼容读取器是发行目标。产品、图、节点类型、HTTP 路径和仿真器协议各自版本化。
 
 位于 `~/.config/isos/deployments/<name>.nodes.json`（或 `ISOS_HOME/config/deployments/`）的 `1.0.0` 图同时配置 IsOS、EOS 与仅供设计的 EGIA 节点。节点类型声明 core、layer、group、字段与端口；节点实例提供 ID 和设置。节点类型独立版本化；IsOS 托管进程类型为 `v1.1`，当前 EOS 硬件类型为 `v1.0`。应用前以及运行前都执行 `aether-profile validate --file <graph>`；IsOS 随后校验软件包进程投影。图的 SHA-256 是保存修订号，运行中的进程保持其修订号直到重启。
@@ -42,18 +44,18 @@ IsOS 将已验证的可执行文件、场景路径和 MuJoCo 库路径传给 EOS
 
 管理器按依赖顺序启动直接子进程，等待就绪；停止时逆序向进程组发送 TERM，两秒后发送 KILL。提供者故障时先停止依赖者再恢复。IsOS 自身诊断及选定的结构化子进程事件写入轮转的 `$XDG_DATA_HOME/isos/logs/<deployment>/<source>.log` 文件；普通子进程输出不再镜像。状态包含已保存/运行中修订、固定软件包、PID、重启次数和最近管理错误。私有 Unix 管理器 API 保留 schema 1 封装，使用 `deployment_start`、`deployment_restart`、`deployment_stop`、`deployment_status` 操作。
 
-## 可选的 EOS 控制节点
+## 当前 EOS 控制节点与旧技能兼容
 
-编写的图可以在 `cores/eos/layers/control` 中声明 `manual_0`、`base_velocity_0`、`arm_joint_0` 和 `demo_0`。对应类型为 `eos.control.manual@v1.0`、`eos.control.primitive@v1.0`、`eos.control.skill@v1.0`。它们配置命令来源；运行中的请求与结果仍使用独立的有类型数据。每个控制节点都引用 EOS 调度器的规范路径。手动和原语节点还引用目标硬件节点；技能节点引用组成它的原语。这些引用不构成直接执行器路径；现有调度器输出仍是硬件唯一的命令输入。
+现有 `1.0.0` 图可能在 `cores/eos/layers/control` 包含 `manual_0`、`base_velocity_0`、`arm_joint_0` 和 `demo_0`。历史类型是 `eos.control.manual@v1.0`、`eos.control.primitive@v1.0`、`eos.control.skill@v1.0`。`demo_0` 与 `eos.control.skill@v1.0` **仅用于兼容**：新 `0.1.0` 图不编写图内技能序列或 workflow 节点。它们配置命令来源；运行中的请求与结果仍使用独立的有类型数据。每个控制节点都引用 EOS 调度器的规范路径。手动和原语节点还引用目标硬件节点；技能节点引用组成它的原语。这些引用不构成直接执行器路径；现有调度器输出仍是硬件唯一的命令输入。
 
 | 设置 | Rust 类型 | 单位 | 用途与校验 |
 | --- | --- | --- | --- |
 | 手动 `target` | `String` | 规范节点路径 | 必填底盘或机械臂目标；须为已准入硬件节点并出现在 `references` 中。 |
 | 原语 `target` | `String` | 规范节点路径 | 必填硬件目标；须为已准入底盘或机械臂节点并出现在 `references` 中。 |
 | 原语 `movement_type` | `String` 枚举 | 运动模式 | 底盘须为 `body_velocity`，机械臂须为 `joint_positions`；目标必须支持该模式。 |
-| 技能 `steps` | `Vec<String>` | 有序规范节点路径 | 必填有序原语引用；每个路径须出现在 `references` 中，且解析为已注册原语节点。 |
+| 旧技能 `steps`（仅兼容） | `Vec<String>` | 有序规范节点路径 | 必填有序原语引用；每个路径须出现在 `references` 中，且解析为已注册原语节点。 |
 
-手动和原语节点必须从调度器接收 `status: Status` 输入，并从目标硬件接收 `base_observation: BaseObservation` 或 `manipulator_observation: ManipulatorObservation` 输入；技能节点必须从调度器接收 `status: Status`。手动和原语节点提供 `request: ControlRequest` 与 `outcome: CommandOutcome` 输出端口；技能节点提供 `outcome: SkillOutcome`。节点 ID 默认由最终类型名和序号组成，例如 `manual_0` 或 `demo_0`；它是图身份，不是运动数据结构。
+手动和原语节点必须从调度器接收 `status: Status` 输入，并从目标硬件接收 `base_observation: BaseObservation` 或 `manipulator_observation: ManipulatorObservation` 输入；技能节点必须从调度器接收 `status: Status`。手动和原语节点提供 `request: ControlRequest` 与 `outcome: CommandOutcome` 输出端口；技能节点提供 `outcome: SkillOutcome`。节点 ID 默认由最终类型名和序号组成；`manual_0` 是当前例子，`demo_0` 仅为旧图兼容例子。节点 ID 是图身份，不是运动数据结构。
 
 另见[后端软件包设计](../design/backend_cn.md)和[本地 API](local-api_cn.md)。
 
@@ -79,9 +81,9 @@ IsOS 将已验证的可执行文件、场景路径和 MuJoCo 库路径传给 EOS
 | `node.settings` | 对象／类型专用 | 类型所有者声明设置，IsOS 校验包选择器 | 无设置时空对象；未知设置按类型契约拒绝 | 可选新设置须有默认值 |
 | `node.inputs` | 端口名到来源或来源数组／— | 注册表校验有类型连接 | 无输入时空对象；来源解析到兼容输出且基数匹配 | 可选边元数据见下表 |
 | `node.references` | 规范路径字符串数组／— | 所有者声明非数据依赖 | 默认空；按类型要求存在且唯一 | 新引用不得增加执行器旁路 |
-| `node.adapter`、`capabilities`、`health_timing`、`observation`、`movement`、`frame_id`、`joint_names` | 类型专用对象／数组／字符串 | EOS 硬件配置 | 由 [EOS 硬件接口](https://github.com/Island-Team/Aether-EOS-R/blob/master/docs/eos/interfaces/hardware.md)定义；IsOS 不臆造硬件含义 | EOS 定义兼容默认值 |
+| `node.adapter`、`capabilities`、`health_timing`、`observation`、`movement`、`frame_id`、`joint_names` | 类型专用对象／数组／字符串 | EOS 硬件配置 | 由 [EOS 硬件接口](https://github.com/Island-Team/Island-eos)（`docs/eos/interfaces/hardware.md`）定义；IsOS 不臆造硬件含义 | EOS 定义兼容默认值 |
 
-注册**类型**另有非空 `description`，说明功能、输入、输出和操作员可见效果。旧已验证侧车缺此字段时，仅在目录中生成回退说明，不修改侧车字节。新设置可选 `selector` 由 [EOS 节点贡献契约](https://github.com/Island-Team/Aether-EOS-R/blob/master/docs/eos/interfaces/node-contributions.md)定义；IsOS 拥有[解析选项响应](local-api_cn.md#发行目标设置选项尚未实现)。
+注册**类型**另有非空 `description`，说明功能、输入、输出和操作员可见效果。旧已验证侧车缺此字段时，仅在目录中生成回退说明，不修改侧车字节。新设置可选 `selector` 由 [EOS 节点贡献契约](https://github.com/Island-Team/Island-eos)（`docs/eos/interfaces/node-contributions.md`）定义；IsOS 拥有[解析选项响应](local-api_cn.md#发行目标设置选项尚未实现)。
 
 | `node.inputs.<port>` 来源字段 | JSON 类型／单位 | 用途 | 默认值与校验 | 兼容 |
 | --- | --- | --- | --- | --- |
