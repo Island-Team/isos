@@ -2,13 +2,13 @@
 
 use crate::{
     config::{self, Paths},
-    core_setup,
+    core_setup, edge_admission,
     graph_compat::{self, Diagnostic, SavedGraph},
     lock, preflight, process,
 };
 use serde::Serialize;
 use serde_json::Value;
-use std::{fs, path::PathBuf};
+use std::{collections::BTreeMap, fs, path::PathBuf};
 
 const TYPE_MAP: &[(&str, &str)] = &[
     ("eos.hardware.camera@v1.0", "eos.hardware.camera@v0.1"),
@@ -77,6 +77,7 @@ pub struct Proposal {
 pub struct Prepared {
     pub specs: Vec<process::ProcessSpec>,
     pub files: Vec<(PathBuf, Vec<u8>)>,
+    pub edges: Vec<edge_admission::Edge>,
 }
 
 pub enum MigrationError {
@@ -108,6 +109,28 @@ fn diagnostic(
         path: path.into(),
         code,
         message: message.into(),
+        context: BTreeMap::new(),
+    }
+}
+
+fn edge_diagnostic(edge: edge_admission::Diagnostic) -> Diagnostic {
+    let mut context = BTreeMap::new();
+    for (key, value) in [
+        ("source", edge.source),
+        ("target", edge.target),
+        ("input", edge.input),
+        ("source_data_type", edge.source_data_type),
+        ("target_data_type", edge.target_data_type),
+    ] {
+        if let Some(value) = value {
+            context.insert(key.into(), value);
+        }
+    }
+    Diagnostic {
+        path: edge.path,
+        code: edge.code,
+        message: edge.message,
+        context,
     }
 }
 
@@ -336,9 +359,6 @@ pub fn cross_core_diagnostic(graph: &Value) -> Option<Diagnostic> {
 }
 
 pub fn prepare(paths: &Paths, name: &str, proposal: &Proposal) -> Result<Prepared, Diagnostic> {
-    if let Some(diagnostic) = cross_core_diagnostic(&proposal.graph) {
-        return Err(diagnostic);
-    }
     if let Some(diagnostic) = graph_compat::admission_diagnostic(&proposal.graph, None) {
         return Err(diagnostic);
     }
@@ -374,6 +394,11 @@ pub fn prepare(paths: &Paths, name: &str, proposal: &Proposal) -> Result<Prepare
     let catalog = process::catalog()
         .map_err(|error| diagnostic("/cores/eos", "owner_reader_unavailable", error.to_string()))?;
     if let Some(diagnostic) = graph_compat::admission_diagnostic(&proposal.graph, Some(&catalog)) {
+        return Err(diagnostic);
+    }
+    let edges = edge_admission::admit(&proposal.graph, &catalog)
+        .map_err(|error| edge_diagnostic(*error))?;
+    if let Some(diagnostic) = cross_core_diagnostic(&proposal.graph) {
         return Err(diagnostic);
     }
     let source = serde_json::to_string(&proposal.graph)
@@ -415,7 +440,11 @@ pub fn prepare(paths: &Paths, name: &str, proposal: &Proposal) -> Result<Prepare
     }
     let files = core_setup::render_graph(paths, name, &proposal.graph, &proposal.revision)
         .map_err(|error| diagnostic("/", "owner_render_failed", error.to_string()))?;
-    Ok(Prepared { specs, files })
+    Ok(Prepared {
+        specs,
+        files,
+        edges,
+    })
 }
 
 fn check_digest(value: &str) -> Result<(), MigrationError> {
@@ -592,6 +621,32 @@ pub fn apply_new(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn edge_diagnostic_keeps_structured_cli_and_http_context() {
+        let graph: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/edge_admission/valid_0_1_0.json"
+        ))
+        .unwrap();
+        let mut catalog: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/edge_admission/catalog.json"
+        ))
+        .unwrap();
+        catalog["types"][0]["outputs"][0]["data_type"] = Value::String("observation_ref".into());
+        let error = edge_admission::admit(&graph, &catalog).unwrap_err();
+        let diagnostic = edge_diagnostic(*error);
+        let value = serde_json::to_value(&diagnostic).unwrap();
+        assert_eq!(value["code"], "edge_type_mismatch");
+        assert_eq!(value["source"], "eos/hardware/camera/front");
+        assert_eq!(value["target"], "eos/interface/gate/preview");
+        assert_eq!(value["input"], "frame");
+        assert_eq!(value["source_data_type"], "observation_ref");
+        assert_eq!(value["target_data_type"], "camera_frame");
+        assert_eq!(
+            serde_json::from_str::<Value>(&diagnostic.to_string()).unwrap(),
+            value
+        );
+    }
 
     #[test]
     fn fixture_proposal_is_exact_and_preserves_source_bytes() {

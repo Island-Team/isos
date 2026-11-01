@@ -4,7 +4,7 @@
 
 按 `core → layer → group → node` 从[节点目录](../layers/README_cn.md)查找 IsOS 自有类型。本页仍负责序列化字段、校验和兼容规则。
 
-**实现状态：**新图、`0.1.0` 写入器、精确的内置 `@v0.1` 目录及显式保存图迁移已经实现。安全的 `1.0.0` 和 `@v1.*` 图仍按精确身份读取。完整 G06 边准入属于后续依赖切片。产品、图、节点类型、HTTP 路径和仿真器协议各自版本化。
+**实现状态：**新图、`0.1.0` 写入器、精确的内置 `@v0.1` 目录及显式保存图迁移已经实现。安全的 `1.0.0` 和 `@v1.*` 图仍按精确身份读取。完整 G06 连线准入已实现。产品、图、节点类型、HTTP 路径和仿真器协议各自版本化。
 
 位于 `~/.config/isos/deployments/<name>.nodes.json`（或 `ISOS_HOME/config/deployments/`）的保存图配置 IsOS 与 EOS，也可声明 EGIA 节点。新图使用 `0.1.0`；旧 `1.0.0` 图在显式迁移前保留已保存字节。节点类型声明 core、layer、group、字段与端口；节点实例提供 ID 和设置。对于 `0.1.0`，IsOS 校验自有进程节点及整图位置，再调用每个已启用归属方的 setup 适配器执行分区校验和渲染。图的 SHA-256 是保存修订号，运行中的进程保持其修订号直到重启。
 
@@ -64,9 +64,9 @@ IsOS 将已验证的可执行文件、场景路径和 MuJoCo 库路径传给 EOS
 
 `eos.dispatcher.primitive_base@v1.0` 与 `eos.dispatcher.primitive_manipulator@v1.0` 是绑定节点。其 `settings` 用字符串 `primitive_name`、`primitive_version`、`movement_type` 指定原语。硬件 `inputs.command` 是来自绑定节点的 `{node,output}` 边数组；每个绑定输出必须连接到一个兼容硬件节点。适配器实现由硬件实例的 `adapter.type` 选择，与通用硬件节点类型独立。IsOS Vision 配置为 `isos.ui.vision@v1.0`，放在 `isos/ui/panel` 下，是内部 UI 节点，不作为进程监管。
 
-## 图 `0.1.0` 写入器与兼容读取——G03 已实现，G06 边准入待完成
+## 图 `0.1.0` 写入器与兼容读取——G03 与 G06 已实现
 
-**状态：**G03 已实现 `0.1.0` 写入器、精确旧图迁移及基本 core／类型位置准入；G06 将补齐完整边准入。产品、图、节点类型、HTTP 路由和仿真器协议独立版本化。新图写 `version:"0.1.0"`，新类型用 `@v0.1`。读取器继续接受已有安全 `1.0.0` 图及已注册 `@v1.0`／`@v1.1` 类型，不批量替换类型 ID。未注册类型按路径给出迁移诊断；旧任意命令 `isos.process.component@v1.0` 绝不执行。新 `isos.process.component@v0.1` 按上述 `role` 与有界 `args` 选择程序。既有 HTTP 路径、protobuf 包名、发行清单 schema 4 和 MuJoCo socket 协议 `2.0.0` 不改。
+**状态：**G03 已实现 `0.1.0` 写入器、精确旧图迁移及基本 core／类型位置准入；G06 已按归属方聚合目录校验每条连线与引用。产品、图、节点类型、HTTP 路由和仿真器协议独立版本化。新图写 `version:"0.1.0"`，新类型用 `@v0.1`。读取器继续接受已有安全 `1.0.0` 图及已注册 `@v1.0`／`@v1.1` 类型，不批量替换类型 ID。未注册类型按路径给出迁移诊断；旧任意命令 `isos.process.component@v1.0` 绝不执行。新 `isos.process.component@v0.1` 按上述 `role` 与有界 `args` 选择程序。既有 HTTP 路径、protobuf 包名、发行清单 schema 4 和 MuJoCo socket 协议 `2.0.0` 不改。
 
 | 图字段 | JSON 类型／单位 | 所有者与用途 | 默认值和校验 | 兼容扩展 |
 | --- | --- | --- | --- | --- |
@@ -95,10 +95,10 @@ IsOS 将已验证的可执行文件、场景路径和 MuJoCo 库路径传给 EOS
 兼容输入端口的目标 JSON **来源对象片段**（当前程序尚不接受新增边字段）：
 
 ```json
-{"node":"eos/dispatcher/base/velocity","output":"command","priority":5,"frequency_hz":15.0}
+{"node":"eos/hardware/camera/front","output":"frame","priority":5,"frequency_hz":15.0}
 ```
 
-声明来源绑定节点后，将此对象放入兼容目的节点的 `inputs.command` 数组；[当前起始模板](../../../templates/generic-graph.toml)给出不带目标边字段的完整图。端口 `expected_rate_hz` 是生产者提示，独立于边限速。EOS 对运行时边使用单调时钟 token bucket 和有界队列的加权公平投递。观测溢出增加可见计数并限速告警；不能准入的命令须明确拒绝或报告不确定结果，绝不可暗中丢弃。停止路由时丢弃非命令排队工作，并通过调度器停止执行器。优先级不改变命令授权，执行器数据仍通过调度器。IsOS 存储和校验边元数据，不调度硬件；IsosUI 显示两个值并标明仅供设计的连线。
+来源为 `eos.hardware.camera@v0.1` 节点时，将此对象放入已注册 `eos.interface.camera_gate@v0.1` 节点的 `inputs.frame`。命令绑定没有用户 QoS。[当前起始模板](../../../templates/generic-graph.toml)给出不带目标边字段的完整图。端口 `expected_rate_hz` 是生产者提示，独立于边限速。R01 将对运行时适用证据连线使用单调时钟 token bucket 和有界队列的加权公平投递。观测溢出须增加可见计数并限速告警；不能准入的命令须明确拒绝或报告不确定结果，绝不可暗中丢弃。停止路由时丢弃非命令排队工作，并通过调度器停止执行器。优先级不改变命令授权，执行器数据仍通过调度器。IsOS 存储和校验边元数据，不调度硬件；IsosUI 显示两个值并标明仅供设计的连线。
 
 读取算法：最多读取 1 MiB，并在 JSON 解码或规范化之前根据**原始已保存字节**计算 SHA-256 修订号。只按精确图版本 `1.0.0` 和 `0.1.0` 分派；对原始节点类型 ID 校验精确注册身份和既有安全行为。本读取器保留原始 JSON 值；既有归属方校验器在类型化投影时应用其已确立的可选字段默认值。独立的共享规范化投影仍属后续工作，且不得改动已保存字节或类型身份。未知版本可作为原始 JSON 在工作台查看，但不能校验、应用、生成配置、运行或重启；这些操作在 `/version` 返回支持版本集合。无效 JSON 不能作为图展示。见[架构算法](../design/system_cn.md)。
 
@@ -138,4 +138,16 @@ Run 和 Restart 会将已保存的生成字节与从精确已保存图重新执�
 
 在归属方投影前，IsOS 会在 `/cores/<core>` 以 `unsupported_core` 拒绝 `eos`、`isos`、`egia` 之外的任何 `0.1.0` core 键。每个节点须匹配精确批准的目标类型身份及其注册的 `core/layer/group` 位置；错误在节点 `/node_type` 返回 `unsupported_node_type` 或 `invalid_node_placement`。旧版 IsOS／IsosUI Vision 身份与未映射的 EOS 控制身份不能进入新图，即使旧版目录仍列出它们。
 
-`0.1.0` 校验握手按归属方分区。IsOS 解析并校验完整图，包括精确节点路径、引用、软件包 pin 和全部跨 core 连线；其自有 registry 校验 `isos.process.component@v0.1` 和其他 IsOS 类型。IsOS 聚合目录合并这些自有定义、EOS 定义及已验证的软件包 contribution。对于 `0.1.0`，IsOS 把完整图交给 EOS setup Validate/Render，由 EOS 仅投影并校验 `eos` core；EGIA setup 校验自己的子树。IsOS **不会**对 `0.1.0` 使用旧整图 `aether-profile validate --file`，否则会错误要求 EOS 拥有 IsOS 进程类型。旧 `1.0.0` 保留既有整图校验。在 G06 之前，建议 `0.1.0` 图中的任意跨 core 边或引用都在精确路径阻塞迁移、Apply 和 Run，包括从旧图保留的连线。启用的归属方 adapter 必须声明 `0.1.0`、成功 Validate/Render，且已启动的 EOS runtime 能读取生成投影，IsOS 才发布图。
+`0.1.0` 校验握手按归属方分区。IsOS 解析并校验完整图，包括精确节点路径、引用、软件包 pin 和全部跨 core 连线；其自有 registry 校验 `isos.process.component@v0.1` 和其他 IsOS 类型。IsOS 聚合目录合并这些自有定义、EOS 定义及已验证的软件包 contribution。对于 `0.1.0`，IsOS 把完整图交给 EOS setup Validate/Render，由 EOS 仅投影并校验 `eos` core；EGIA setup 校验自己的子树。IsOS **不会**对 `0.1.0` 使用旧整图 `aether-profile validate --file`，否则会错误要求 EOS 拥有 IsOS 进程类型。旧 `1.0.0` 保留既有整图校验。未声明的跨 core 连线或引用在精确路径阻塞迁移、Apply 和 Run，包括从旧图保留的连线。启用的归属方 adapter 必须声明 `0.1.0`、成功 Validate/Render，且已启动的 EOS runtime 能读取生成投影，IsOS 才发布图。
+
+## G06 整图连线准入——已实现契约
+
+对于 `0.1.0`，IsOS 在迁移提交、Validate、Apply、Run 或 Restart 前，依据整张图中通过版本准入的目录解析每个 `inputs` 来源及 `references` 项。校验来源和目标路径及注册位置、输出与输入名称、精确数据类型 ID（包括唯一注册的 `x-unit` 模式）、基数和重复来源、声明的传输方式、必需输入及环路。类型描述缺失或有歧义时拒绝准入；不能根据后缀或端口名相近推断兼容。来源对象使用其实际 JSON Pointer；来源数组使用数字索引。诊断包含该指针、`source`、`target`、`input`、稳定错误码，以及可取得的声明类型／单位。引用是依赖，不是数据连线或命令权限。IsOS 另行校验进程 `depends_on`，包括环路及停止顺序。
+
+M1 的聚合目录包含由 EOS 提供的内置类型和历史 EGIA common 描述符、IsOS 自有的按角色选择组件定义，以及已验证的软件包 contribution。EGIA 尚未单独发布端口目录；其四个 common `@v1.0` 描述符只供设计检查，绝不作为实时路由。
+
+每条准入连线有一种路由类别。`eos_local` 两端属于 EOS；`egia_local` 由 EGIA 管理；`service_bridge` 要求精确注册的跨 core 桥接端点组合与传输方式；其余准入的描述性连线均为 `design_only`。M1 归属方路由表只包含一个已声明路由候选：`eos.hardware.camera@v0.1.frame` → `eos.interface.camera_gate@v0.1.frame`，数据类型 `camera_frame`、`in_process` 传输及 image 数据类别。IsOS 对两端精确类型 ID、端口、数据类型、传输和类别逐项匹配；仅同属 EOS 或目录端口相似不能推断路由。此表由精确端点 `@v0.1` ID 确定版本，只有经过归属方契约审查才能修改；缺少路由元数据即为未路由且不允许 QoS。表中条目只允许声明式 `routed:true` 状态；实际交付由 R01 实现。EOS 的 `FixedSafety` 类别映射成公开的 `route_class:eos_local`、`fixed:true`、`routed:false`、`qos_eligible:false` 图连线；活动 Dispatcher 命令路径是独立的受管运行时路由。EGIA 本地连线在 A04 发布精确归属方路由前均为 `routed:false`。M1 不准入 `service_bridge`：候选的相机 gate preview → Vision 路径缺少已注册 `0.1.0` Vision 目标及精确桥声明，两者齐备前必须失败。未声明的跨 core 连线即使数据类型相同也无效。跨 core 引用必须有归属方声明的依赖或服务用途，不能建立执行器路由。IsOS 向检查器返回类别、`fixed`、`qos_eligible` 和 `routed` 状态。`design_only` 始终显示未路由，不能显示为健康。
+
+`priority` 是 `-20..19` 内的可选整数，适用的已路由证据连线默认零。`frequency_hz` 是以 Hz 为单位且严格大于零的可选有限数值；缺失表示无频率上限。M1 中两者仅允许出现在上述精确的 EOS 相机 → gate 路由。EGIA 本地、桥接和描述性连线在各自归属方发布精确适用路由前拒绝显式 QoS。固定安全、执行器、结果、健康、锁存及停止路径拒绝任一字段，不能限流或静默丢弃。命令形状端口和通用软件包贡献不能建立第二条执行器路径；必须保留精确 Dispatcher 绑定。IsOS 只校验声明，不调度也不宣称实时健康。EOS 的[归属方连线契约](https://github.com/Island-Team/Island-eos/blob/refactor%28v2%29/runtime-main/docs_cn/eos/interfaces/hardware_cn.md#g06-类型化连线准入)独立校验其 EOS 投影；IsOS 必须在归属方 setup 渲染或图写入之前拒绝整图违规。
+
+固定的 G06 测试样例应包含精确 EOS 相机 → gate 路由、未路由的 EGIA 本地描述性连线，以及没有 QoS 字段的旧图。相机 gate preview → Vision 桥在 `0.1.0` Vision 类型及精确桥声明均注册前属于负面样例。其他负面样例须给出错误类型／单位、未知端口／路径、位置、基数、传输、跨 core 桥、环路、优先级越界、非有限／零频率、固定或未路由连线上的 QoS、执行器绕行的精确来源指针。每次拒绝都保持已保存字节和活动修订不变。同一样例应经 HTTP Validate 和 Apply、CLI Apply 及迁移预检得到相同连线诊断；Run 与 Restart 在启动子进程前拒绝被篡改的已保存图。

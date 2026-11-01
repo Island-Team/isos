@@ -64,3 +64,15 @@ G01–G02 读取切片只准入精确注册的旧类型身份，按 JSON 指针�
 Run 和 Restart 还会将每个已保存的生成文件与根据精确已保存图重新执行的归属方 render 比较。即使文件和清单摘要一起被修改，也会拒绝启动。重新构建核心程序后，快照中的启动输入会过期。`isos init` 报告过期的输入并保留不可变快照；须恢复固定的程序，或创建新的图修订并 Apply。对未修改图字节刷新快照所需的独立生成身份留待 P04/P05。
 
 G03 实现证据（2026-11-01）：使用 `/home/ashex/projects/Island-eos/target/debug` 中的 EOS `fb57a0c5` 调试程序，以及 `logs/test/2026-11-01-g03/` 下的新 `ISOS_HOME` 目录，`cargo fmt --all -- --check`、`cargo clippy --all-targets --no-default-features -- -D warnings` 和 `cargo test --all-targets` 均通过（87 个单元测试及 5 个 CLI 测试）。CLI 重放执行 `isos config init`，预览已保存的 1.0 图（`can_apply:true`），用两个摘要提交，随后 `isos run` 在迁移后的活动修订号下启动 EOS、bridge 和 config；`isos version check --json` 显示 EOS 就绪。重复提交过期来源失败，保存字节不变。HTTP 重放依次调用 `GET /api/isos/v1/node-graph`、POST `/node-graph/migration/preview`、POST `/node-graph/migration/apply` 及重复的过期 POST：首次提交返回 0.1，重复请求返回 409，前后 SHA-256 相同。回归测试覆盖同时篡改投影和清单、跨 core 输入的精确路径、未知 core／旧 UI／类型位置拒绝、PUT 缺失修订号、精确软件包及适配器 pin 保留、Init 不可变行为及已保存 0.1 图的可编辑性。完整命令与输出位于 `logs/test/2026-11-01-g03/`。
+
+### G06 整图连线准入——已实现
+
+从精确图修订及各归属方精确注册的目录构造一份不可变的准入视图。按规范节点路径顺序遍历节点，按原图顺序遍历每个输入来源；在检查连线之前解析两端描述符。在规范化之前记录对象或数组形状对应的实际 JSON Pointer。检查精确类型、单位模式一致性、传输、基数、必需输入、重复来源及环路，再对照明确的归属方路由表分类。IsOS 检查 EOS 所属投影无法看到的跨 core 桥及引用。进程依赖也在整图预检中检查，但不纳入数据连线路由表。归属方描述符或桥声明缺失时按原始指针拒绝。不可直接转发 EOS 旧 profile 校验器的文字错误，因为它可能缺少指针。[图契约](../interfaces/node-graph_cn.md#g06-整图连线准入已实现契约)定义字段和安全规则。
+
+整张图通过后，Validate 才返回有序连线检查列表。Apply 与迁移提交在归属方渲染及任何快照／图字节发布之前执行此准入。Run 和 Restart 在启动子进程之前，基于已保存字节及经验证的快照重新检查，防止变化的软件包描述或被篡改的图复用旧准入结果。旧 `1.0.0` 读取保留既有路径和字节。测试通过 HTTP、CLI、迁移及启动预检重放相同负面样例，断言相同指针／错误码和未变化的已保存／活动修订。G06 只发布声明；EOS R01 和 EGIA A04 后续证明实时交付、有界队列及缺口计数。
+
+2026-11-01，IsOS 实现代理及 EOS 连线契约归属方完成独立设计审查，接受 M1 路由表和固定路径元数据。审查确认相机 frame → gate frame 是 M1 唯一适用证据路由、Vision 桥在注册 `0.1.0` 目标类型前保持关闭，以及 EOS 旧校验器仅返回文字错误时 IsOS 必须生成自身的精确指针诊断。
+
+G06 实现从聚合归属方目录出发，接入新图共用准备路径。HTTP Validate 仅在整图准入后返回排序的连线声明；Apply、迁移预览／提交、Run 和 Restart 在渲染或启动前使用相同准备路径。从仓库根目录复现：`cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`ISOS_AETHER_BIN_DIR=/home/ashex/projects/Island-eos/target/debug cargo test`、`cargo build`。2026-11-01 的结果为 88 个单元、5 个 CLI 与 9 个连线样例测试通过。G06 可执行文件还通过隔离主目录的 G03 迁移／Apply／Run 重放，包括 EOS 投影启动、重启及二进制文件篡改拒绝。完整本地输出位于忽略的 `logs/test/20261101-g06-edge-admission/`。冻结的 G06 样例覆盖 EOS 相机路由、EGIA 本地描述性连线、未注册的 Vision 桥、跨 core guard 请求、固定命令 QoS、单位、传输、基数、环路和执行器绕行。M1 中包含 EGIA 的 Apply 仍受阻：EGIA 归属方 setup 要求真实 `eos_gateway` 端点；P04／P05 和 M3 必须提供经过验证的网关后，EGIA 才能作为活动图归属方。
+
+跨仓库重放命令为 `python3 logs/test/20261101-g06-edge-admission/full-replay.py --run --stage all --isos-root /home/ashex/projects/isos-edge-admission --expect-eos $(git -C /home/ashex/projects/Island-eos rev-parse HEAD) --expect-isos $(git rev-parse HEAD)`，使用已构建的 EOS 和 IsOS 调试程序及现有 IsosUI 发布目录。测试通过 EOS 相机 → gate 的正面 Validate 响应（`routed:true`、`qos_eligible:true`）、固定 Dispatcher 绑定声明、HTTP 与 CLI 的类型／优先级／固定 QoS／跨 core 负面用例（保存与活动修订均不变），以及篡改已保存图后的 Run 在替换子进程前拒绝。包含 EGIA 的试运行因尚无经过验证的 gRPC 网关端点，在 `/cores/egia` 返回 `owner_validation_failed`。重放脚本和输出保存在上述 IsOS G06 日志目录；EOS 仓库的副本位于 `logs/test/20261101-m1-replay/g06-full-replay.log`。

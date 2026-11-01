@@ -10,6 +10,8 @@ mod config;
 mod core_bins;
 #[path = "runtime/core_setup.rs"]
 mod core_setup;
+#[path = "runtime/edge_admission.rs"]
+mod edge_admission;
 #[path = "app/entry.rs"]
 mod entry;
 #[path = "app/foreground.rs"]

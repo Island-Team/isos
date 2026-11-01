@@ -15,3 +15,9 @@ IsOS 只运行位于 `deployments/<name>.nodes.json` 的[保存节点图](../int
 ## 已保存图 `1.0.0` → `0.1.0` 迁移
 
 显式操作接受安全且**已保存的 `.nodes.json`** 图，不导入旧 `<name>.json` 组件文件。先读取 `GET /api/isos/v1/node-graph`，记录原始保存字节的修订号。运行 `isos config migrate --preview --revision <saved-sha256>`，检查完整建议图、精确类型替换、未改变的软件包 pin 和诊断。阻塞的预览不能提交。归属方 reader 和软件包 receipt 兼容后，运行 `isos config migrate --revision <saved-sha256> --proposed-revision <preview-sha256>`。任一修订已变时重新加载并预览。最终原子提交前，原始字节保持不变；迁移不会启动或重启进程。使用 `isos status --json` 检查新的保存修订号和旧的运行中修订号，确认就绪后再显式 Restart。参见[图迁移契约](../interfaces/node-graph_cn.md#g03-显式图迁移)和 [API](../interfaces/local-api_cn.md#g03-迁移路由)。
+
+## Apply 前检查连线
+
+对于新建或迁移后的 `0.1.0` 图，先运行 `isos config validate <draft.nodes.json>`，再运行 `isos config apply <draft.nodes.json> --revision <saved-sha256>`；首次 Apply 使用空修订。工作台 Validate API 仅在整图通过时返回 `edges`。检查每条连线的实际输入来源指针、路由类别、固定标志和 QoS 资格。只有精确的 EOS 相机 `frame` → 相机 gate `frame` 路由接受可选 `priority`（整数 `-20..19`，默认 `0`）或 `frequency_hz`（有限正数，单位 Hz；缺省表示不限频）。命令、健康、状态、结果或其他未路由连线均拒绝这些设置。`routed:true` 声明不表示实时健康。无效连线在 Validate、Apply、CLI 和迁移预览中显示精确指针及稳定代码；Run 和 Restart 在启动子进程前重新准入。修正草稿或恢复有效的保存修订后再次 Validate。参见[连线契约](../interfaces/node-graph_cn.md#g06-整图连线准入已实现契约)。
+
+M1 中可以把 EGIA common 节点连线作为 `egia_local` 声明检查，但包含 EGIA 的 Apply 需要其归属方 setup 使用真实的 `eos_gateway` 端点。后续 reader-feature 与 gRPC 工作提供该网关；在完成配置和验证前，不要把 EGIA 纳入活动图。IsOS 会拒绝不完整的归属方 setup，且不会写入图。
