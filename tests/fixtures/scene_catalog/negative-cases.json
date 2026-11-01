@@ -1,0 +1,288 @@
+{
+  "contract": "P02 target semantics after P01 verification; direct package operations use empty diagnostic path",
+  "cases": [
+    {
+      "id": "partial-without-discriminator",
+      "mutation": {
+        "target": "descriptor",
+        "op": "remove",
+        "path": "/catalog_version"
+      },
+      "expected_direct": {
+        "code": "mujoco_catalog_incomplete",
+        "path": "",
+        "stage": "descriptor"
+      },
+      "expected_graph": {
+        "code": "mujoco_catalog_incomplete",
+        "path": "/cores/eos/layers/process/groups/mujoco/nodes/simulator/package",
+        "stage": "descriptor"
+      }
+    },
+    {
+      "id": "partial-with-discriminator",
+      "mutation": {
+        "target": "descriptor",
+        "op": "remove",
+        "path": "/scenes/0/description"
+      },
+      "expected_direct": {
+        "code": "mujoco_catalog_incomplete",
+        "path": "",
+        "stage": "descriptor"
+      },
+      "expected_graph": {
+        "code": "mujoco_catalog_incomplete",
+        "path": "/cores/eos/layers/process/groups/mujoco/nodes/simulator/package",
+        "stage": "descriptor"
+      }
+    },
+    {
+      "id": "partial-device-catalog",
+      "mutation": {
+        "target": "descriptor",
+        "op": "remove",
+        "path": "/device_catalog/2/description"
+      },
+      "expected_direct": {
+        "code": "mujoco_catalog_incomplete",
+        "path": "",
+        "stage": "descriptor"
+      },
+      "expected_graph": {
+        "code": "mujoco_catalog_incomplete",
+        "path": "/cores/eos/layers/process/groups/mujoco/nodes/simulator/package",
+        "stage": "descriptor"
+      }
+    },
+    {
+      "id": "unknown-catalog-version",
+      "mutation": {
+        "target": "descriptor",
+        "op": "replace",
+        "path": "/catalog_version",
+        "value": "0.2.0"
+      },
+      "expected_direct": {
+        "code": "mujoco_catalog_unsupported",
+        "path": "",
+        "stage": "descriptor"
+      },
+      "expected_graph": {
+        "code": "mujoco_catalog_unsupported",
+        "path": "/cores/eos/layers/process/groups/mujoco/nodes/simulator/package",
+        "stage": "descriptor"
+      }
+    },
+    {
+      "id": "duplicate-scene-id",
+      "mutation": {
+        "target": "descriptor",
+        "op": "replace",
+        "path": "/scenes/1/id",
+        "value": "pick-place"
+      },
+      "expected_direct": {
+        "code": "mujoco_scene_invalid",
+        "path": "",
+        "stage": "descriptor"
+      },
+      "expected_graph": {
+        "code": "mujoco_scene_invalid",
+        "path": "/cores/eos/layers/process/groups/mujoco/nodes/simulator/settings/scene",
+        "stage": "descriptor"
+      }
+    },
+    {
+      "id": "blank-scene-description",
+      "mutation": {
+        "target": "descriptor",
+        "op": "replace",
+        "path": "/scenes/0/description",
+        "value": "   "
+      },
+      "expected_direct": {
+        "code": "mujoco_scene_invalid",
+        "path": "",
+        "stage": "descriptor"
+      },
+      "expected_graph": {
+        "code": "mujoco_scene_invalid",
+        "path": "/cores/eos/layers/process/groups/mujoco/nodes/simulator/settings/scene",
+        "stage": "descriptor"
+      }
+    },
+    {
+      "id": "scene-profile-mismatch",
+      "mutation": {
+        "target": "descriptor",
+        "op": "replace",
+        "path": "/scenes/1/profile",
+        "value": "eos_benchmark_pick_place_v1"
+      },
+      "expected_direct": {
+        "code": "mujoco_scene_profile_mismatch",
+        "path": "",
+        "stage": "descriptor"
+      },
+      "expected_graph": {
+        "code": "mujoco_scene_profile_mismatch",
+        "path": "/cores/eos/layers/process/groups/mujoco/nodes/simulator/settings/scene",
+        "stage": "admission"
+      }
+    },
+    {
+      "id": "scene-digest-mismatch",
+      "mutation": {
+        "target": "descriptor",
+        "op": "replace",
+        "path": "/scenes/1/sha256",
+        "value": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "expected_direct": {
+        "code": "mujoco_scene_digest_mismatch",
+        "path": "",
+        "stage": "descriptor"
+      },
+      "expected_graph": {
+        "code": "mujoco_scene_digest_mismatch",
+        "path": "/cores/eos/layers/process/groups/mujoco/nodes/simulator/settings/scene",
+        "stage": "admission"
+      }
+    },
+    {
+      "id": "unknown-scene-id",
+      "mutation": {
+        "target": "graph",
+        "op": "replace",
+        "path": "/cores/eos/layers/process/groups/mujoco/nodes/simulator/settings/scene",
+        "value": "unknown-scene"
+      },
+      "expected_graph": {
+        "code": "mujoco_scene_unavailable",
+        "path": "/cores/eos/layers/process/groups/mujoco/nodes/simulator/settings/scene",
+        "stage": "admission"
+      }
+    },
+    {
+      "id": "duplicate-device-id",
+      "mutation": {
+        "target": "descriptor",
+        "op": "replace",
+        "path": "/devices/base",
+        "value": "cam-0"
+      },
+      "expected_direct": {
+        "code": "mujoco_device_invalid",
+        "path": "",
+        "stage": "descriptor"
+      },
+      "expected_graph": {
+        "code": "mujoco_device_invalid",
+        "path": "/cores/eos/layers/hardware/groups/base/nodes/drive/adapter/settings/device_id",
+        "stage": "descriptor"
+      }
+    },
+    {
+      "id": "device-map-mismatch",
+      "mutation": {
+        "target": "descriptor",
+        "op": "replace",
+        "path": "/device_catalog/2/id",
+        "value": "other-arm"
+      },
+      "expected_direct": {
+        "code": "mujoco_device_invalid",
+        "path": "",
+        "stage": "descriptor"
+      },
+      "expected_graph": {
+        "code": "mujoco_device_invalid",
+        "path": "/cores/eos/layers/hardware/groups/manipulator/nodes/arm/adapter/settings/device_id",
+        "stage": "descriptor"
+      }
+    },
+    {
+      "id": "device-scene-unsupported",
+      "mutation": {
+        "target": "descriptor",
+        "op": "replace",
+        "path": "/device_catalog/2/scene_ids",
+        "value": [
+          "pick-place"
+        ]
+      },
+      "expected_graph": {
+        "code": "mujoco_device_unavailable",
+        "path": "/cores/eos/layers/hardware/groups/manipulator/nodes/arm/adapter/settings/device_id",
+        "stage": "admission"
+      }
+    },
+    {
+      "id": "unknown-device-id",
+      "mutation": {
+        "target": "graph",
+        "op": "replace",
+        "path": "/cores/eos/layers/hardware/groups/manipulator/nodes/arm/adapter/settings/device_id",
+        "value": "other-arm"
+      },
+      "expected_graph": {
+        "code": "mujoco_device_unavailable",
+        "path": "/cores/eos/layers/hardware/groups/manipulator/nodes/arm/adapter/settings/device_id",
+        "stage": "admission"
+      }
+    },
+    {
+      "id": "missing-mujoco-library",
+      "mutation": {
+        "target": "runtime",
+        "op": "remove",
+        "path": "/MUJOCO_ROOT/lib/libmujoco.so.3.16.0"
+      },
+      "expected_graph": {
+        "code": "mujoco_library_unavailable",
+        "path": "/cores/eos/layers/process/groups/mujoco/nodes/simulator/package",
+        "stage": "admission"
+      }
+    },
+    {
+      "id": "linked-asset-changed",
+      "mutation": {
+        "target": "linked_payload",
+        "op": "change",
+        "path": "/assets/scene.xml"
+      },
+      "expected_graph": {
+        "code": "package_changed",
+        "path": "/cores/eos/layers/process/groups/mujoco/nodes/simulator/package",
+        "stage": "payload"
+      }
+    },
+    {
+      "id": "linked-scene-symlink",
+      "mutation": {
+        "target": "linked_payload",
+        "op": "symlink",
+        "path": "/assets/scene.xml"
+      },
+      "expected_graph": {
+        "code": "package_unsafe_path",
+        "path": "/cores/eos/layers/process/groups/mujoco/nodes/simulator/package",
+        "stage": "descriptor"
+      }
+    }
+  ],
+  "revision_boundary": {
+    "id": "stale-scene-revision",
+    "mutation": {
+      "target": "graph",
+      "op": "replace",
+      "path": "/cores/eos/layers/process/groups/mujoco/nodes/simulator/settings/scene",
+      "value": "navigation"
+    },
+    "expected_http_status": 409,
+    "saved_bytes_unchanged": true,
+    "active_revision_unchanged": true,
+    "running_child_scene_unchanged": true
+  }
+}

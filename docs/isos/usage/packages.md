@@ -20,6 +20,12 @@ For a release archive, `isos pkg verify <manifest> <asset>` checks the platform,
 
 See [backend design](../design/backend.md) and [release metadata](../interfaces/releases.md).
 
+## P02 scene and device catalog check
+
+For the `0.1.0` graph, use a bundle whose `backend-v2.json` has `catalog_version:"0.1.0"`, two scene entries (`pick-place`, `navigation`) with profile and SHA-256, and the complete camera/base/manipulator device catalog. A historical descriptor without any P02 fields remains for legacy graphs; it cannot supply the new preset. Link or install the exact verified `island/mujoco-sim@0.1.1` release, set `MUJOCO_ROOT` to the matching MuJoCo 3.16.0 installation, then preview `sim-hardware` with a scene ID, matching `camera_device`, `base_device`, `manipulator_device`, and an owner-only `socket`. The starter already contains the Dispatcher. The preset adds generic EOS hardware and primitive-binding nodes, plus a package-contributed process node; it does not add a Vision node. See the [IsOS catalog contract](../interfaces/mujoco-catalog.md) and [frozen cases](../../../tests/fixtures/scene_catalog/README.md).
+
+Preview changes only a draft. Validate and Apply recheck the exact receipt, scene profile/XML digest and referenced assets, selected device kind and scene membership, and host library before publishing a new saved revision. Run and Restart repeat checks before replacing children. Change the scene with a new revision-checked Apply followed by Restart. A missing scene/device/library or altered linked asset must leave saved bytes and the active child unchanged. P03 later presents these verified IDs through the generic node-options interface; this P02 check does not depend on that UI.
+
 ## P01 first-use acceptance
 
 Build a bundle in the MuJoCo repository and keep its v4 `release.json` beside the bundle. In a fresh `ISOS_HOME`, run `isos pkg verify release.json asset.tar.gz` for an archive, or `isos pkg link island/mujoco-sim 0.1.1 /absolute/bundle --manifest /absolute/bundle/release.json` for a local build. `isos pkg list` must show the exact version as verified with receipt provenance. Install/link alone must leave the starter graph's saved revision, active revision and process status unchanged. Compose the package's node set, Validate, Apply and Run only after a verified exact pin exists. The [P01 receipt contract](../interfaces/package-verification.md) defines the accepted files and error classifications.

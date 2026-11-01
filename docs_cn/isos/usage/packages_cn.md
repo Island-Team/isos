@@ -20,6 +20,12 @@ isos run
 
 参见[后端设计](../design/backend_cn.md)和[发行元数据](../interfaces/releases_cn.md)。
 
+## P02 场景与设备目录检查
+
+`0.1.0` 图须使用 `backend-v2.json` 含 `catalog_version:"0.1.0"` 的包，包含带 profile／SHA-256 的 `pick-place`、`navigation` 两个场景及完整相机／底盘／机械臂设备目录。完全不含 P02 字段的历史描述文件只供旧图使用，不能提供新预设。链接或安装精确已验证的 `island/mujoco-sim@0.1.1` 发行版，将 `MUJOCO_ROOT` 指向匹配的 MuJoCo 3.16.0 环境，再用场景 ID、匹配的 `camera_device`、`base_device`、`manipulator_device` 及仅所有者可访问的 `socket` 预览 `sim-hardware`。起始图已有 Dispatcher；预设加入 EOS 通用硬件、原语绑定和包贡献的进程节点，不加入 Vision 节点。见[IsOS 目录契约](../interfaces/mujoco-catalog_cn.md)与[固定负例](../../../tests/fixtures/scene_catalog/README.md)。
+
+预览仅改变草稿。Validate 和 Apply 在发布新保存修订前复查精确收据、场景 profile／XML 摘要及引用资源、设备类别与场景适用性和主机库。Run 和 Restart 在替换子进程前重复检查。修改场景须按修订 Apply 后 Restart。场景／设备／库缺失或已链接资源变化，均不得修改保存字节或活动子进程。P03 随后通过通用 node-options 界面展示这些已验证 ID；P02 检查不依赖该 UI。
+
 ## P01 首次使用验收
 
 在 MuJoCo 仓库构建包，并把 v4 `release.json` 放在包旁。使用全新的 `ISOS_HOME`，对归档执行 `isos pkg verify release.json asset.tar.gz`，或对本地构建执行 `isos pkg link island/mujoco-sim 0.1.1 /absolute/bundle --manifest /absolute/bundle/release.json`。`isos pkg list` 应把精确版本显示为已验证并列出收据来源。单纯安装／链接不得改变初始图的保存修订、活动修订或进程状态。存在精确已验证固定版本后，才合成包节点集合、Validate、Apply、Run。[P01 收据契约](../interfaces/package-verification_cn.md)定义接受的文件与错误类别。

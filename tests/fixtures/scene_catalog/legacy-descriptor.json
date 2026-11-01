@@ -1,0 +1,29 @@
+{
+  "schema_version": "2.0.0",
+  "package": {
+    "id": "island/mujoco-sim",
+    "version": "0.1.1"
+  },
+  "entrypoint": "bin/eos-mujoco-sim",
+  "protocol": "mujoco-v2",
+  "scenes": [
+    {
+      "id": "pick-place",
+      "path": "assets/scene.xml"
+    },
+    {
+      "id": "navigation",
+      "path": "assets/scenes/navigation/scene.xml"
+    }
+  ],
+  "devices": {
+    "camera": "cam-0",
+    "base": "base-0",
+    "manipulator": "arm-0"
+  },
+  "runtime": {
+    "mujoco_version": "3.16.0",
+    "environment_variable": "MUJOCO_ROOT",
+    "library": "lib/libmujoco.so.3.16.0"
+  }
+}

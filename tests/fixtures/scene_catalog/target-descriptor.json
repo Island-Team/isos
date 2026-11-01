@@ -1,0 +1,54 @@
+{
+  "schema_version": "2.0.0",
+  "catalog_version": "0.1.0",
+  "package": { "id": "island/mujoco-sim", "version": "0.1.1" },
+  "entrypoint": "bin/eos-mujoco-sim",
+  "protocol": "mujoco-v2",
+  "scenes": [
+    {
+      "id": "pick-place",
+      "label": "Pick and place",
+      "description": "Reach, grasp and place an object with the simulated arm and base",
+      "profile": "eos_benchmark_pick_place_v1",
+      "path": "assets/scene.xml",
+      "sha256": "6c677b07597ddf3d18cf7b30dddd407a09d1c53086d61c919592d16723d32aea"
+    },
+    {
+      "id": "navigation",
+      "label": "Navigation",
+      "description": "Move the simulated base to the marked navigation goal",
+      "profile": "eos_benchmark_navigation_v1",
+      "path": "assets/scenes/navigation/scene.xml",
+      "sha256": "522130ffd8f92de35b4b6100d38fb0c1337c3d9dafcb47191de29f79f09842e8"
+    }
+  ],
+  "devices": { "camera": "cam-0", "base": "base-0", "manipulator": "arm-0" },
+  "device_catalog": [
+    {
+      "kind": "camera",
+      "id": "cam-0",
+      "label": "Front RGB camera",
+      "description": "JPEG observations from the simulated robot camera",
+      "scene_ids": ["pick-place", "navigation"]
+    },
+    {
+      "kind": "base",
+      "id": "base-0",
+      "label": "Planar base",
+      "description": "Bounded body velocity movement in the simulated scene",
+      "scene_ids": ["pick-place", "navigation"]
+    },
+    {
+      "kind": "manipulator",
+      "id": "arm-0",
+      "label": "Six axis arm",
+      "description": "Six joint position movement in the simulated scene",
+      "scene_ids": ["pick-place", "navigation"]
+    }
+  ],
+  "runtime": {
+    "mujoco_version": "3.16.0",
+    "environment_variable": "MUJOCO_ROOT",
+    "library": "lib/libmujoco.so.3.16.0"
+  }
+}
