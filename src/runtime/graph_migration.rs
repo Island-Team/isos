@@ -83,8 +83,9 @@ pub struct Prepared {
 pub enum MigrationError {
     Conflict(String),
     Diagnostic(Diagnostic),
+    Generated(crate::generated_v2::Diagnostic),
     Filesystem(anyhow::Error),
-    OutcomeUncertain(anyhow::Error),
+    OutcomeUncertain,
 }
 
 impl std::fmt::Display for MigrationError {
@@ -92,12 +93,38 @@ impl std::fmt::Display for MigrationError {
         match self {
             Self::Conflict(message) => write!(formatter, "{message}"),
             Self::Diagnostic(diagnostic) => write!(formatter, "{diagnostic}"),
+            Self::Generated(diagnostic) => write!(formatter, "{diagnostic}"),
             Self::Filesystem(error) => write!(formatter, "{error:#}"),
-            Self::OutcomeUncertain(error) => {
-                write!(formatter, "commit_outcome_uncertain: {error:#}")
-            }
+            Self::OutcomeUncertain => write!(
+                formatter,
+                "generated_commit_uncertain: Reread the saved graph and selected generation"
+            ),
         }
     }
+}
+
+fn generated_error(error: anyhow::Error) -> MigrationError {
+    if let Some(diagnostic) = error.downcast_ref::<crate::generated_v2::Diagnostic>() {
+        return MigrationError::Generated(diagnostic.clone());
+    }
+    MigrationError::Filesystem(error)
+}
+
+fn generated_prepare_error(error: anyhow::Error) -> Diagnostic {
+    if let Some(generated) = error.downcast_ref::<crate::generated_v2::Diagnostic>() {
+        let mut result = diagnostic(&generated.path, generated.code, generated.message);
+        result
+            .context
+            .insert("stage".into(), generated.stage.into());
+        return result;
+    }
+    let mut result = diagnostic(
+        "",
+        "generated_owner_rejected",
+        "Restore the selected owner and correct the graph",
+    );
+    result.context.insert("stage".into(), "render".into());
+    result
 }
 
 fn diagnostic(
@@ -489,6 +516,8 @@ pub fn prepare(paths: &Paths, name: &str, proposal: &Proposal) -> Result<Prepare
     })?;
     preflight::verify_new_graph_readers(&specs)
         .map_err(|error| diagnostic("/cores/eos", "owner_reader_unavailable", error.to_string()))?;
+    crate::generated_v2::check_defaults(&proposal.graph)
+        .map_err(|error| generated_prepare_error(error.into()))?;
     for role in ["eos", "egia"] {
         if role == "egia" && proposal.graph.pointer("/cores/egia").is_none() {
             continue;
@@ -502,23 +531,17 @@ pub fn prepare(paths: &Paths, name: &str, proposal: &Proposal) -> Result<Prepare
             &proposal.revision,
         )
         .map_err(|error| {
-            diagnostic(
-                format!("/cores/{role}"),
-                "owner_validation_failed",
-                error.to_string(),
-            )
+            let _ = error;
+            generated_prepare_error(crate::generated_v2::owner_rejected(role).into())
         })?;
         if result["ok"] != true {
-            let first = &result["diagnostics"][0];
-            return Err(diagnostic(
-                first["path"].as_str().unwrap_or("/"),
-                "owner_validation_failed",
-                first["message"].as_str().unwrap_or("owner rejected graph"),
+            return Err(generated_prepare_error(
+                crate::generated_v2::owner_rejected(role).into(),
             ));
         }
     }
     let files = core_setup::render_graph(paths, name, &proposal.graph, &proposal.revision)
-        .map_err(|error| diagnostic("/", "owner_render_failed", error.to_string()))?;
+        .map_err(generated_prepare_error)?;
     Ok(Prepared {
         specs,
         files,
@@ -597,11 +620,11 @@ pub fn commit(
         &proposal.revision,
         prepared.files,
     )
-    .map_err(MigrationError::Filesystem)?;
+    .map_err(generated_error)?;
     config::atomic_write(&path, &proposal.bytes).map_err(MigrationError::Filesystem)?;
     fs::File::open(path.parent().unwrap())
         .and_then(|file| file.sync_all())
-        .map_err(|error| MigrationError::OutcomeUncertain(error.into()))?;
+        .map_err(|_| MigrationError::OutcomeUncertain)?;
     Ok(proposal)
 }
 
@@ -663,15 +686,14 @@ pub fn apply_new(
     if let Some(previous) = &previous {
         let saved = graph_compat::parse(previous).map_err(MigrationError::Filesystem)?;
         if saved.value == proposal.graph {
-            core_setup::verify_rendered_snapshot(
+            core_setup::write_revisioned(
                 paths,
                 name,
                 &saved.value,
                 &saved.revision,
-                &prepared.files,
+                prepared.files,
             )
-            .map_err(MigrationError::Filesystem)?;
-            core_setup::verify_launch_inputs(paths, name).map_err(MigrationError::Filesystem)?;
+            .map_err(generated_error)?;
             return Ok((
                 Proposal {
                     revision: saved.revision,
@@ -689,11 +711,11 @@ pub fn apply_new(
         &proposal.revision,
         prepared.files,
     )
-    .map_err(MigrationError::Filesystem)?;
+    .map_err(generated_error)?;
     config::atomic_write(&path, &proposal.bytes).map_err(MigrationError::Filesystem)?;
     fs::File::open(path.parent().unwrap())
         .and_then(|file| file.sync_all())
-        .map_err(|error| MigrationError::OutcomeUncertain(error.into()))?;
+        .map_err(|_| MigrationError::OutcomeUncertain)?;
     Ok((proposal, prepared.specs))
 }
 

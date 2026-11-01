@@ -398,15 +398,26 @@ fn migration_error(error: graph_migration::MigrationError) -> (StatusCode, Json<
             Json(json!({"schema_version":1,"ok":false,
                 "data":{"diagnostics":[diagnostic]},"error":"migration rejected"})),
         ),
+        graph_migration::MigrationError::Generated(diagnostic) => {
+            let status = if diagnostic.code == "generated_commit_uncertain" {
+                StatusCode::INTERNAL_SERVER_ERROR
+            } else {
+                StatusCode::UNPROCESSABLE_ENTITY
+            };
+            (
+                status,
+                Json(json!({"schema_version":1,"ok":false,
+                "data":{"diagnostics":[diagnostic]},"error":"generated configuration rejected"})),
+            )
+        }
         graph_migration::MigrationError::Filesystem(error) => {
             err(StatusCode::INTERNAL_SERVER_ERROR, error)
         }
-        graph_migration::MigrationError::OutcomeUncertain(error) => (
+        graph_migration::MigrationError::OutcomeUncertain => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(
-                json!({"schema_version":1,"ok":false,"data":{"code":"commit_outcome_uncertain"},
-                "error":format!("commit_outcome_uncertain: {error:#}")}),
-            ),
+            Json(json!({"schema_version":1,"ok":false,
+                "data":{"diagnostics":[crate::generated_v2::commit_uncertain()]},
+                "error":"generated configuration publication is uncertain"})),
         ),
     }
 }
@@ -1059,8 +1070,14 @@ async fn process_control(
                 if let Some(remote) = error.downcast_ref::<crate::manager::RemoteDiagnosticError>()
                     && remote.data["diagnostics"].is_array()
                 {
+                    let status =
+                        if remote.data["diagnostics"][0]["code"] == "generated_commit_uncertain" {
+                            StatusCode::INTERNAL_SERVER_ERROR
+                        } else {
+                            StatusCode::UNPROCESSABLE_ENTITY
+                        };
                     (
-                        StatusCode::UNPROCESSABLE_ENTITY,
+                        status,
                         Json(json!({"schema_version":1,"ok":false,
                         "data":remote.data,"error":remote.message})),
                     )

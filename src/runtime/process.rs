@@ -130,6 +130,8 @@ pub struct ProcessSettings {
     #[serde(default)]
     pub env: BTreeMap<String, String>,
     #[serde(default)]
+    pub env_from: BTreeMap<String, String>,
+    #[serde(default)]
     pub ready_tcp: Option<String>,
     #[serde(default)]
     pub ready_unix: Option<PathBuf>,
@@ -243,6 +245,20 @@ impl ProcessSpec {
                 self.id
             );
         }
+        ensure!(
+            s.env_from.len() <= 32,
+            "{}: too many env_from entries",
+            self.id
+        );
+        for (target, source) in &s.env_from {
+            ensure!(
+                crate::generated_v2::valid_env(target)
+                    && crate::generated_v2::valid_env(source)
+                    && !s.env.contains_key(target),
+                "{}: invalid or duplicate env_from target",
+                self.id
+            );
+        }
         Ok(())
     }
 }
@@ -299,6 +315,35 @@ pub fn use_generated_eos_profile(specs: &mut [ProcessSpec], path: &Path) -> Resu
             "{id} has invalid --profile arguments"
         );
         spec.settings.command[index + 1] = path.to_string_lossy().into_owned();
+    }
+    Ok(())
+}
+
+pub fn use_generated_egia_config(specs: &mut [ProcessSpec], root: &Path) -> Result<()> {
+    let Some(spec) = specs.iter_mut().find(|spec| spec.id == "egia") else {
+        return Ok(());
+    };
+    ensure!(
+        root.is_absolute() && root.is_dir(),
+        "selected EGIA configuration is missing"
+    );
+    ensure!(
+        !spec.settings.command.iter().any(|arg| arg == "--etc")
+            && !spec.settings.env.contains_key("EGIA_ETC"),
+        "EGIA configuration must use the selected generated root"
+    );
+    let path = root.to_string_lossy().into_owned();
+    spec.settings.command.extend(["--etc".into(), path.clone()]);
+    spec.settings.env.insert("EGIA_ETC".into(), path);
+    for flag in ["--managed", "--no-tui"] {
+        if !spec.settings.command.iter().any(|arg| arg == flag) {
+            spec.settings.command.push(flag.into());
+        }
+    }
+    if !spec.settings.command.iter().any(|arg| arg == "--mode") {
+        spec.settings
+            .command
+            .extend(["--mode".into(), "isos".into()]);
     }
     Ok(())
 }
@@ -529,6 +574,11 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
                         let mut settings: ProcessSettings =
                             serde_json::from_value(node.settings)
                                 .with_context(|| format!("{path}: invalid process settings"))?;
+                        ensure!(
+                            node.node_type == "isos.process.component@v0.1"
+                                || settings.env_from.is_empty(),
+                            "{path}: env_from requires the @v0.1 component type"
+                        );
                         let binary = match key.as_str() {
                             "eos" => "aether-runtime",
                             "bridge" => "aether-http-bridge",
@@ -937,6 +987,12 @@ fn catalog_with_sidecars(sidecars: Vec<PathBuf>) -> Result<Value> {
         component["description"] = Value::String(
             "IsOS-owned role-selected child with bounded arguments and readiness".into(),
         );
+        if let Some(settings) = component["settings"].as_array_mut() {
+            settings.push(serde_json::json!({
+                "name":"env_from","data_type":"string_table","required":false,
+                "description":"Child environment targets and manager environment source names"
+            }));
+        }
         types.push(component);
     }
     let builtin: BTreeSet<_> = types
@@ -1064,13 +1120,18 @@ impl Supervisor {
         })
     }
 
-    fn spawn(&self, spec: &ProcessSpec) -> Result<Child> {
+    fn spawn(
+        &self,
+        spec: &ProcessSpec,
+        secrets: &BTreeMap<String, std::ffi::OsString>,
+    ) -> Result<Child> {
         let mut command = Command::new(&spec.settings.command[0]);
         command.args(&spec.settings.command[1..]);
         if spec.id == "eos" && spec.package.is_some() {
             command.arg("--log-dir").arg(self.logs.root());
         }
         command.envs(&spec.settings.env);
+        command.envs(secrets);
         if let Some(cwd) = &spec.settings.cwd {
             command.current_dir(cwd);
         }
@@ -1166,6 +1227,14 @@ impl Supervisor {
     }
 
     pub fn start(&mut self, specs: &[ProcessSpec]) -> Result<Vec<String>> {
+        self.start_with_secrets(specs, &crate::generated_v2::SecretPlan::new())
+    }
+
+    pub fn start_with_secrets(
+        &mut self,
+        specs: &[ProcessSpec],
+        secrets: &crate::generated_v2::SecretPlan,
+    ) -> Result<Vec<String>> {
         let mut added = Vec::new();
         for spec in specs {
             if self.running.contains_key(&spec.id) {
@@ -1179,7 +1248,8 @@ impl Supervisor {
                     spec.id
                 );
             }
-            let mut child = match self.spawn(spec) {
+            let empty = BTreeMap::new();
+            let mut child = match self.spawn(spec, secrets.get(&spec.id).unwrap_or(&empty)) {
                 Ok(child) => child,
                 Err(error) => {
                     self.rollback(&added);
@@ -1273,13 +1343,16 @@ impl Supervisor {
             };
             if restart && process.restarts < process.spec.settings.max_restarts {
                 thread::sleep(Duration::from_millis(100 * (1 << process.restarts.min(5))));
-                let mut child = match self.spawn(&process.spec) {
-                    Ok(child) => child,
-                    Err(error) => {
-                        self.order.retain(|candidate| candidate != &id);
-                        return Err(error);
-                    }
-                };
+                let plan = crate::generated_v2::secret_plan(std::slice::from_ref(&process.spec))?;
+                let empty = BTreeMap::new();
+                let mut child =
+                    match self.spawn(&process.spec, plan.get(&process.spec.id).unwrap_or(&empty)) {
+                        Ok(child) => child,
+                        Err(error) => {
+                            self.order.retain(|candidate| candidate != &id);
+                            return Err(error);
+                        }
+                    };
                 if let Err(error) = Self::wait_ready(&process.spec, &mut child) {
                     terminate(&mut child);
                     self.order.retain(|candidate| candidate != &id);

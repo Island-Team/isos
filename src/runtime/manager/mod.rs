@@ -80,8 +80,10 @@ fn preflight_packages(
     core_setup::verify_launch_inputs(paths, name)?;
     let graph: Value = serde_json::from_str(source)?;
     if graph["version"] == "0.1.0" {
-        let generated = core_setup::snapshot_root(paths, name, revision).join("eos/graph.json");
+        let selected = crate::generated_v2::selected_root(paths, name, &graph, revision)?;
+        let generated = selected.join("eos/graph.json");
         process::use_generated_eos_profile(&mut specs, &generated)?;
+        process::use_generated_egia_config(&mut specs, &selected.join("egia"))?;
         preflight::verify_new_graph_readers(&specs)?;
     }
     preflight::verify_processes(paths, &specs)?;
@@ -106,6 +108,7 @@ fn validate_saved_graph(paths: &config::Paths, name: &str, source: &str) -> Resu
     }
 }
 
+#[cfg(test)]
 pub(crate) fn restart_processes(
     paths: &config::Paths,
     managers: &mut Deployments,
@@ -113,6 +116,22 @@ pub(crate) fn restart_processes(
     revision: &str,
     specs: &[process::ProcessSpec],
 ) -> Result<Vec<String>> {
+    let plan = crate::generated_v2::secret_plan(specs)?;
+    restart_processes_with_plan(paths, managers, name, revision, specs, &plan)
+}
+
+fn restart_processes_with_plan(
+    paths: &config::Paths,
+    managers: &mut Deployments,
+    name: &str,
+    revision: &str,
+    specs: &[process::ProcessSpec],
+    plan: &crate::generated_v2::SecretPlan,
+) -> Result<Vec<String>> {
+    let old_plan = managers
+        .get(name)
+        .map(|active| crate::generated_v2::secret_plan(&active.supervisor.specs()))
+        .transpose()?;
     let mut supervisor = process::Supervisor::new(paths, name)?;
     let previous = managers.remove(name).map(|mut active| {
         let old_specs = active.supervisor.specs();
@@ -120,7 +139,7 @@ pub(crate) fn restart_processes(
         (active, old_specs)
     });
     let attempt = (|| -> Result<Vec<String>> {
-        let started = supervisor.start(specs)?;
+        let started = supervisor.start_with_secrets(specs, plan)?;
         std::thread::sleep(Duration::from_millis(100));
         let running = supervisor.status()?;
         ensure!(
@@ -134,14 +153,18 @@ pub(crate) fn restart_processes(
         Err(error) => {
             supervisor.stop();
             if let Some((mut active, old_specs)) = previous {
-                let restore = active.supervisor.start(&old_specs).and_then(|_| {
-                    std::thread::sleep(Duration::from_millis(100));
-                    ensure!(
-                        active.supervisor.status()?.len() == old_specs.len(),
-                        "a previous child exited during restoration"
-                    );
-                    Ok(())
-                });
+                let empty = crate::generated_v2::SecretPlan::new();
+                let restore = active
+                    .supervisor
+                    .start_with_secrets(&old_specs, old_plan.as_ref().unwrap_or(&empty))
+                    .and_then(|_| {
+                        std::thread::sleep(Duration::from_millis(100));
+                        ensure!(
+                            active.supervisor.status()?.len() == old_specs.len(),
+                            "a previous child exited during restoration"
+                        );
+                        Ok(())
+                    });
                 match restore {
                     Ok(_) => {
                         active.last_error = None;
@@ -307,11 +330,13 @@ pub(crate) fn api_call(
             }
             let specs = preflight_packages(paths, &name, &source, &revision)?;
             core_setup::prepare_run(paths, &name, &revision)?;
+            let plan = crate::generated_v2::secret_plan(&specs)?;
             ensure!(
                 starter::revision(&path)? == revision,
                 "saved graph revision changed during core setup; reload before restart"
             );
-            let started = restart_processes(paths, managers, &name, &revision, &specs)?;
+            let started =
+                restart_processes_with_plan(paths, managers, &name, &revision, &specs, &plan)?;
             Ok(json!({"started":started,"active_revision":revision}))
         }
         "deployment_start" => {
@@ -327,6 +352,7 @@ pub(crate) fn api_call(
             }
             let specs = preflight_packages(paths, &name, &source, &revision)?;
             core_setup::prepare_run(paths, &name, &revision)?;
+            let plan = crate::generated_v2::secret_plan(&specs)?;
             ensure!(
                 starter::revision(&path)? == revision,
                 "saved graph revision changed during core setup; reload before run"
@@ -349,15 +375,17 @@ pub(crate) fn api_call(
                 );
                 &mut managers.get_mut(&name).unwrap().supervisor
             };
-            let started = match manager.start(&specs).and_then(|started| {
-                std::thread::sleep(Duration::from_millis(100));
-                let running = manager.status()?;
-                ensure!(
-                    running.len() == specs.len(),
-                    "a managed process exited during startup; inspect categorized child logs"
-                );
-                Ok(started)
-            }) {
+            let started = match manager
+                .start_with_secrets(&specs, &plan)
+                .and_then(|started| {
+                    std::thread::sleep(Duration::from_millis(100));
+                    let running = manager.status()?;
+                    ensure!(
+                        running.len() == specs.len(),
+                        "a managed process exited during startup; inspect categorized child logs"
+                    );
+                    Ok(started)
+                }) {
                 Ok(started) => started,
                 Err(error) => {
                     if let Some(active) = managers.get_mut(&name) {
@@ -504,6 +532,11 @@ pub(crate) fn handle_client(
                             cause
                                 .downcast_ref::<crate::packages::PackageFailure>()
                                 .map(|failure| json!({"diagnostics":[failure.diagnostic()]}))
+                        })
+                        .or_else(|| {
+                            cause
+                                .downcast_ref::<crate::generated_v2::Diagnostic>()
+                                .map(|diagnostic| json!({"diagnostics":[diagnostic]}))
                         })
                 })
                 .unwrap_or(Value::Null),

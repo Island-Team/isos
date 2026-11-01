@@ -358,12 +358,19 @@ pub fn refresh_after_init(paths: &Paths, name: &str) -> Result<Option<String>> {
     let saved = graph_compat::read(&graph_path)
         .with_context(|| format!("read {}", graph_path.display()))?;
     if saved.value["version"] == "0.1.0" {
-        if !snapshot_root(paths, name, &saved.revision).exists() {
+        if !snapshot_root(paths, name, &saved.revision).exists()
+            && !paths.generated(name).join("selection.json").exists()
+            && !paths
+                .generated(name)
+                .join("v2/required")
+                .join(format!("{}.json", saved.revision))
+                .exists()
+        {
             return Ok(None);
         }
         verify_launch_inputs(paths, name).map_err(|error| {
             anyhow::anyhow!(
-                "0.1.0 generated inputs are stale or invalid: {error:#}; restore the pinned binary or create a new graph revision and Apply; `isos init` keeps the revisioned snapshot immutable"
+                "0.1.0 generated inputs are stale or invalid: {error:#}; restore the selected inputs or Apply the same saved revision again; `isos init` keeps the generation immutable"
             )
         })?;
         return Ok(None);
@@ -418,7 +425,17 @@ pub fn render_graph(
     let mut files = Vec::new();
     let mut seen_files = BTreeSet::new();
     for role in roles {
-        let reply = call(paths, name, role, "render", graph, expected_revision)?;
+        let reply =
+            call(paths, name, role, "render", graph, expected_revision).map_err(|error| {
+                if graph["version"] == "0.1.0" {
+                    anyhow::Error::new(crate::generated_v2::owner_rejected(role))
+                } else {
+                    error
+                }
+            })?;
+        if graph["version"] == "0.1.0" && reply["ok"] != true {
+            return Err(crate::generated_v2::owner_rejected(role).into());
+        }
         ensure!(
             reply["ok"] == true,
             "{role} setup rejected graph: {}",
@@ -430,7 +447,13 @@ pub fn render_graph(
             "setup adapter returned too many files"
         );
         for entry in entries {
-            let file = safe_file(role, entry)?;
+            let file = safe_file(role, entry).map_err(|error| {
+                if graph["version"] == "0.1.0" {
+                    anyhow::Error::new(crate::generated_v2::unsafe_render())
+                } else {
+                    error
+                }
+            })?;
             ensure!(
                 seen_files.insert(file.0.clone()),
                 "duplicate setup file path"
@@ -468,7 +491,8 @@ pub fn verify_launch_inputs(paths: &Paths, name: &str) -> Result<()> {
     let saved = graph_compat::read(&graph_path)?;
     let file = if saved.value["version"] == "0.1.0" {
         verify_revisioned(paths, name, &saved.value, &saved.revision)?;
-        snapshot_root(paths, name, &saved.revision).join("core-setup/launch-inputs.json")
+        crate::generated_v2::selected_root(paths, name, &saved.value, &saved.revision)?
+            .join("core-setup/launch-inputs.json")
     } else {
         paths.generated(name).join("core-setup/launch-inputs.json")
     };
@@ -534,60 +558,8 @@ pub fn write_revisioned(
     graph_revision: &str,
     files: Vec<(PathBuf, Vec<u8>)>,
 ) -> Result<PathBuf> {
-    let root = snapshot_root(paths, name, graph_revision);
-    if root.exists() {
-        verify_revisioned(paths, name, graph, graph_revision)?;
-        return Ok(root);
-    }
-    let generated = paths.generated(name);
-    fs::create_dir_all(&generated)?;
-    let staging = tempfile::Builder::new()
-        .prefix("revision-")
-        .tempdir_in(&generated)?;
-    let mut entries = Vec::new();
-    for (relative, content) in files {
-        let relative = if relative == Path::new("launch-inputs.json") {
-            PathBuf::from("core-setup/launch-inputs.json")
-        } else {
-            relative
-        };
-        ensure!(
-            relative
-                .components()
-                .all(|part| matches!(part, Component::Normal(_))),
-            "invalid generated file path"
-        );
-        config::atomic_write(&staging.path().join(&relative), &content)?;
-        entries.push(json!({"path":relative,"sha256":revision(&content)}));
-    }
-    ensure!(
-        entries
-            .iter()
-            .any(|entry| entry["path"] == "eos/graph.json"),
-        "new graph requires generated EOS profile"
-    );
-    ensure!(
-        entries
-            .iter()
-            .any(|entry| entry["path"] == "core-setup/launch-inputs.json"),
-        "new graph requires launch inputs"
-    );
-    let mut package_receipts = Vec::new();
-    for package in package_refs(paths, graph)? {
-        let receipt = Path::new(package["path"].as_str().unwrap()).join("receipt.json");
-        package_receipts.push(json!({"id":package["id"],"version":package["version"],
-            "sha256":revision(&fs::read(receipt)?)}));
-    }
-    let manifest = json!({"schema_version":1,"source_revision":graph_revision,
-        "graph_sha256":graph_revision,"files":entries,"packages":package_receipts});
-    config::atomic_write(
-        &staging.path().join("manifest.json"),
-        &serde_json::to_vec_pretty(&manifest)?,
-    )?;
-    fs::File::open(staging.path())?.sync_all()?;
-    fs::rename(staging.path(), &root)?;
-    fs::File::open(&generated)?.sync_all()?;
-    Ok(root)
+    crate::generated_v2::publish(paths, name, graph, graph_revision, &files)
+        .map_err(anyhow::Error::new)
 }
 
 pub fn verify_revisioned(
@@ -596,6 +568,9 @@ pub fn verify_revisioned(
     graph: &Value,
     graph_revision: &str,
 ) -> Result<()> {
+    if crate::generated_v2::selected(paths, name, graph, graph_revision, None)?.is_some() {
+        return Ok(());
+    }
     let root = snapshot_root(paths, name, graph_revision);
     let manifest: Value = serde_json::from_slice(&fs::read(root.join("manifest.json"))?)?;
     ensure!(
@@ -664,6 +639,10 @@ pub fn verify_rendered_snapshot(
     graph_revision: &str,
     expected: &[(PathBuf, Vec<u8>)],
 ) -> Result<()> {
+    if crate::generated_v2::selected(paths, name, graph, graph_revision, Some(expected))?.is_some()
+    {
+        return Ok(());
+    }
     verify_revisioned(paths, name, graph, graph_revision)?;
     let root = snapshot_root(paths, name, graph_revision);
     let manifest: Value = serde_json::from_slice(&fs::read(root.join("manifest.json"))?)?;
@@ -842,12 +821,17 @@ mod tests {
             serde_json::to_vec_pretty(&manifest).unwrap(),
         )
         .unwrap();
-        verify_revisioned(&paths, "default", &graph, &graph_revision).unwrap();
+        assert!(
+            verify_revisioned(&paths, "default", &graph, &graph_revision)
+                .unwrap_err()
+                .to_string()
+                .contains("generated_render_mismatch")
+        );
         assert!(
             verify_rendered_snapshot(&paths, "default", &graph, &graph_revision, &expected)
                 .unwrap_err()
                 .to_string()
-                .contains("differs from owner render")
+                .contains("generated_render_mismatch")
         );
     }
 
@@ -862,13 +846,11 @@ mod tests {
         config::atomic_write(&paths.node_graph_path("default"), &bytes).unwrap();
         let files = vec![
             (PathBuf::from("eos/graph.json"), b"{}".to_vec()),
-            (
-                PathBuf::from("launch-inputs.json"),
-                b"[{\"core\":\"invalid\"}]".to_vec(),
-            ),
+            (PathBuf::from("launch-inputs.json"), b"[]".to_vec()),
         ];
         let root = write_revisioned(&paths, "default", &graph, &graph_revision, files).unwrap();
         let manifest_before = fs::read(root.join("manifest.json")).unwrap();
+        fs::write(root.join("eos/graph.json"), b"tampered").unwrap();
         let error = refresh_after_init(&paths, "default")
             .unwrap_err()
             .to_string();
@@ -877,7 +859,7 @@ mod tests {
             "{error}"
         );
         assert!(
-            error.contains("create a new graph revision and Apply"),
+            error.contains("Apply the same saved revision again"),
             "{error}"
         );
         assert_eq!(

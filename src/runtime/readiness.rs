@@ -1,6 +1,6 @@
 //! Human-facing readiness for configured core executables.
 
-use crate::{config::Paths, core_bins, core_setup, graph_compat, isosui, process};
+use crate::{config::Paths, core_bins, core_setup, generated_v2, graph_compat, isosui, process};
 use serde_json::{Value, json};
 
 fn process_present(graph: &Value, id: &str) -> bool {
@@ -45,9 +45,10 @@ pub fn report(paths: &Paths, name: &str, active: Option<&Value>) -> Value {
             };
             let enabled = process_present(&graph, core);
             let generated = if graph["version"] == "0.1.0" {
-                graph_revision.as_deref().map(|revision| {
-                    core_setup::snapshot_root(paths, name, revision)
-                        .join("core-setup/launch-inputs.json")
+                graph_revision.as_deref().and_then(|revision| {
+                    generated_v2::selected_root(paths, name, &graph, revision)
+                        .ok()
+                        .map(|root| root.join("core-setup/launch-inputs.json"))
                 })
             } else {
                 Some(paths.generated(name).join("core-setup/launch-inputs.json"))
