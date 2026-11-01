@@ -6,8 +6,8 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parent
 cases = json.loads((root / "cases.json").read_text())
-assert len(cases) == 19
-assert [case["id"] for case in cases] == [f"R04-I{i:02}" for i in range(1, 20)]
+assert len(cases) == 20
+assert [case["id"] for case in cases] == [f"R04-I{i:02}" for i in range(1, 21)]
 assert all({"id", "operation", "mutation", "expected"} <= set(case) for case in cases)
 for case in cases:
     for diagnostic in ([case["diagnostic"]] if "diagnostic" in case else case.get("diagnostics", [])):
@@ -32,4 +32,4 @@ assert catalog["items_schema"]["additionalProperties"] is False
 assert catalog["items_schema"]["properties"]["package"]["additionalProperties"] is False
 for name in ("README.md", "README_cn.md"):
     assert (root / name).is_file()
-print("R04 IsOS design fixtures: 19 cases, selection and catalog schemas pass")
+print("R04 IsOS design fixtures: 20 cases, selection and catalog schemas pass")

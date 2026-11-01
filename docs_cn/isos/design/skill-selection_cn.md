@@ -12,8 +12,12 @@ IsOS 的 G06 聚合 catalog 发布由 IsOS 拥有的精确 `isos.process.compone
 
 Run/Restart 在 deployment lock 下执行现有 G01/G06/P01/P04/P05 与 R03 预检，要求非空选择必须指向明确的 schema-2 V2 leaf，重新计算图、文件、软件包与库摘要，将新渲染的选择字节和 manifest 文件逐字节比较，再检查全部待启动进程并解析 secret。只有预检通过才分配新的 R03 run，并只向 EOS 子进程传 `EOS_SKILL_SELECTION_FILE`。config、bridge、EGIA、MuJoCo 与独立 service 均不得接收。预检失败保留旧 PID 和 grant。自动 EOS 重启沿用同一文件；显式 Restart 再检查并轮换 R03 run/grant。失败的候选运行按现有恢复路径处理，并使用新 run ID。
 
-EOS 在目录变成可用前再次检查选中 manifest 与库内容。链接 payload 可能在 IsOS 预检与 EOS 启动之间变化；EOS 以 nofollow 打开同一文件句柄，哈希并复制到私有暂存，受限 worker 只加载该副本。Catalog 准入不能调用 handler；无效 ABI/描述符/能力声明在调用前失败。此负面边界不宣称能隔离任意同 UID 或内核受损的软件包代码。
+EOS 在目录变成可用前再次检查选中 manifest 与库内容。链接 payload 可能在 IsOS 预检与 EOS 启动之间变化；EOS 以 nofollow 打开同一文件句柄，哈希并复制到私有暂存，受限 worker 只加载该副本。Catalog 准入不能调用 handler；无效 ABI、描述符或不支持的已声明 callback 类别在调用前失败。若有效 handler 随后请求未声明的 primitive，Broker 在 handler 已启动后、Dispatcher release 前拒绝该请求。此负面边界不宣称能隔离任意同 UID 或内核受损的软件包代码。
 
 验证使用[机器用例](../../../tests/fixtures/skill_selection/README_cn.md)。单元测试检查指针、pin 收集、排序与去重、规范字节、P01 链接变化、P04 generation 和子进程环境。stub 集成测试启动两代进程：篡改库和旧 EOS feature 在停止第一代前拒绝；有效选择只到达 EOS。EOS owner replay 检查错误 revision、ABI/描述符、未声明能力和 worker 回收。完整命令与输出放入 `logs/test/<run-id>/`；实现后在此记录结果。
 
-设计用例检查（2026-11-02）：`python3 tests/fixtures/skill_selection/check_cases.py` 通过 19 个用例 ID 与选择文件结构；`git diff --check` 通过。变更文档的相对链接扫描未发现缺失目标。完整本地输出在忽略的 `logs/test/20261102-r04-isos-design/`。这只检查契约结构；实现与跨所有者重放仍未完成。
+设计用例检查（2026-11-02）：`python3 tests/fixtures/skill_selection/check_cases.py` 通过 20 个用例 ID 与选择文件结构；`git diff --check` 通过。变更文档的相对链接扫描未发现缺失目标。完整本地输出在忽略的 `logs/test/20261102-r04-isos-design/`。这只检查契约结构；实现与跨所有者重放仍未完成。
+
+## 精确诊断路径
+
+Validate、Apply、Run 和 Restart 必须在通用 `ProcessSettings` 反序列化之前对原始图运行 R04 预验证器；现有通用解析器会把嵌套错误收缩为节点路径，丢失字段或数组索引。只有位于 `isos/process/component/eos`、解析到 `aether-runtime` 的 `@v0.1` 节点可以选择库；`bridge`、`config` 和其他 EOS-role 节点即使 `role` 同为 `eos` 仍须在各自 `/settings/skill_libraries` 指针失败。

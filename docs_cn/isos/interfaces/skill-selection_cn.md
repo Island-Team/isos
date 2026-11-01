@@ -29,6 +29,6 @@ IsOS 拥有并发布同时含已有 `env_from` 和新 `skill_libraries` 的 `@v0
 
 Run/Restart 在停止旧子进程之前重新检查保存图、V2 selection 与 marker、完整 manifest、P01 pin、库摘要和 EOS feature。缺失、变更、未列出、不安全或 revision 错误的选择失败，并保留当前 PID、run ID、active revision 与 grant。G03 和旧 flat 快照不能启用该选择。相同图 revision 的包或二进制变更需要再次 Apply 来选择新 generation，再显式 Restart 才生效。自动 EOS 子进程重启沿用同一次运行的文件和 grant；Stop 在子进程回收后撤销 R03 grant。
 
-EOS 在 worker 查询前独立验证 manifest、文件、revision、摘要和路径。对于链接包，EOS 以 nofollow 打开精确文件，从同一打开句柄计算摘要并复制到 EOS 私有只读暂存文件；受限 worker 只加载该副本。无效 ABI、描述符或未声明能力在 handler 调用前失败。IsOS 与 EOS 的两次检查均不可省略。
+EOS 在 worker 查询前独立验证 manifest、文件、revision、摘要和路径。对于链接包，EOS 以 nofollow 打开精确文件，从同一打开句柄计算摘要并复制到 EOS 私有只读暂存文件；受限 worker 只加载该副本。无效 ABI、描述符或不支持的已声明 callback 类别在 handler 调用前失败；handler 运行时请求未声明 primitive 则由 Broker 在 Dispatcher release 前拒绝。IsOS 与 EOS 的两次检查均不可省略。
 
 P01 损坏沿用 `package_changed`、`package_unsafe_path` 或 `package_missing_file`，指向条目 `/package`；P04 快照损坏沿用 `generated_manifest_mismatch`；P05 feature 缺失沿用 `reader_feature_unsupported`。R04 语义错误使用现有 schema-1 API 诊断 `{code,path,message,stage}`：`skill_selection_invalid`（`graph`）、`skill_package_incompatible`（`package`）、`skill_library_unsafe`（`package`）、`skill_library_changed`（`package`）。消息提供修复动作，不包含原始路径、库内容、grant 或 worker stderr。固定用例覆盖空 host、显式选择、重复、路径、符号链接、变更的链接包、旧 EOS feature、错误 generation、旧 PID 不变、环境隔离、无效 ABI、未声明能力及 worker 回收。完整输出保存于 `logs/test/<run-id>/`。

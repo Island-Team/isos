@@ -16,6 +16,7 @@
   {"id":"R04-I15","operation":"restart","mutation":"same_revision_new_verified_package_bytes_after_reapply","expected":"new_generation_requires_explicit_restart"},
   {"id":"R04-I16","operation":"auto_restart","mutation":"same_run_eos_child_failure","expected":"same_selection_file_and_r03_run_grants"},
   {"id":"R04-I17","operation":"run","mutation":"eos_detects_library_change_after_isos_preflight","expected":"worker_not_started_no_ready_claim"},
-  {"id":"R04-I18","operation":"run","mutation":"invalid_abi_or_undeclared_capability","expected":"candidate_run_rejected_before_handler_or_dispatch"},
-  {"id":"R04-I19","operation":"stop","mutation":"active_skill_worker","expected":"worker_reaped_before_eos_parent_exit"}
+  {"id":"R04-I18","operation":"run","mutation":"invalid_abi_or_descriptor","expected":"candidate_catalog_rejected_before_handler_invocation"},
+  {"id":"R04-I19","operation":"stop","mutation":"active_skill_worker","expected":"worker_reaped_before_eos_parent_exit"},
+  {"id":"R04-I20","operation":"execute","mutation":"valid_handler_requests_undeclared_primitive","expected":"broker_denies_after_handler_start_before_dispatcher_release"}
 ]
