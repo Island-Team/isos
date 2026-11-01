@@ -325,7 +325,7 @@ pub fn call(
     graph: &Value,
     graph_revision: &str,
 ) -> Result<Value> {
-    graph_compat::admit(graph, process::catalog().ok().as_ref())?;
+    graph_compat::admit_legacy_mapped(graph, process::catalog().ok().as_ref())?;
     let request = request(paths, name, role, op, graph, graph_revision)?;
     invoke(&selected_adapter(paths, role)?, &request)
 }
@@ -362,7 +362,7 @@ pub fn prepare_run(paths: &Paths, name: &str, expected_revision: &str) -> Result
         "node graph revision changed during setup"
     );
     let graph = saved.value;
-    graph_compat::admit(&graph, process::catalog().ok().as_ref())?;
+    graph_compat::admit_legacy_mapped(&graph, process::catalog().ok().as_ref())?;
     if graph["version"] == "0.1.0" {
         let proposal = crate::graph_migration::Proposal {
             graph: graph.clone(),
@@ -416,7 +416,7 @@ pub fn refresh_after_init(paths: &Paths, name: &str) -> Result<Option<String>> {
             graph_path.display()
         );
     }
-    graph_compat::admit(&graph, process::catalog().ok().as_ref())?;
+    graph_compat::admit_legacy_mapped(&graph, process::catalog().ok().as_ref())?;
     ensure!(
         graph["version"] == "1.0.0",
         "saved graph version {} cannot be refreshed as graph format 1.0.0; back up {}, run `isos init` to create a v1 starter, then add nodes and Save graph; the old file was left untouched",

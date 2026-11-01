@@ -155,6 +155,14 @@ fn keys(value: &Value, path: &str, allowed: &[&str]) -> Result<(), Diagnostic> {
 }
 
 pub fn propose(saved: &SavedGraph) -> Result<Proposal, Diagnostic> {
+    propose_inner(saved, true)
+}
+
+pub fn propose_for_inspection(saved: &SavedGraph) -> Result<Proposal, Diagnostic> {
+    propose_inner(saved, false)
+}
+
+fn propose_inner(saved: &SavedGraph, enforce_change_limit: bool) -> Result<Proposal, Diagnostic> {
     if saved.value["version"] != "1.0.0" {
         return Err(diagnostic(
             "/version",
@@ -230,7 +238,9 @@ pub fn propose(saved: &SavedGraph) -> Result<Proposal, Diagnostic> {
                         return Err(diagnostic(
                             format!("{node_path}/node_type"),
                             "unmapped_node_type",
-                            format!("{node_type} has no approved 0.1.0 mapping"),
+                            format!(
+                                "{node_type} has no approved 0.1.0 mapping; remove it or author a registered replacement"
+                            ),
                         ));
                     };
                     if node_type == "eos.process.mujoco@v1.0" && node["package"].is_null() {
@@ -247,7 +257,7 @@ pub fn propose(saved: &SavedGraph) -> Result<Proposal, Diagnostic> {
                         from,
                         to: (*target).into(),
                     });
-                    if changes.len() > 256 {
+                    if enforce_change_limit && changes.len() > 256 {
                         return Err(diagnostic(
                             "/changes",
                             "migration_change_limit",

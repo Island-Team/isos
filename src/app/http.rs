@@ -316,13 +316,25 @@ async fn node_graph(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResul
         .join("core-setup/launch-inputs.json")
         .is_file();
     let catalog = process::catalog().ok();
+    let projection =
+        graph_compat::legacy_projection(&saved.value, &saved.revision, catalog.as_ref());
     let editable_starter = !applied
         && saved.value["version"] == "1.0.0"
-        && graph_compat::admission_diagnostic(&saved.value, catalog.as_ref()).is_none();
+        && projection.as_ref().is_ok_and(Option::is_some);
     let editable_new = saved.value["version"] == "0.1.0"
         && graph_compat::admission_diagnostic(&saved.value, catalog.as_ref()).is_none();
-    ok(json!({"revision":saved.revision,"graph":saved.value,
-        "read_only":saved.read_only && !editable_starter && !editable_new,"diagnostics":saved.diagnostics}))
+    let mut diagnostics = saved.diagnostics;
+    if let Err(problem) = &projection
+        && diagnostics.is_empty()
+    {
+        diagnostics.push(problem.clone());
+    }
+    let mut data = json!({"revision":saved.revision,"graph":saved.value,
+        "read_only":saved.read_only && !editable_starter && !editable_new,"diagnostics":diagnostics});
+    if let Ok(Some(projection)) = projection {
+        data["legacy_projection"] = json!(projection);
+    }
+    ok(data)
 }
 
 #[derive(Deserialize)]
@@ -438,7 +450,8 @@ async fn validate_node_graph(
         };
     }
     let catalog = process::catalog().ok();
-    if let Some(diagnostic) = graph_compat::admission_diagnostic(&edit.graph, catalog.as_ref()) {
+    if let Some(diagnostic) = graph_compat::legacy_mapping_diagnostic(&edit.graph, catalog.as_ref())
+    {
         return ok(json!({"valid":false,"diagnostics":[diagnostic]}));
     }
     let edge_diagnostics = process::catalog()
@@ -482,7 +495,7 @@ async fn apply_node_graph(
         return ok(json!({"revision":proposal.revision,"graph":proposal.graph}));
     }
     let catalog = process::catalog().ok();
-    if let Some(diagnostic) = graph_compat::admission_diagnostic(&graph, catalog.as_ref()) {
+    if let Some(diagnostic) = graph_compat::legacy_mapping_diagnostic(&graph, catalog.as_ref()) {
         return Err((
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(json!({"schema_version":1,"ok":false,
@@ -503,6 +516,15 @@ async fn apply_node_graph(
                 ));
             }
             if saved.value["version"] == "1.0.0" {
+                if let Some(diagnostic) =
+                    graph_compat::projected_input_diagnostic(&saved, &graph, catalog.as_ref())
+                {
+                    return Err((
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        Json(json!({"schema_version":1,"ok":false,
+                            "data":{"diagnostics":[diagnostic]},"error":"projection is read-only"})),
+                    ));
+                }
                 if graph_compat::changed_legacy_diagnostic(&saved, &graph).is_none() {
                     process::validate_value(&app.paths, &saved.value)
                         .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
@@ -1219,6 +1241,123 @@ mod tests {
         let mut future = graph;
         future["version"] = json!("9.0.0");
         assert!(edge_diagnostics(&future, &catalog).is_empty());
+    }
+
+    #[tokio::test]
+    async fn legacy_get_projects_separately_and_unmapped_validate_apply_keep_raw_bytes() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = Arc::new(App {
+            paths: Paths {
+                config: temp.path().join("config"),
+                data: temp.path().join("data"),
+                runtime: temp.path().join("run"),
+            },
+            deployment: "default".into(),
+        });
+        let path = app.paths.node_graph_path("default");
+        let mapped =
+            include_bytes!("../../tests/fixtures/graph_compat/legacy_optional_defaults_1_0_0.json");
+        config::atomic_write(&path, mapped).unwrap();
+        let get = Request::builder()
+            .uri("/api/isos/v1/node-graph")
+            .header(header::HOST, "127.0.0.1:16000")
+            .body(Body::empty())
+            .unwrap();
+        let response = router(app.clone()).oneshot(get).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 1_000_000).await.unwrap())
+                .unwrap();
+        assert_eq!(body["data"]["revision"], graph_compat::revision(mapped));
+        assert_eq!(
+            body["data"]["graph"],
+            serde_json::from_slice::<Value>(mapped).unwrap()
+        );
+        assert_eq!(
+            body["data"]["legacy_projection"]["graph"]["version"],
+            "1.0.0"
+        );
+        assert_eq!(
+            body["data"]["legacy_projection"]["source_revision"],
+            graph_compat::revision(mapped)
+        );
+        assert!(body["data"]["legacy_projection"]["display_descriptions"].is_object());
+        assert_eq!(fs::read(&path).unwrap(), mapped);
+
+        let projection_input = body["data"]["legacy_projection"]["graph"].clone();
+        let apply = Request::builder()
+            .method(Method::PUT)
+            .uri("/api/isos/v1/node-graph")
+            .header(header::HOST, "127.0.0.1:16000")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&json!({"schema_version":1,
+                "revision":graph_compat::revision(mapped),"graph":projection_input}))
+                .unwrap(),
+            ))
+            .unwrap();
+        let response = router(app.clone()).oneshot(apply).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let reply: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 1_000_000).await.unwrap())
+                .unwrap();
+        assert_eq!(
+            reply["data"]["diagnostics"][0]["code"],
+            "projection_read_only"
+        );
+        assert_eq!(fs::read(&path).unwrap(), mapped);
+
+        let unmapped =
+            include_bytes!("../../tests/fixtures/graph_compat/legacy_unmapped_1_0_0.json");
+        config::atomic_write(&path, unmapped).unwrap();
+        let graph: Value = serde_json::from_slice(unmapped).unwrap();
+        let get = Request::builder()
+            .uri("/api/isos/v1/node-graph")
+            .header(header::HOST, "127.0.0.1:16000")
+            .body(Body::empty())
+            .unwrap();
+        let response = router(app.clone()).oneshot(get).await.unwrap();
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 1_000_000).await.unwrap())
+                .unwrap();
+        assert_eq!(body["data"]["read_only"], true);
+        assert!(body["data"].get("legacy_projection").is_none());
+        let expected = "/cores/eos/layers/control/groups/manual/nodes/manual_0/node_type";
+        assert_eq!(body["data"]["diagnostics"][0]["path"], expected);
+        assert_eq!(body["data"]["diagnostics"][0]["code"], "unmapped_node_type");
+        let validate = Request::builder()
+            .method(Method::POST)
+            .uri("/api/isos/v1/node-graph/validate")
+            .header(header::HOST, "127.0.0.1:16000")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&json!({"schema_version":1,"graph":graph})).unwrap(),
+            ))
+            .unwrap();
+        let response = router(app.clone()).oneshot(validate).await.unwrap();
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 1_000_000).await.unwrap())
+                .unwrap();
+        assert_eq!(body["data"]["valid"], false);
+        assert_eq!(body["data"]["diagnostics"][0]["path"], expected);
+        let apply = Request::builder()
+            .method(Method::PUT)
+            .uri("/api/isos/v1/node-graph")
+            .header(header::HOST, "127.0.0.1:16000")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&json!({"schema_version":1,
+                "revision":graph_compat::revision(unmapped),"graph":graph}))
+                .unwrap(),
+            ))
+            .unwrap();
+        let response = router(app).oneshot(apply).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 1_000_000).await.unwrap())
+                .unwrap();
+        assert_eq!(body["data"]["diagnostics"][0]["path"], expected);
+        assert_eq!(fs::read(path).unwrap(), unmapped);
     }
 
     #[tokio::test]
