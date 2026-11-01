@@ -1,0 +1,17 @@
+# R04 IsOS skill-selection cases
+
+[中文](README_cn.md) · [Owner contract](../../../docs/isos/interfaces/skill-selection.md) · [Design](../../../docs/isos/design/skill-selection.md)
+
+`cases.json` freezes the IsOS design boundary; it is not a passing implementation claim. Baseline: a saved `0.1.0` graph with one role-selected EOS `@v0.1` component, explicit schema-2 V2 generation, verified P01 `kind:"skill"` release `example/native-skill@0.1.0`, one regular `lib/island/skills/example.skill.so`, and an EOS stub advertising `host-skill-abi-v2`. The file `selection.example.json` shows the exact generated shape with synthetic digest and path placeholders; tests replace them with real hashes and private paths. No guest code runs while these fixtures are parsed.
+
+The implementation maps each case ID to a unit or stubbed cross-owner integration test and records commands, exact IsOS/EOS commits and full output under ignored `logs/test/<run-id>/`. Success requires the exact generated file in the manifest, P04 generation recomputation, P01 revalidation, EOS-only environment delivery and a ready catalog only after EOS verifies and stages the selected bytes. Every pre-stop failure preserves old PIDs, active revision, run ID and R03 grants. A later EOS worker rejection is recorded under the candidate run, not falsely reported as a pre-stop IsOS failure. P01/P04/P05 codes retain precedence. EOS tests independently cover ABI size negotiation, invalid descriptor, capability denial and worker reap.
+
+Negative graph, package, feature and snapshot cases freeze exact `{code,stage,path}` expectations in the machine table. R04-I04 checks `bridge` and `config` separately because both may have `role:"eos"` without being the selected runtime.
+
+`catalog-setting.example.json` freezes the IsOS-owned `@v0.1` setting metadata after EOS adds generic object-array support. Run `python3 tests/fixtures/skill_selection/check_cases.py` to validate case IDs, both example schemas and bilingual links.
+
+## Candidate catalog preflight target
+
+[`preflight_cases.json`](preflight_cases.json) freezes 18 IsOS owner-side cases against the independently approved [EOS private preflight design](https://github.com/Island-Team/Island-eos/blob/cf48e439c88d7938f5d5e9cf839b066883359d36/docs/eos/interfaces/skills/native/host-abi.md#private-candidate-catalog-preflight-target-design--not-implemented). R04-IPF07 exercises the earlier IsOS selected-pin graph gate with a linked P01-valid release; it does not invoke the EOS probe. The success and rejection objects are synthetic, closed one-line protocol examples. A case is a required future unit, stub or cross-owner replay, not a passing implementation result. Use an old serving run and record its PID set, run ID, active revision, R03 grants and run scope before each failure injection. Confirm checked candidate-grant retirement and probe-process reap before accepting a clean rejection. Capture first preflight failure through the manager-session correlation ID; a candidate run cursor is not published yet. The global deadline is 90 seconds. A probe success must be followed by the pre-stop byte/grant recheck and independent EOS launch admission. R05/R06 physical stop ordering remains a separate gate.
+
+Run `python3 tests/fixtures/skill_selection/preflight_cases.py` to check case IDs and the strict result examples. The script does not execute EOS or prove the transaction. Save later integration commands, full output, exact IsOS/EOS commits and observed child PIDs in ignored `logs/test/<run-id>/`.

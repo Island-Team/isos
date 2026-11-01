@@ -2,6 +2,8 @@
 mod auth;
 #[path = "domain/backend.rs"]
 mod backend;
+#[path = "runtime/candidate_skill_preflight.rs"]
+mod candidate_skill_preflight;
 #[path = "app/cli/mod.rs"]
 mod cli;
 #[path = "app/config.rs"]
@@ -60,6 +62,8 @@ mod readiness;
 mod release;
 #[path = "domain/services.rs"]
 mod services;
+#[path = "runtime/skill_selection.rs"]
+mod skill_selection;
 #[path = "domain/starter.rs"]
 mod starter;
 

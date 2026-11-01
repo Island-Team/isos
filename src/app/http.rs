@@ -3,7 +3,7 @@ use crate::{
     config::{self, Paths},
     core_setup, graph_compat, graph_migration, lock,
     log_store::LogStore,
-    node_options, node_sets, packages, process, reader_features, readiness,
+    node_options, node_sets, packages, process, reader_features, readiness, skill_selection,
 };
 use anyhow::{Context, Result};
 use axum::{
@@ -80,6 +80,16 @@ fn package_err(error: &anyhow::Error, id: &str, version: &str) -> (StatusCode, J
     )
 }
 fn admission_err(error: &anyhow::Error) -> (StatusCode, Json<Value>) {
+    if let Some(diagnostic) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<crate::skill_selection::Diagnostic>())
+    {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"schema_version":1,"ok":false,
+            "data":{"diagnostics":[diagnostic]},"error":"skill selection rejected"})),
+        );
+    }
     if let Some(failure) = error
         .chain()
         .find_map(|cause| cause.downcast_ref::<packages::PackageFailure>())
@@ -93,6 +103,12 @@ fn admission_err(error: &anyhow::Error) -> (StatusCode, Json<Value>) {
     err(StatusCode::UNPROCESSABLE_ENTITY, error)
 }
 fn admission_diagnostic(error: &anyhow::Error) -> Value {
+    if let Some(diagnostic) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<crate::skill_selection::Diagnostic>())
+    {
+        return json!(diagnostic);
+    }
     error
         .chain()
         .find_map(|cause| cause.downcast_ref::<graph_compat::Diagnostic>())
@@ -460,7 +476,7 @@ fn migration_error(error: graph_migration::MigrationError) -> (StatusCode, Json<
         graph_migration::MigrationError::Diagnostic(diagnostic) => (
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(json!({"schema_version":1,"ok":false,
-                "data":{"diagnostics":[diagnostic]},"error":"migration rejected"})),
+                "data":{"diagnostics":[graph_migration::public_diagnostic(&diagnostic)]},"error":"migration rejected"})),
         ),
         graph_migration::MigrationError::Generated(diagnostic) => {
             let status = if diagnostic.code == "generated_commit_uncertain" {
@@ -575,8 +591,15 @@ async fn validate_node_graph_inner(
         };
         return match graph_migration::prepare(&app.paths, &app.deployment, &proposal) {
             Ok(prepared) => ok(json!({"valid":true,"diagnostics":[],"edges":prepared.edges})),
-            Err(diagnostic) => ok(json!({"valid":false,"diagnostics":[diagnostic]})),
+            Err(diagnostic) => ok(
+                json!({"valid":false,"diagnostics":[graph_migration::public_diagnostic(&diagnostic)]}),
+            ),
         };
+    }
+    if let Err(diagnostic) = skill_selection::check_reserved(&edit.graph)
+        .and_then(|()| skill_selection::entries(&edit.graph).map(|_| ()))
+    {
+        return ok(json!({"valid":false,"diagnostics":[diagnostic]}));
     }
     if let Err(error) = packages::verify_graph_packages(&app.paths, &edit.graph) {
         return ok(
@@ -1480,6 +1503,41 @@ mod tests {
     use super::*;
     use axum::body::to_bytes;
     use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn legacy_validate_reports_skill_field_before_missing_package() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = Arc::new(App {
+            paths: Paths {
+                config: temp.path().join("config"),
+                data: temp.path().join("data"),
+                runtime: temp.path().join("run"),
+            },
+            deployment: "default".into(),
+        });
+        let graph = json!({"version":"1.0.0","robot":{},"cores":{"isos":{"layers":{"process":{"groups":{"component":{"nodes":{"eos":{
+            "id":"eos","node_type":"isos.process.component@v0.1","settings":{"role":"eos","skill_libraries":[{"package":{"id":"missing/skill","version":"0.1.0"},"library":"lib/example.skill.so"}]}
+        }}}}}}}}});
+        let Json(reply) = validate_node_graph_inner(
+            State(app),
+            HeaderMap::new(),
+            Json(NodeGraphEdit {
+                schema_version: 1,
+                graph,
+                revision: None,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            reply["data"]["diagnostics"][0]["code"],
+            "skill_selection_invalid"
+        );
+        assert_eq!(
+            reply["data"]["diagnostics"][0]["path"],
+            "/cores/isos/layers/process/groups/component/nodes/eos/settings/skill_libraries"
+        );
+    }
 
     #[test]
     fn graph_failure_event_keeps_structured_path_and_manager_session() {

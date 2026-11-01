@@ -658,6 +658,11 @@ impl LogStore {
     }
 }
 
+pub struct ChildAdmission {
+    pub nodes: Option<Arc<BTreeSet<String>>>,
+    pub skill_pins: BTreeSet<(String, String)>,
+}
+
 pub fn capture<R: std::io::Read + Send + 'static>(
     reader: R,
     store: LogStore,
@@ -665,7 +670,7 @@ pub fn capture<R: std::io::Read + Send + 'static>(
     stream: &'static str,
     run_id: String,
     pid: u32,
-    admitted_nodes: Option<Arc<BTreeSet<String>>>,
+    admission: Option<Arc<ChildAdmission>>,
 ) {
     std::thread::spawn(move || {
         capture_stream(
@@ -675,7 +680,7 @@ pub fn capture<R: std::io::Read + Send + 'static>(
             stream,
             &run_id,
             pid,
-            admitted_nodes.as_deref(),
+            admission.as_deref(),
         )
     });
 }
@@ -788,7 +793,7 @@ fn capture_stream<R: std::io::Read>(
     stream: &str,
     run_id: &str,
     pid: u32,
-    admitted_nodes: Option<&BTreeSet<String>>,
+    admission: Option<&ChildAdmission>,
 ) {
     let mut reader = BufReader::new(reader);
     let raw_dir = store.root.join("owner").join(&source);
@@ -796,6 +801,7 @@ fn capture_stream<R: std::io::Read>(
     let raw_enabled = private_dir(&store.root.join("owner"))
         .and_then(|_| private_dir(&raw_dir))
         .is_ok();
+    let empty_pins = BTreeSet::new();
     loop {
         let mut raw = Vec::new();
         // Bound a child that writes a very long line without a newline.
@@ -837,14 +843,26 @@ fn capture_stream<R: std::io::Read>(
                     && matches!(source.as_str(), "eos" | "bridge" | "config" | "egia")
                 {
                     match event_policy::parse_child(&raw, &source, run_id, pid) {
-                        Ok(event)
-                            if event["node_path"].as_str().is_none_or(|path| {
-                                admitted_nodes.is_none_or(|nodes| nodes.contains(path))
-                            }) =>
-                        {
-                            let _ = store.append_selected(&event);
+                        Ok(event) => {
+                            let node_admitted = event["node_path"].as_str().is_none_or(|path| {
+                                admission.is_none_or(|policy| {
+                                    policy
+                                        .nodes
+                                        .as_ref()
+                                        .is_none_or(|nodes| nodes.contains(path))
+                                })
+                            });
+                            if !node_admitted {
+                                reject(&store, "node_owner");
+                            } else if !event_policy::skill_pin_admitted(
+                                &event,
+                                admission.map_or(&empty_pins, |policy| &policy.skill_pins),
+                            ) {
+                                reject(&store, "skill_pin_mismatch");
+                            } else {
+                                let _ = store.append_selected(&event);
+                            }
                         }
-                        Ok(_) => reject(&store, "node_owner"),
                         Err(error) => {
                             let message = error.to_string();
                             let reason = if message.contains("run mismatch") {
@@ -876,7 +894,11 @@ fn capture_stream<R: std::io::Read>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
+    use std::{
+        io::Write,
+        os::unix::fs::PermissionsExt,
+        process::{Command, Stdio},
+    };
 
     #[test]
     fn selected_stdout_parser_reports_frame_then_eof_and_duplicate() {
@@ -905,6 +927,230 @@ mod tests {
         };
         let store = LogStore::new(&paths, "default").unwrap();
         (temp, store)
+    }
+
+    fn skill_page(
+        store: &LogStore,
+        source: &str,
+        correlation_id: Option<&str>,
+        cursor: Option<&str>,
+    ) -> Value {
+        store
+            .read_current(CurrentQuery {
+                source,
+                level: "info",
+                node_path: None,
+                correlation_id,
+                cursor,
+                limit: 100,
+                active_revision: None,
+            })
+            .unwrap()
+    }
+
+    fn skill_pipe(store: &LogStore, events: &[Value], pins: &BTreeSet<(String, String)>) -> u32 {
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "exec cat >&2"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let mut writer = child.stdin.take().unwrap();
+        let admission = ChildAdmission {
+            nodes: None,
+            skill_pins: pins.clone(),
+        };
+        for event in events {
+            serde_json::to_writer(&mut writer, event).unwrap();
+            writer.write_all(b"\n").unwrap();
+        }
+        drop(writer);
+        capture_stream(
+            child.stderr.take().unwrap(),
+            store.clone(),
+            "eos".into(),
+            "stderr",
+            "r04-run",
+            pid,
+            Some(&admission),
+        );
+        assert!(child.wait().unwrap().success());
+        pid
+    }
+
+    #[test]
+    fn r04_skill_pipe_and_current_cursor_replay() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/r04_skill_events/cases.json"
+        ))
+        .unwrap();
+        assert_eq!(fixture["cursor_cases"].as_array().unwrap().len(), 10);
+        let (_temp, mut store) = store();
+        store.max_bytes = 65_536;
+        store.backups = 1;
+        store.publish_run("r04-run").unwrap();
+        let pins = BTreeSet::from([("island/fixture-skills".into(), "0.1.0+Build.1".into())]);
+        let queued = fixture["base_execution"].clone();
+        let mut running = queued.clone();
+        running["fields"]["stage"] = json!("running");
+        running["fields"]["reason_code"] = json!("worker.running");
+        let queued_pid = skill_pipe(&store, &[queued, running], &pins);
+        assert_eq!(
+            skill_page(&store, "all", None, None)["anchor"]["state"],
+            "pending"
+        );
+
+        let mut rejected = fixture["base_execution"].clone();
+        rejected["level"] = json!("error");
+        rejected["fields"]["stage"] = json!("failed");
+        rejected["fields"]["reason_code"] = json!("worker.guest_text");
+        let mut failed = rejected.clone();
+        failed["fields"]["reason_code"] = json!("worker.outcome_unknown");
+        failed["fields"]["worker_reaped"] = json!(true);
+        failed["fields"]["worker_exit_code"] = json!(1);
+        let failure_pid = skill_pipe(&store, &[rejected, failed.clone()], &pins);
+        let page = skill_page(&store, "all", None, None);
+        assert_eq!(page["anchor"]["event"]["event_code"], "eos_skill_execution");
+        assert_eq!(page["anchor"]["event"]["pid"], failure_pid);
+        assert_eq!(page["diagnostics"][0]["code"], "log_collector_gap");
+        let filtered = skill_page(&store, "egia", Some("other"), None);
+        assert_eq!(filtered["anchor"]["event"], page["anchor"]["event"]);
+        assert!(filtered["lines"].as_array().unwrap().is_empty());
+        let source = store.read("eos", None, 100).unwrap();
+        let all = store.read("all", None, 100).unwrap();
+        assert_eq!(source["lines"], all["lines"]);
+        assert_eq!(source["lines"].as_array().unwrap().len(), 3);
+        assert_eq!(source["lines"][0]["pid"], queued_pid);
+
+        let old = page["next_cursor"].as_str().unwrap().to_owned();
+        skill_pipe(&store, &[failed, fixture["base_stop"].clone()], &pins);
+        let later = skill_page(&store, "all", None, Some(&old));
+        assert_eq!(later["anchor"]["event"], page["anchor"]["event"]);
+        assert_eq!(later["lines"][0]["event_code"], "eos_skill_execution");
+        assert_eq!(
+            later["lines"][1]["event_code"],
+            "eos_skill_stop_unconfirmed"
+        );
+        assert_eq!(store.run_identity(), (Some("r04-run".into()), "known"));
+
+        let old = later["next_cursor"].as_str().unwrap().to_owned();
+        for _ in 0..17 {
+            store
+                .append_event_context(
+                    "isos",
+                    "info",
+                    "deployment_starting",
+                    &"x".repeat(5_000),
+                    LogContext {
+                        run_id: Some("r04-run"),
+                        correlation_id: None,
+                        node_path: None,
+                        fields: json!({}),
+                    },
+                )
+                .unwrap();
+        }
+        let rotated = skill_page(&store, "all", None, Some(&old));
+        assert_eq!(rotated["rotated"], true);
+        assert_eq!(rotated["anchor"]["event"], page["anchor"]["event"]);
+        assert!(
+            !rotated["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["code"] == "log_cursor_expired")
+        );
+        for _ in 0..32 {
+            store
+                .append_event_context(
+                    "isos",
+                    "info",
+                    "deployment_starting",
+                    &"y".repeat(5_000),
+                    LogContext {
+                        run_id: Some("r04-run"),
+                        correlation_id: None,
+                        node_path: None,
+                        fields: json!({}),
+                    },
+                )
+                .unwrap();
+        }
+        let expired = skill_page(&store, "all", None, Some(&old));
+        assert_eq!(expired["rotated"], true);
+        assert_eq!(expired["diagnostics"][0]["code"], "log_cursor_expired");
+        assert_eq!(expired["anchor"]["event"], page["anchor"]["event"]);
+    }
+
+    #[test]
+    fn r04_skill_stop_first_anchor_and_write_gap() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/r04_skill_events/cases.json"
+        ))
+        .unwrap();
+        let (_temp, store) = store();
+        store.publish_run("r04-run").unwrap();
+        let pid = skill_pipe(&store, &[fixture["base_stop"].clone()], &BTreeSet::new());
+        let first = skill_page(&store, "all", None, None);
+        assert_eq!(
+            first["anchor"]["event"]["event_code"],
+            "eos_skill_stop_unconfirmed"
+        );
+        assert_eq!(first["anchor"]["event"]["pid"], pid);
+        assert_eq!(first["scope"]["run_id"], "r04-run");
+        saturating_increment(&store.losses);
+        let after_gap = skill_page(
+            &store,
+            "all",
+            None,
+            Some(first["next_cursor"].as_str().unwrap()),
+        );
+        assert_eq!(after_gap["anchor"]["event"], first["anchor"]["event"]);
+        assert_eq!(after_gap["diagnostics"][0]["code"], "log_collector_gap");
+        assert_eq!(after_gap["diagnostics"][0]["count"], 1);
+    }
+
+    #[test]
+    fn r04_selected_pin_mismatch_has_own_rejection_reason() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/r04_skill_events/cases.json"
+        ))
+        .unwrap();
+        let (_temp, store) = store();
+        store.publish_run("r04-run").unwrap();
+        let mut event = fixture["base_execution"].clone();
+        event["fields"]["package_version"] = json!("0..1");
+        let old_pins = BTreeSet::from([("island/fixture-skills".into(), "0.1.0+Build.1".into())]);
+        let before = rejection_reasons()["skill_pin_mismatch"]
+            .as_u64()
+            .unwrap_or(0);
+        skill_pipe(&store, &[event.clone()], &old_pins);
+        assert!(
+            store.read("eos", None, 10).unwrap()["lines"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            store.read("all", None, 10).unwrap()["lines"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            rejection_reasons()["skill_pin_mismatch"]
+                .as_u64()
+                .unwrap_or(0)
+                > before
+        );
+
+        let selected = BTreeSet::from([("island/fixture-skills".into(), "0..1".into())]);
+        let pid = skill_pipe(&store, &[event], &selected);
+        let source = store.read("eos", None, 10).unwrap();
+        assert_eq!(source["lines"][0]["fields"]["package_version"], "0..1");
+        assert_eq!(source["lines"][0]["pid"], pid);
     }
 
     #[test]
@@ -1136,6 +1382,10 @@ mod tests {
         let event = b"{\"timestamp\":\"2026-11-01T10:00:01.000Z\",\"level\":\"info\",\"source\":\"eos\",\"core\":\"eos\",\"node_path\":\"/cores/eos/layers/process/groups/mujoco/nodes/sim\",\"event_code\":\"eos_backend_ready\",\"run_id\":\"r1\",\"message\":\"EOS backend child ready\",\"fields\":{\"state\":\"ready\"}}\n";
         let admitted =
             BTreeSet::from(["/cores/eos/layers/process/groups/mujoco/nodes/other".into()]);
+        let admission = ChildAdmission {
+            nodes: Some(Arc::new(admitted)),
+            skill_pins: BTreeSet::new(),
+        };
         capture_stream(
             &event[..],
             store.clone(),
@@ -1143,7 +1393,7 @@ mod tests {
             "stderr",
             "r1",
             42,
-            Some(&admitted),
+            Some(&admission),
         );
         assert!(
             store.read("eos", None, 10).unwrap()["lines"]

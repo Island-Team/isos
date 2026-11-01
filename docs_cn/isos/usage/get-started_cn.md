@@ -64,6 +64,20 @@ isos config migrate --revision <saved-sha256> --proposed-revision <preview-sha25
 ## P07：查看首条事件和后续日志
 
 首次准入运行前，使用 `isos logs all --current --level info --lines 100` 或 `GET /api/isos/v1/logs?view=current&source=all&level=info`。管理器会话范围会固定首条软件包或 Apply 故障。运行准入后，同一请求改为返回该部署运行的首条就绪或故障事件；即使来源／级别／节点／关联筛选不匹配，锚点仍独立显示。锚点待定时轮询 `next_cursor`。停止或失败后仍查看最后准入运行的终结日志；新运行准入时旧游标返回 `log_run_changed`。轮转保留期间游标连续；过期、收集中断或锚点不可用时显示 `diagnostics`，然后继续使用新游标。每次先查 `isos status --json` 的实时状态；日志页只解释历史。遇到 `run_id_state:unavailable` 或 `log_scope_unavailable` 时显示有类型故障，不能呈现管理器会话页。详见[当前运行日志游标契约](../interfaces/log-cursors_cn.md)。
+## R04 原生技能选择目标
+
+**IsOS 选择切片已通过独立审查；发布前仍须完成 R04 最终合并版本的验收。** 安装或链接一个精确且通过 P01 验证的 `kind:"skill"` 发布，其中含原生 `.skill.so`。在保存的 `0.1.0` 草稿中，仅给 `isos/process/component/eos` 增加 `settings.skill_libraries` 数组；该节点 role 为 `eos`，解析程序为 `aether-runtime`。每项列出精确 `{id,version}` pin 和包内普通文件相对路径。`bridge`、`config` 虽也有 EOS role，但不可设置此字段。不要编写 `eos.control.skill@v1.0` 或图技能步骤。[R04 所有者契约](../interfaces/skill-selection_cn.md)列出精确结构和界限。
+
+运行 `isos version check --json`、Validate，再以当前保存修订 Apply。列表非空时，选中的 EOS 程序须声明 `host-skill-abi-v2`。Apply 后只检查选中 schema-2 `manifest.json.files` 中 `isos/skill-selection.json` 的条目、`active_revision`、精确包 ID 和库路径，不修改私有哈希或文件。Run 后用 `isos status --json` 与 `isos logs all --current` 检查 EOS catalog 就绪或安全的准入失败，并关联相同 run/correlation ID。只有 EOS 接收 `EOS_SKILL_SELECTION_FILE`；bridge、config、EGIA 和浏览器均不接收。通过类型化 EOS SkillService 发现已准入技能，只调用声明的身份，并观察终态结果及有界事件。安装包或修改草稿不会启用技能；同 revision 的包变更需要显式重新 Apply 和 Restart。
+
+对于缺少 feature、符号链接或变更的链接库、错误的选中 generation 或过期 revision，确认拒绝发生于停止任何活动子进程之前；旧 PID、active revision、run ID 与 R03 grant 均保持。用 correlation ID 查看首次 manager-session 错误事件。EOS 在候选运行中、guest handler 调用前拒绝无效 ABI 或描述符。handler 请求未声明 primitive 时，Broker 在 Dispatcher release 前拒绝。查看该运行的 EOS 事件，再 Stop 并确认 EOS 回收 worker。此重放验证准入边界；EOS worker 测试另行验证受限执行。完整命令与输出保存在 `logs/test/<run-id>/`。
+
+**R04 事件准入已合并；最终合并版本的跨所有者重放仍未完成。**使用从 EOS 精确提交 `192fbfa6fbed1e9b6a20dd8dc95501625b02d081` 构建的程序，先在 EOS 私有归属日志中核对所选 runtime 的 `eos_skill_execution` 排队、运行及终结记录，及可能的 `eos_skill_stop_unconfirmed`。跨归属回放继续使用 `isos logs all --current` 重放：status 确认实时就绪；首条已接纳技能失败可成为固定锚点，后续生命周期记录使用同一部署运行及 `skill_` 关联。先查看未筛选锚点，再按关联筛选。用 `next_cursor` 跨保留的 `events.log` 轮转，再测试过期游标及 `log_collector_gap`；封印锚点须保留。Stop 后分别查看最后运行与停止故障。无效候选 pin 须在停止旧运行前的预检中拒绝。见[精确子进程事件策略](../interfaces/events_cn.md#r04-原生技能子进程事件实现复核)与[R04 回放案例](../../../tests/fixtures/r04_skill_events/README_cn.md)。此 IsOS 切片已通过所选子进程管道准入这两个事件码；完整 EOS SkillService 跨归属回放仍是独立门禁。
+
+旧运行仍在服务时，Restart 建立候选 R03 verifier，并对已选 EOS 执行私有目录预检，统一硬期限为 90 秒。按请求 correlation ID 查看 manager-session 的首条 `deployment_preflight_failed`，识别 `skill_catalog_preflight_rejected`、`skill_catalog_preflight_invalid_output`、`skill_catalog_preflight_timeout` 或 `skill_catalog_preflight_cleanup_unconfirmed`。无效 ABI、缺失静态 primitive binding 或超大目录必须保留旧 PID、活动修订、run ID、grant 与 run scope；只有确认候选 grant 撤销和探测进程回收，才能报告干净拒绝。临近期限的超时或 grant 撤销失败不得停止旧进程。`isos logs all --current` 可能仍指向旧运行，不能用它推断本次首个错误。
+
+探测成功后，manager 在停止旧子进程前重检精确选中字节和 grant。EOS 在实际启动时重复 ABI 和就绪准入，因此探测与启动间的库或程序变化会关闭准入；停止旧进程后的失败走现有恢复路径。先读 `isos status --json` 的实时状态，再读候选 run 的首条就绪或故障事件，然后按 correlation ID 筛选 EOS 日志。此重放不证明 R05 的实体 release fence 或 R06 的 actuator 停止与模拟器回收次序。完整命令、子进程 PID 与输出放在 `logs/test/<run-id>/`。
+针对 `b5bf113adf7760efc8f98114d0d5aaa090fac62b` 的真实 EOS asset 选择重放已通过：双 asset 原生发布接受 `ISOS_GPU=nvidia` 与 `ISOS_ROS=jazzy`，并在启动前拒绝缺失选择器或错误 ROS。候选探测现在仅传这些有效选择器，遵循 EOS 子进程相同的图中环境及 `env_from` 优先级。清理标记写入故障注入也确认后续替换持续被阻止。参见[复核修复证据](../design/skill-selection_cn.md#候选预检事务目标设计)。
 
 ## R06 依赖停止目标
 

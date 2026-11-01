@@ -139,6 +139,8 @@ pub struct ProcessSettings {
     #[serde(default)]
     pub env_from: BTreeMap<String, String>,
     #[serde(default)]
+    pub skill_libraries: Vec<crate::skill_selection::Entry>,
+    #[serde(default)]
     pub ready_tcp: Option<String>,
     #[serde(default)]
     pub ready_unix: Option<PathBuf>,
@@ -363,6 +365,8 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
         "node graph exceeds 1 MiB"
     );
     let value = normalize_source(source)?;
+    crate::skill_selection::check_reserved(&value)?;
+    crate::skill_selection::entries(&value)?;
     let sidecars = paths
         .map(|paths| packages::node_type_sidecars_for_graph(paths, &value))
         .transpose()?
@@ -593,6 +597,11 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
                             node.node_type == "isos.process.component@v0.1"
                                 || settings.env_from.is_empty(),
                             "{path}: env_from requires the @v0.1 component type"
+                        );
+                        ensure!(
+                            node.node_type == "isos.process.component@v0.1"
+                                || settings.skill_libraries.is_empty(),
+                            "{path}: skill_libraries requires the @v0.1 component type"
                         );
                         let binary = match key.as_str() {
                             "eos" => "aether-runtime",
@@ -850,6 +859,8 @@ pub fn normalize_source(source: &str) -> Result<Value> {
 }
 
 pub fn validate_value(paths: &Paths, graph: &Value) -> Result<()> {
+    crate::skill_selection::check_reserved(graph)?;
+    crate::skill_selection::entries(graph)?;
     packages::verify_graph_packages(paths, graph)?;
     mujoco_catalog::validate_graph(paths, graph)?;
     graph_compat::admit_legacy_mapped(graph, catalog().ok().as_ref())?;
@@ -857,6 +868,8 @@ pub fn validate_value(paths: &Paths, graph: &Value) -> Result<()> {
 }
 
 pub fn validate_value_with_profile(paths: &Paths, graph: &Value, profile: &Path) -> Result<()> {
+    crate::skill_selection::check_reserved(graph)?;
+    crate::skill_selection::entries(graph)?;
     packages::verify_graph_packages(paths, graph)?;
     mujoco_catalog::validate_graph(paths, graph)?;
     graph_compat::admit_legacy_mapped(graph, catalog().ok().as_ref())?;
@@ -1036,10 +1049,8 @@ fn catalog_with_sidecars(sidecars: Vec<PathBuf>) -> Result<Value> {
         }
     }
     let types = catalog["types"].as_array_mut().unwrap();
-    if !types
-        .iter()
-        .any(|item| item["id"] == "isos.process.component@v0.1")
     {
+        types.retain(|item| item["id"] != "isos.process.component@v0.1");
         let mut component = types
             .iter()
             .find(|item| item["id"] == "isos.process.component@v1.1")
@@ -1054,6 +1065,7 @@ fn catalog_with_sidecars(sidecars: Vec<PathBuf>) -> Result<Value> {
                 "name":"env_from","data_type":"string_table","required":false,
                 "description":"Child environment targets and manager environment source names"
             }));
+            settings.push(crate::skill_selection::setting_descriptor());
         }
         types.push(component);
     }
@@ -1296,6 +1308,7 @@ pub struct Supervisor {
     deployment: String,
     run_id: String,
     control_grants: Option<control_grants::Bundle>,
+    candidate_skill_inputs: Option<crate::candidate_skill_preflight::Inputs>,
     admitted_nodes: Arc<BTreeSet<String>>,
     stop_budget: config::StopBudget,
     terminal: Arc<Mutex<Option<dependent_stop::Terminal>>>,
@@ -1373,6 +1386,7 @@ impl Supervisor {
             deployment: deployment.to_owned(),
             run_id: crate::manager::next_run_id(),
             control_grants: None,
+            candidate_skill_inputs: None,
             admitted_nodes: Arc::new(admitted_nodes),
             stop_budget: config::stop_budget()?,
             terminal: Arc::new(Mutex::new(None)),
@@ -1489,12 +1503,65 @@ impl Supervisor {
         Ok(())
     }
 
+    /// Retire an unpublished candidate without hiding an uncertain grant cleanup.
+    pub fn retire_candidate_grants(&mut self) -> Result<()> {
+        ensure!(
+            self.running.is_empty(),
+            "candidate children are still running"
+        );
+        if let Some(bundle) = &self.control_grants {
+            bundle.retire()?;
+            self.control_grants = None;
+        }
+        Ok(())
+    }
+
+    /// Leave a failed candidate's on-disk directory for operator repair rather
+    /// than letting Drop retry and erase the only cleanup breadcrumb.
+    pub fn detach_candidate_grants(&mut self) {
+        self.control_grants = None;
+    }
+
+    pub fn revoke_candidate_grants_keep_directory(&mut self) -> Result<()> {
+        ensure!(
+            self.running.is_empty(),
+            "candidate children are still running"
+        );
+        if let Some(bundle) = self.control_grants.take() {
+            bundle.revoke_keep_directory()?;
+        }
+        Ok(())
+    }
+
+    pub fn candidate_verifier(&self) -> Result<PathBuf> {
+        let bundle = self
+            .control_grants
+            .as_ref()
+            .context("candidate grants missing")?;
+        bundle.verify()?;
+        bundle
+            .launch_env("eos")
+            .map(|(_, path)| path)
+            .context("candidate verifier missing")
+    }
+
+    pub fn set_candidate_skill_inputs(&mut self, inputs: crate::candidate_skill_preflight::Inputs) {
+        self.candidate_skill_inputs = Some(inputs);
+    }
+
     fn spawn(
         &self,
         spec: &ProcessSpec,
         secrets: &BTreeMap<String, std::ffi::OsString>,
         secret_sources: &BTreeSet<String>,
     ) -> Result<(Child, Option<Receiver<log_store::EosStdout>>)> {
+        if spec.id == "eos" && spec.settings.role.as_deref() == Some("eos") {
+            if let Some(inputs) = &self.candidate_skill_inputs {
+                inputs.launch_recheck(&self.paths, &self.deployment)?;
+                inputs.verify_launch_selectors(spec, secrets, secret_sources)?;
+            }
+            crate::skill_selection::verify_child_handoff(&self.paths, &self.deployment, spec)?;
+        }
         let mut command = Command::new(&spec.settings.command[0]);
         command.args(&spec.settings.command[1..]);
         if matches!(spec.id.as_str(), "eos" | "bridge" | "config")
@@ -1545,6 +1612,7 @@ impl Supervisor {
                     .arg(payload);
             }
         }
+        crate::skill_selection::scrub_inherited(&mut command);
         command.envs(&spec.settings.env);
         for reserved in control_grants::RESERVED_ENVS {
             command.env_remove(reserved);
@@ -1608,6 +1676,16 @@ impl Supervisor {
         } else {
             format!("unselected-{}", spec.id)
         };
+        let skill_pins = spec
+            .settings
+            .skill_libraries
+            .iter()
+            .map(|entry| (entry.package.id.clone(), entry.package.version.clone()))
+            .collect::<BTreeSet<_>>();
+        let admission = Arc::new(log_store::ChildAdmission {
+            nodes: Some(self.admitted_nodes.clone()),
+            skill_pins,
+        });
         let eos_stdout = if let Some(stdout) = child.stdout.take() {
             if spec.id == "eos" && spec.settings.role.as_deref() == Some("eos") {
                 Some(log_store::capture_eos_stdout(
@@ -1624,7 +1702,7 @@ impl Supervisor {
                     "stdout",
                     self.run_id.clone(),
                     pid,
-                    Some(self.admitted_nodes.clone()),
+                    Some(admission.clone()),
                 );
                 None
             }
@@ -1639,7 +1717,7 @@ impl Supervisor {
                 "stderr",
                 self.run_id.clone(),
                 pid,
-                Some(self.admitted_nodes.clone()),
+                Some(admission),
             );
         }
         Ok((child, eos_stdout))
@@ -2308,6 +2386,29 @@ while True: time.sleep(.05)
         let (_, terminal) = third.stop_with_terminal();
         assert_eq!(terminal.reason_code, Some("eos_receipt_invalid"));
         assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[test]
+    fn unpublished_candidate_grants_have_checked_retirement() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        paths.prepare().unwrap();
+        let mut candidate = Supervisor::new(&paths, "test").unwrap();
+        candidate.prepare_control_grants(&"a".repeat(64)).unwrap();
+        let bundle = paths
+            .runtime
+            .join(format!("control-grants/test/{}", candidate.run_id()));
+        let verifier = candidate.candidate_verifier().unwrap();
+        fs::set_permissions(&verifier, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(candidate.retire_candidate_grants().is_err());
+        assert!(bundle.exists());
+        fs::set_permissions(&verifier, fs::Permissions::from_mode(0o600)).unwrap();
+        candidate.retire_candidate_grants().unwrap();
+        assert!(!bundle.exists());
     }
 
     #[test]

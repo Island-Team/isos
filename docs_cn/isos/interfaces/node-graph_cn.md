@@ -160,3 +160,7 @@ M1 的聚合目录包含由 EOS 提供的内置类型和历史 EGIA common 描�
 `priority` 是 `-20..19` 内的可选整数，适用的已路由证据连线默认零。`frequency_hz` 是以 Hz 为单位且严格大于零的可选有限数值；缺失表示无频率上限。M1 中两者仅允许出现在上述精确的 EOS 相机 → gate 路由。EGIA 本地、桥接和描述性连线在各自归属方发布精确适用路由前拒绝显式 QoS。固定安全、执行器、结果、健康、锁存及停止路径拒绝任一字段，不能限流或静默丢弃。命令形状端口和通用软件包贡献不能建立第二条执行器路径；必须保留精确 Dispatcher 绑定。IsOS 只校验声明，不调度也不宣称实时健康。EOS 的[归属方连线契约](https://github.com/Island-Team/Island-eos/blob/refactor%28v2%29/runtime-main/docs_cn/eos/interfaces/hardware_cn.md#g06-类型化连线准入)独立校验其 EOS 投影；IsOS 必须在归属方 setup 渲染或图写入之前拒绝整图违规。
 
 固定的 G06 测试样例应包含精确 EOS 相机 → gate 路由、未路由的 EGIA 本地描述性连线，以及没有 QoS 字段的旧图。相机 gate preview → Vision 桥在 `0.1.0` Vision 类型及精确桥声明均注册前属于负面样例。其他负面样例须给出错误类型／单位、未知端口／路径、位置、基数、传输、跨 core 桥、环路、优先级越界、非有限／零频率、固定或未路由连线上的 QoS、执行器绕行的精确来源指针。每次拒绝都保持已保存字节和活动修订不变。同一样例应经 HTTP Validate 和 Apply、CLI Apply 及迁移预检得到相同连线诊断；Run 与 Restart 在启动子进程前拒绝被篡改的已保存图。
+
+## R04 技能选择目标
+
+role 为 EOS、位于 `isos/process/component/eos` 且解析到 `aether-runtime` 的 `@v0.1` component 可以显式配置 `settings.skill_libraries`。`bridge`、`config` 和其他 EOS-role 节点不能使用此字段。[选择契约](skill-selection_cn.md)规定精确 pin、相对库路径、生成文件和停止前错误；当前程序会拒绝尚未实现的设置。它不会创建图技能节点或旧步骤执行器。

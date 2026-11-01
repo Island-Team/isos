@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::{BufRead, BufReader, Read, Write},
     os::unix::{
@@ -15,7 +15,7 @@ use std::{
         net::{UnixListener, UnixStream},
     },
     sync::{
-        OnceLock,
+        Mutex, OnceLock,
         atomic::{AtomicU64, Ordering},
         mpsc::{self, Receiver, SyncSender},
     },
@@ -310,8 +310,18 @@ fn log_prelaunch_failure(
             })
             .or_else(|| {
                 cause
+                    .downcast_ref::<crate::skill_selection::Diagnostic>()
+                    .map(|d| (d.code, d.path.as_str()))
+            })
+            .or_else(|| {
+                cause
                     .downcast_ref::<crate::control_grants::Diagnostic>()
                     .map(|d| (d.code, d.path.as_str()))
+            })
+            .or_else(|| {
+                cause
+                    .downcast_ref::<crate::candidate_skill_preflight::Diagnostic>()
+                    .map(|d| (d.code, ""))
             })
     });
     let mut fields = serde_json::Map::new();
@@ -319,6 +329,26 @@ fn log_prelaunch_failure(
         fields.insert("diagnostic_code".into(), json!(code));
         if path.len() <= 256 && !path.chars().any(char::is_control) {
             fields.insert("diagnostic_path".into(), json!(path));
+        }
+    }
+    if let Some(probe) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<crate::candidate_skill_preflight::Diagnostic>())
+    {
+        fields.insert("active_revision".into(), json!(probe.meta.revision));
+        fields.insert("generation".into(), json!(probe.meta.generation));
+        fields.insert("candidate_run_id".into(), json!(probe.meta.run_id));
+        if let Some(stage) = probe.eos_stage {
+            fields.insert("eos_stage".into(), json!(stage));
+        }
+        if let Some(code) = probe.eos_code {
+            fields.insert("eos_code".into(), json!(code));
+        }
+        if let Some(id) = &probe.meta.package_id {
+            fields.insert("package_id".into(), json!(id));
+        }
+        if let Some(version) = &probe.meta.package_version {
+            fields.insert("package_version".into(), json!(version));
         }
     }
     let _ = logs.append_event_context(
@@ -379,6 +409,12 @@ fn preflight_packages(
     revision: &str,
 ) -> Result<Vec<process::ProcessSpec>> {
     let graph: Value = serde_json::from_str(source)?;
+    crate::skill_selection::check_reserved(&graph)?;
+    let selected_libraries = crate::skill_selection::entries(&graph)?;
+    if !selected_libraries.is_empty() {
+        crate::packages::verify_graph_packages(paths, &graph)?;
+        crate::skill_selection::render(paths, &graph, revision)?;
+    }
     let selected = if graph["version"] == "0.1.0" {
         Some(crate::generated_v2::selected_v2_root(
             paths, name, &graph, revision,
@@ -394,6 +430,9 @@ fn preflight_packages(
         let generated = selected.join("eos/graph.json");
         process::use_generated_eos_profile(&mut specs, &generated)?;
         process::use_generated_egia_config(&mut specs, &selected.join("egia"))?;
+        let skill_file =
+            crate::skill_selection::compare_selected(paths, &graph, revision, &selected)?;
+        crate::skill_selection::apply_env(&mut specs, skill_file.as_deref());
     }
     let catalog = process::catalog_for_graph(paths, &graph)?;
     reader_features::check(paths, &graph, &specs, &catalog)?;
@@ -446,6 +485,11 @@ fn verify_selected_before_reader(
 ) -> Result<()> {
     let saved = graph_compat::parse(source.as_bytes())?;
     if saved.value["version"] == "0.1.0" {
+        crate::skill_selection::check_reserved(&saved.value)?;
+        if !crate::skill_selection::entries(&saved.value)?.is_empty() {
+            crate::packages::verify_graph_packages(paths, &saved.value)?;
+            crate::skill_selection::render(paths, &saved.value, revision)?;
+        }
         crate::generated_v2::selected_v2_root(paths, name, &saved.value, revision)?;
     }
     Ok(())
@@ -472,6 +516,11 @@ fn restart_processes_with_plan(
     plan: &crate::generated_v2::SecretPlan,
     managed: bool,
 ) -> Result<Vec<String>> {
+    check_candidate_cleanup_marker(
+        paths,
+        name,
+        managers.get(name).map(|active| active.supervisor.run_id()),
+    )?;
     if !managers.contains_key(name) {
         ensure_launch_history(paths, name)?;
     }
@@ -494,11 +543,25 @@ fn restart_processes_with_plan(
         .get(name)
         .map(|active| crate::generated_v2::secret_plan(&active.supervisor.specs()))
         .transpose()?;
+    let candidate_inputs = if managed {
+        crate::candidate_skill_preflight::Inputs::collect(paths, name, revision, specs, plan)?
+    } else {
+        None
+    };
     let mut supervisor = process::Supervisor::new(paths, name)?;
     if managed {
         supervisor.prepare_control_grants(revision)?;
     }
     let candidate_run = supervisor.run_id().to_owned();
+    probe_candidate(
+        paths,
+        name,
+        revision,
+        specs,
+        plan,
+        candidate_inputs,
+        &mut supervisor,
+    )?;
     let mut previous = managers.remove(name).map(|mut active| {
         let old_specs = active.supervisor.specs();
         let (_, terminal) = stop_active(paths, name, &mut active, false);
@@ -614,6 +677,158 @@ fn restart_processes_with_plan(
     Ok(started)
 }
 
+fn check_candidate_cleanup_marker(
+    paths: &config::Paths,
+    name: &str,
+    active_run: Option<&str>,
+) -> Result<()> {
+    let blocked = candidate_cleanup_blocks().lock().map_err(|_| anyhow::anyhow!("skill catalog preflight cleanup unconfirmed; repair private candidate state before retry"))?;
+    ensure!(
+        !blocked.contains(
+            &paths
+                .runtime
+                .join(format!("{name}.skill-candidate-cleanup-unconfirmed"))
+        ) && !paths
+            .runtime
+            .join(format!("{name}.skill-candidate-cleanup-unconfirmed"))
+            .exists()
+            && !paths
+                .data
+                .join(format!("{name}.skill-candidate-cleanup-unconfirmed"))
+                .exists(),
+        "skill catalog preflight cleanup unconfirmed; repair private candidate state before retry"
+    );
+    let bundle_root = paths.runtime.join("control-grants").join(name);
+    match fs::read_dir(&bundle_root) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = entry?;
+                ensure!(
+                    entry.file_name().to_str() == active_run && entry.file_type()?.is_dir(),
+                    "skill catalog preflight cleanup unconfirmed; repair private candidate state before retry"
+                );
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
+}
+
+fn candidate_cleanup_blocks() -> &'static Mutex<BTreeSet<std::path::PathBuf>> {
+    static BLOCKED: OnceLock<Mutex<BTreeSet<std::path::PathBuf>>> = OnceLock::new();
+    BLOCKED.get_or_init(|| Mutex::new(BTreeSet::new()))
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_CANDIDATE_MARKER_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FAIL_CANDIDATE_FALLBACK_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FORCE_PROBE_CLEANUP_UNCONFIRMED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn persist_candidate_cleanup_marker(marker: &std::path::Path) -> Result<()> {
+    #[cfg(test)]
+    if FAIL_CANDIDATE_MARKER_WRITE.with(|fail| fail.get()) {
+        bail!("candidate cleanup marker persistence failed");
+    }
+    crate::config::atomic_write(marker, b"candidate cleanup requires repair\n")
+}
+
+fn persist_candidate_fallback_marker(marker: &std::path::Path) -> Result<()> {
+    #[cfg(test)]
+    if FAIL_CANDIDATE_FALLBACK_WRITE.with(|fail| fail.get()) {
+        bail!("candidate cleanup fallback marker persistence failed");
+    }
+    crate::config::atomic_write(marker, b"candidate cleanup requires repair\n")
+}
+
+fn probe_candidate(
+    paths: &config::Paths,
+    name: &str,
+    revision: &str,
+    specs: &[process::ProcessSpec],
+    plan: &crate::generated_v2::SecretPlan,
+    inputs: Option<crate::candidate_skill_preflight::Inputs>,
+    supervisor: &mut process::Supervisor,
+) -> Result<()> {
+    let Some(inputs) = inputs else {
+        return Ok(());
+    };
+    let candidate_run = supervisor.run_id().to_owned();
+    let probe = supervisor.candidate_verifier().and_then(|verifier| {
+        crate::candidate_skill_preflight::run(&inputs, &candidate_run, &verifier)
+            .map_err(anyhow::Error::new)
+    });
+    let gate = probe.and_then(|()| {
+        let fresh = preflight_packages(
+            paths,
+            name,
+            &fs::read_to_string(paths.node_graph_path(name))?,
+            revision,
+        )?;
+        inputs.recheck(paths, name, &fresh, plan)?;
+        supervisor.verify_control_grants(true)?;
+        ensure!(
+            format!("{specs:?}") == format!("{fresh:?}"),
+            "selected process specs changed"
+        );
+        Ok(())
+    });
+    if let Err(error) = gate {
+        let unconfirmed = error.chain().any(|cause| {
+            cause
+                .downcast_ref::<crate::candidate_skill_preflight::Diagnostic>()
+                .is_some_and(|d| d.code == "skill_catalog_preflight_cleanup_unconfirmed")
+        });
+        #[cfg(test)]
+        let unconfirmed = unconfirmed || FORCE_PROBE_CLEANUP_UNCONFIRMED.with(|force| force.get());
+        let retirement = if unconfirmed {
+            supervisor.revoke_candidate_grants_keep_directory()
+        } else {
+            supervisor.retire_candidate_grants()
+        };
+        if retirement.is_err() || unconfirmed {
+            supervisor.detach_candidate_grants();
+            let marker = paths
+                .runtime
+                .join(format!("{name}.skill-candidate-cleanup-unconfirmed"));
+            // Keep the live manager closed even if the durable marker cannot be written.
+            match candidate_cleanup_blocks().lock() {
+                Ok(mut blocked) => {
+                    blocked.insert(marker.clone());
+                }
+                Err(_) => bail!(
+                    "skill catalog preflight cleanup unconfirmed; repair private candidate state before retry"
+                ),
+            }
+            if persist_candidate_cleanup_marker(&marker).is_err() {
+                tracing::error!(
+                    event_code = "skill_catalog_preflight_cleanup_unconfirmed",
+                    "candidate cleanup marker persistence failed"
+                );
+                let fallback = paths
+                    .data
+                    .join(format!("{name}.skill-candidate-cleanup-unconfirmed"));
+                if persist_candidate_fallback_marker(&fallback).is_err() {
+                    tracing::error!(
+                        event_code = "skill_catalog_preflight_cleanup_unconfirmed",
+                        "candidate cleanup fallback marker persistence failed"
+                    );
+                }
+            }
+            return Err(anyhow::Error::new(inputs.diagnostic(
+                &candidate_run,
+                "skill_catalog_preflight_cleanup_unconfirmed",
+                None,
+            )));
+        }
+        return Err(error);
+    }
+    supervisor.set_candidate_skill_inputs(inputs);
+    Ok(())
+}
+
 fn start_prepared_processes(
     paths: &config::Paths,
     managers: &mut Deployments,
@@ -623,6 +838,11 @@ fn start_prepared_processes(
     plan: &crate::generated_v2::SecretPlan,
     managed: bool,
 ) -> Result<(Vec<String>, String)> {
+    check_candidate_cleanup_marker(
+        paths,
+        name,
+        managers.get(name).map(|active| active.supervisor.run_id()),
+    )?;
     let live_confirmed = managers
         .get(name)
         .and_then(|active| active.supervisor.terminal())
@@ -659,11 +879,25 @@ fn start_prepared_processes(
         if !live_confirmed {
             ensure_launch_history(paths, name)?;
         }
+        let candidate_inputs = if managed {
+            crate::candidate_skill_preflight::Inputs::collect(paths, name, revision, specs, plan)?
+        } else {
+            None
+        };
         let supervisor = process::Supervisor::new(paths, name)?;
         let mut supervisor = supervisor;
         if managed {
             supervisor.prepare_control_grants(revision)?;
         }
+        probe_candidate(
+            paths,
+            name,
+            revision,
+            specs,
+            plan,
+            candidate_inputs,
+            &mut supervisor,
+        )?;
         publish_run_scope(&supervisor)?;
         supervisor.prepare_run(specs, revision)?;
         log_deployment(
@@ -1119,8 +1353,23 @@ pub(crate) fn handle_client(
                         })
                         .or_else(|| {
                             cause
+                                .downcast_ref::<crate::skill_selection::Diagnostic>()
+                                .map(|diagnostic| json!({"diagnostics":[diagnostic]}))
+                        })
+                        .or_else(|| {
+                            cause
                                 .downcast_ref::<crate::control_grants::Diagnostic>()
                                 .map(|diagnostic| json!({"diagnostics":[diagnostic]}))
+                        })
+                        .or_else(|| {
+                            cause
+                                .downcast_ref::<crate::candidate_skill_preflight::Diagnostic>()
+                                .map(|diagnostic| {
+                                    json!({"diagnostics":[{
+                                        "code":diagnostic.code,"stage":diagnostic.stage,
+                                    "path":"","message":diagnostic.message
+                                    }]})
+                                })
                         })
                         .or_else(|| {
                             cause.downcast_ref::<ScopePublishFailure>().map(|_| json!({
@@ -1352,6 +1601,301 @@ pub(crate) fn service_call(
 mod restart_tests {
     use super::*;
     use std::net::Shutdown;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn rejected_candidate_preserves_old_pid_grants_and_run_scope() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = config::Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        paths.prepare().unwrap();
+        let old_script = temp.path().join("old.sh");
+        fs::write(&old_script, "#!/bin/sh\nexec sleep 10\n").unwrap();
+        fs::set_permissions(&old_script, fs::Permissions::from_mode(0o700)).unwrap();
+        let old_spec = process::ProcessSpec {
+            id: "old".into(),
+            path: "isos/process/component/old".into(),
+            settings: serde_json::from_value(
+                json!({"command":[old_script],"start_timeout_ms":1000}),
+            )
+            .unwrap(),
+            package: None,
+            fingerprint: None,
+        };
+        let revision = "c".repeat(64);
+        let mut old = process::Supervisor::new(&paths, "test").unwrap();
+        old.prepare_control_grants(&revision).unwrap();
+        old.publish_run_scope().unwrap();
+        old.start(&[old_spec]).unwrap();
+        let old_run = old.run_id().to_owned();
+        let old_pid = old.status().unwrap()[0].pid;
+        let old_grants = paths.runtime.join(format!("control-grants/test/{old_run}"));
+        let mut managers = Deployments::new();
+        managers.insert(
+            "test".into(),
+            ActiveDeployment {
+                active_revision: revision.clone(),
+                managed: true,
+                supervisor: old,
+                last_error: None,
+                expected_processes: 1,
+            },
+        );
+        let probe_script = temp.path().join("reject.sh");
+        fs::write(&probe_script, "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"ok\":false,\"stage\":\"selection\",\"code\":\"selection_invalid\"}'\nexit 1\n").unwrap();
+        fs::set_permissions(&probe_script, fs::Permissions::from_mode(0o700)).unwrap();
+        let inputs = crate::candidate_skill_preflight::Inputs::rejection_stub(probe_script);
+        let mut candidate = process::Supervisor::new(&paths, "test").unwrap();
+        candidate.prepare_control_grants(&revision).unwrap();
+        let candidate_grants = paths
+            .runtime
+            .join(format!("control-grants/test/{}", candidate.run_id()));
+        let error = probe_candidate(
+            &paths,
+            "test",
+            &revision,
+            &[],
+            &crate::generated_v2::SecretPlan::new(),
+            Some(inputs),
+            &mut candidate,
+        )
+        .unwrap_err();
+        let diagnostic = error
+            .downcast_ref::<crate::candidate_skill_preflight::Diagnostic>()
+            .unwrap();
+        assert_eq!(diagnostic.code, "skill_catalog_preflight_rejected");
+        assert_eq!(diagnostic.eos_code, Some("selection_invalid"));
+        assert_eq!(diagnostic.meta.package_version.as_deref(), Some("0.1.0"));
+        assert!(!candidate_grants.exists());
+        assert!(old_grants.exists());
+        assert_eq!(
+            managers
+                .get_mut("test")
+                .unwrap()
+                .supervisor
+                .status()
+                .unwrap()[0]
+                .pid,
+            old_pid
+        );
+        assert_eq!(managers["test"].supervisor.run_id(), old_run);
+        assert_eq!(
+            log_store::LogStore::new(&paths, "test")
+                .unwrap()
+                .run_identity()
+                .0
+                .as_deref(),
+            Some(old_run.as_str())
+        );
+        managers.get_mut("test").unwrap().supervisor.stop();
+    }
+
+    #[test]
+    fn uncertain_candidate_grant_cleanup_blocks_another_replacement() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = config::Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        paths.prepare().unwrap();
+        let script = temp.path().join("tamper.sh");
+        fs::write(&script, "#!/bin/sh\n/bin/chmod 644 \"$EOS_CONTROL_GRANTS_FILE\"\nprintf '%s\\n' '{\"schema_version\":1,\"ok\":false,\"stage\":\"selection\",\"code\":\"selection_invalid\"}'\nexit 1\n").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        let inputs = crate::candidate_skill_preflight::Inputs::rejection_stub(script);
+        let mut candidate = process::Supervisor::new(&paths, "test").unwrap();
+        candidate.prepare_control_grants(&"c".repeat(64)).unwrap();
+        let verifier = candidate.candidate_verifier().unwrap();
+        FAIL_CANDIDATE_MARKER_WRITE.with(|fail| fail.set(true));
+        let error = probe_candidate(
+            &paths,
+            "test",
+            &"c".repeat(64),
+            &[],
+            &crate::generated_v2::SecretPlan::new(),
+            Some(inputs),
+            &mut candidate,
+        )
+        .unwrap_err();
+        FAIL_CANDIDATE_MARKER_WRITE.with(|fail| fail.set(false));
+        assert_eq!(
+            error
+                .downcast_ref::<crate::candidate_skill_preflight::Diagnostic>()
+                .unwrap()
+                .code,
+            "skill_catalog_preflight_cleanup_unconfirmed"
+        );
+        assert!(check_candidate_cleanup_marker(&paths, "test", None).is_err());
+        assert!(
+            !paths
+                .runtime
+                .join("test.skill-candidate-cleanup-unconfirmed")
+                .exists()
+        );
+        // Simulate a manager restart: the orphan bundle still blocks replacement.
+        candidate_cleanup_blocks().lock().unwrap().clear();
+        assert!(check_candidate_cleanup_marker(&paths, "test", None).is_err());
+        fs::set_permissions(&verifier, fs::Permissions::from_mode(0o600)).unwrap();
+        let orphan = verifier.parent().unwrap();
+        for name in [
+            "egia-control.grant",
+            "operator-control.grant",
+            "verifier.json",
+        ] {
+            fs::remove_file(orphan.join(name)).unwrap();
+        }
+        fs::remove_dir(orphan).unwrap();
+        assert!(check_candidate_cleanup_marker(&paths, "test", None).is_err());
+        fs::remove_file(paths.data.join("test.skill-candidate-cleanup-unconfirmed")).unwrap();
+        check_candidate_cleanup_marker(&paths, "test", None).unwrap();
+    }
+
+    #[test]
+    fn uncertain_probe_cleanup_retains_revoked_orphan_when_both_markers_fail() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = config::Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        paths.prepare().unwrap();
+        let script = temp.path().join("reject.sh");
+        fs::write(&script, "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"ok\":false,\"stage\":\"selection\",\"code\":\"selection_invalid\"}'\nexit 1\n").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        let inputs = crate::candidate_skill_preflight::Inputs::rejection_stub(script);
+        let mut candidate = process::Supervisor::new(&paths, "test").unwrap();
+        candidate.prepare_control_grants(&"c".repeat(64)).unwrap();
+        let orphan = paths
+            .runtime
+            .join(format!("control-grants/test/{}", candidate.run_id()));
+        FAIL_CANDIDATE_MARKER_WRITE.with(|fail| fail.set(true));
+        FAIL_CANDIDATE_FALLBACK_WRITE.with(|fail| fail.set(true));
+        FORCE_PROBE_CLEANUP_UNCONFIRMED.with(|force| force.set(true));
+        let error = probe_candidate(
+            &paths,
+            "test",
+            &"c".repeat(64),
+            &[],
+            &crate::generated_v2::SecretPlan::new(),
+            Some(inputs),
+            &mut candidate,
+        )
+        .unwrap_err();
+        FAIL_CANDIDATE_MARKER_WRITE.with(|fail| fail.set(false));
+        FAIL_CANDIDATE_FALLBACK_WRITE.with(|fail| fail.set(false));
+        FORCE_PROBE_CLEANUP_UNCONFIRMED.with(|force| force.set(false));
+        assert_eq!(
+            error
+                .downcast_ref::<crate::candidate_skill_preflight::Diagnostic>()
+                .unwrap()
+                .code,
+            "skill_catalog_preflight_cleanup_unconfirmed"
+        );
+        assert!(orphan.is_dir());
+        assert!(fs::read_dir(&orphan).unwrap().next().is_none());
+        assert!(
+            !paths
+                .runtime
+                .join("test.skill-candidate-cleanup-unconfirmed")
+                .exists()
+        );
+        assert!(
+            !paths
+                .data
+                .join("test.skill-candidate-cleanup-unconfirmed")
+                .exists()
+        );
+        candidate_cleanup_blocks().lock().unwrap().clear();
+        assert!(check_candidate_cleanup_marker(&paths, "test", None).is_err());
+        fs::remove_dir(&orphan).unwrap();
+        check_candidate_cleanup_marker(&paths, "test", None).unwrap();
+    }
+
+    #[test]
+    fn writable_selected_skill_rejects_restart_before_old_process_stops() {
+        let (_temp, paths, source) = crate::skill_selection::tests::fixture();
+        let graph =
+            crate::skill_selection::tests::graph(json!([crate::skill_selection::tests::pin(
+                "lib/island/skills/example.skill.so"
+            )]));
+        let bytes = serde_json::to_vec_pretty(&graph).unwrap();
+        let revision = graph_compat::revision(&bytes);
+        config::atomic_write(&paths.node_graph_path("test"), &bytes).unwrap();
+        crate::generated_v2::publish(
+            &paths,
+            "test",
+            &graph,
+            &revision,
+            &[
+                (
+                    std::path::PathBuf::from("eos/graph.json"),
+                    b"projection".to_vec(),
+                ),
+                (
+                    std::path::PathBuf::from("launch-inputs.json"),
+                    b"[]".to_vec(),
+                ),
+            ],
+        )
+        .unwrap();
+        let active_spec = process::ProcessSpec {
+            id: "stub".into(),
+            path: "isos/process/component/stub".into(),
+            settings: serde_json::from_value(json!({
+                "command":["/bin/sleep","30"],"start_timeout_ms":500
+            }))
+            .unwrap(),
+            package: None,
+            fingerprint: None,
+        };
+        let mut managers = Deployments::new();
+        restart_processes(&paths, &mut managers, "test", "old", &[active_spec]).unwrap();
+        let old_run = managers.get("test").unwrap().supervisor.run_id().to_owned();
+        let old_pid = managers
+            .get_mut("test")
+            .unwrap()
+            .supervisor
+            .status()
+            .unwrap()[0]
+            .pid;
+        fs::set_permissions(
+            source.join("lib/island/skills/example.skill.so"),
+            fs::Permissions::from_mode(0o775),
+        )
+        .unwrap();
+        let mut services = services::ServiceManager::new(&paths, "test").unwrap();
+        let error = api_call(
+            &paths,
+            &mut managers,
+            &mut services,
+            ApiRequest {
+                schema_version: 1,
+                op: "deployment_restart".into(),
+                deployment: Some("test".into()),
+                role: None,
+                revision: Some(revision),
+                service_id: None,
+                cursor: None,
+                limit: None,
+                log: None,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<crate::skill_selection::Diagnostic>()
+                .unwrap()
+                .code,
+            "skill_library_unsafe"
+        );
+        let active = managers.get_mut("test").unwrap();
+        assert_eq!(active.supervisor.run_id(), old_run);
+        assert_eq!(active.supervisor.status().unwrap()[0].pid, old_pid);
+        active.supervisor.stop();
+    }
 
     #[test]
     fn owner_stop_is_idempotent_and_recovered_status_is_unknown() {
