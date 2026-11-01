@@ -5,6 +5,8 @@ use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
+    collections::{BTreeMap, BTreeSet},
+    ffi::OsString,
     fs,
     io::{self, Read},
     os::{
@@ -58,6 +60,42 @@ pub struct Inputs {
     libraries: Vec<skill_selection::SelectedLibrary>,
     node_types: Vec<String>,
     specs_sha256: String,
+    selectors: BTreeMap<String, String>,
+}
+
+const ASSET_SELECTORS: [&str; 2] = ["ISOS_GPU", "ISOS_ROS"];
+
+fn effective_selectors(
+    spec: &process::ProcessSpec,
+    secrets: &BTreeMap<String, OsString>,
+    secret_sources: &BTreeSet<String>,
+) -> BTreeMap<String, String> {
+    ASSET_SELECTORS
+        .iter()
+        .filter_map(|name| {
+            // Match Supervisor::spawn: inherited values, authored env, source removal,
+            // then the already resolved env_from values.
+            let value = if let Some(secret) = secrets.get(*name) {
+                secret.to_str().map(str::to_owned)
+            } else if secret_sources.contains(*name) {
+                None
+            } else {
+                spec.settings
+                    .env
+                    .get(*name)
+                    .cloned()
+                    .or_else(|| std::env::var(name).ok())
+            };
+            value.map(|value| ((*name).to_owned(), value))
+        })
+        .collect()
+}
+
+fn all_secret_sources(specs: &[process::ProcessSpec]) -> BTreeSet<String> {
+    specs
+        .iter()
+        .flat_map(|spec| spec.settings.env_from.values().cloned())
+        .collect()
 }
 
 fn sha(bytes: &[u8]) -> String {
@@ -100,6 +138,7 @@ impl Inputs {
             }],
             node_types: Vec::new(),
             specs_sha256: String::new(),
+            selectors: BTreeMap::new(),
         }
     }
     pub fn collect(
@@ -107,6 +146,7 @@ impl Inputs {
         name: &str,
         revision: &str,
         specs: &[process::ProcessSpec],
+        plan: &crate::generated_v2::SecretPlan,
     ) -> Result<Option<Self>> {
         let spec = specs
             .iter()
@@ -170,6 +210,12 @@ impl Inputs {
                 node_types.extend([argument.clone(), value.clone()]);
             }
         }
+        let empty = BTreeMap::new();
+        let selectors = effective_selectors(
+            spec,
+            plan.get("eos").unwrap_or(&empty),
+            &all_secret_sources(specs),
+        );
         Ok(Some(Self {
             executable_sha256: sha(&fs::read(&executable)?),
             profile_sha256: sha(&fs::read(&profile)?),
@@ -182,11 +228,31 @@ impl Inputs {
             libraries: selected_inventory.libraries,
             node_types,
             specs_sha256: sha(format!("{specs:?}").as_bytes()),
+            selectors,
         }))
     }
 
-    pub fn recheck(&self, paths: &Paths, name: &str, specs: &[process::ProcessSpec]) -> Result<()> {
+    pub fn recheck(
+        &self,
+        paths: &Paths,
+        name: &str,
+        specs: &[process::ProcessSpec],
+        plan: &crate::generated_v2::SecretPlan,
+    ) -> Result<()> {
         self.launch_recheck(paths, name)?;
+        let spec = specs
+            .iter()
+            .find(|spec| spec.id == "eos")
+            .context("selected EOS process missing")?;
+        let empty = BTreeMap::new();
+        ensure!(
+            effective_selectors(
+                spec,
+                plan.get("eos").unwrap_or(&empty),
+                &all_secret_sources(specs)
+            ) == self.selectors,
+            "selected EOS asset selectors changed"
+        );
         ensure!(
             sha(format!("{specs:?}").as_bytes()) == self.specs_sha256,
             "selected process specs changed"
@@ -223,6 +289,19 @@ impl Inputs {
         ensure!(
             sha(&fs::read(&self.selection)?) == self.selection_sha256,
             "selected skill file changed"
+        );
+        Ok(())
+    }
+
+    pub fn verify_launch_selectors(
+        &self,
+        spec: &process::ProcessSpec,
+        secrets: &BTreeMap<String, OsString>,
+        sources: &BTreeSet<String>,
+    ) -> Result<()> {
+        ensure!(
+            effective_selectors(spec, secrets, sources) == self.selectors,
+            "selected EOS asset selectors changed at launch"
         );
         Ok(())
     }
@@ -565,6 +644,7 @@ fn run_with_deadline(
         .env_clear()
         .env("EOS_CONTROL_GRANTS_FILE", verifier)
         .env(skill_selection::ENV, &inputs.selection)
+        .envs(&inputs.selectors)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -663,6 +743,7 @@ mod tests {
                 }],
                 node_types: Vec::new(),
                 specs_sha256: String::new(),
+                selectors: BTreeMap::new(),
             },
             cases,
         )
@@ -768,6 +849,50 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.code, "skill_catalog_preflight_rejected");
         assert_eq!(error.eos_code, Some("selection_invalid"));
+    }
+
+    #[test]
+    fn asset_selectors_match_authored_and_resolved_launch_environment() {
+        let spec = process::ProcessSpec {
+            id: "eos".into(),
+            path: "isos/process/component/eos".into(),
+            settings: serde_json::from_value(serde_json::json!({
+                "command":["/bin/true"],
+                "env":{"ISOS_GPU":"nvidia"},
+                "env_from":{"ISOS_ROS":"PRIVATE_ROS_SOURCE"}
+            }))
+            .unwrap(),
+            package: None,
+            fingerprint: None,
+        };
+        let sources = BTreeSet::from(["ISOS_ROS".to_owned()]);
+        let empty = BTreeMap::new();
+        let selected = effective_selectors(&spec, &empty, &sources);
+        assert_eq!(selected.get("ISOS_GPU").map(String::as_str), Some("nvidia"));
+        assert!(!selected.contains_key("ISOS_ROS"));
+        let secrets = BTreeMap::from([("ISOS_ROS".to_owned(), OsString::from("jazzy"))]);
+        let selected = effective_selectors(&spec, &secrets, &sources);
+        assert_eq!(selected.get("ISOS_ROS").map(String::as_str), Some("jazzy"));
+        let (_dir, mut inputs) = script(
+            "test \"$ISOS_GPU\" = nvidia || exit 2\ntest \"$ISOS_ROS\" = jazzy || exit 2\ntest -z \"$HOME\" || exit 2\nprintf '%s\\n' '{\"schema_version\":1,\"ok\":false,\"stage\":\"selection\",\"code\":\"selection_invalid\"}'\nexit 1",
+        );
+        inputs.selectors = selected;
+        inputs
+            .verify_launch_selectors(&spec, &secrets, &sources)
+            .unwrap();
+        let error = run_with_deadline(
+            &inputs,
+            "candidate-1",
+            Path::new("/tmp/verifier"),
+            Duration::from_secs(1),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "skill_catalog_preflight_rejected");
+        assert!(
+            inputs
+                .verify_launch_selectors(&spec, &empty, &sources)
+                .is_err()
+        );
     }
 
     #[test]

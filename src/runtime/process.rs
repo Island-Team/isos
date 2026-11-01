@@ -1271,6 +1271,23 @@ impl Supervisor {
         Ok(())
     }
 
+    /// Leave a failed candidate's on-disk directory for operator repair rather
+    /// than letting Drop retry and erase the only cleanup breadcrumb.
+    pub fn detach_candidate_grants(&mut self) {
+        self.control_grants = None;
+    }
+
+    pub fn revoke_candidate_grants_keep_directory(&mut self) -> Result<()> {
+        ensure!(
+            self.running.is_empty(),
+            "candidate children are still running"
+        );
+        if let Some(bundle) = self.control_grants.take() {
+            bundle.revoke_keep_directory()?;
+        }
+        Ok(())
+    }
+
     pub fn candidate_verifier(&self) -> Result<PathBuf> {
         let bundle = self
             .control_grants
@@ -1296,6 +1313,7 @@ impl Supervisor {
         if spec.id == "eos" && spec.settings.role.as_deref() == Some("eos") {
             if let Some(inputs) = &self.candidate_skill_inputs {
                 inputs.launch_recheck(&self.paths, &self.deployment)?;
+                inputs.verify_launch_selectors(spec, secrets, secret_sources)?;
             }
             crate::skill_selection::verify_child_handoff(&self.paths, &self.deployment, spec)?;
         }

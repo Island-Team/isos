@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::{BufRead, BufReader, Read, Write},
     os::unix::{
@@ -15,7 +15,7 @@ use std::{
         net::{UnixListener, UnixStream},
     },
     sync::{
-        OnceLock,
+        Mutex, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -332,7 +332,11 @@ fn restart_processes_with_plan(
     plan: &crate::generated_v2::SecretPlan,
     managed: bool,
 ) -> Result<Vec<String>> {
-    check_candidate_cleanup_marker(paths, name)?;
+    check_candidate_cleanup_marker(
+        paths,
+        name,
+        managers.get(name).map(|active| active.supervisor.run_id()),
+    )?;
     if managed {
         crate::control_grants::validate_plan(specs)?;
     }
@@ -346,7 +350,7 @@ fn restart_processes_with_plan(
         .map(|active| crate::generated_v2::secret_plan(&active.supervisor.specs()))
         .transpose()?;
     let candidate_inputs = if managed {
-        crate::candidate_skill_preflight::Inputs::collect(paths, name, revision, specs)?
+        crate::candidate_skill_preflight::Inputs::collect(paths, name, revision, specs, plan)?
     } else {
         None
     };
@@ -360,6 +364,7 @@ fn restart_processes_with_plan(
         name,
         revision,
         specs,
+        plan,
         candidate_inputs,
         &mut supervisor,
     )?;
@@ -465,15 +470,70 @@ fn restart_processes_with_plan(
     Ok(started)
 }
 
-fn check_candidate_cleanup_marker(paths: &config::Paths, name: &str) -> Result<()> {
+fn check_candidate_cleanup_marker(
+    paths: &config::Paths,
+    name: &str,
+    active_run: Option<&str>,
+) -> Result<()> {
+    let blocked = candidate_cleanup_blocks().lock().map_err(|_| anyhow::anyhow!("skill catalog preflight cleanup unconfirmed; repair private candidate state before retry"))?;
     ensure!(
-        !paths
+        !blocked.contains(
+            &paths
+                .runtime
+                .join(format!("{name}.skill-candidate-cleanup-unconfirmed"))
+        ) && !paths
             .runtime
             .join(format!("{name}.skill-candidate-cleanup-unconfirmed"))
-            .exists(),
+            .exists()
+            && !paths
+                .data
+                .join(format!("{name}.skill-candidate-cleanup-unconfirmed"))
+                .exists(),
         "skill catalog preflight cleanup unconfirmed; repair private candidate state before retry"
     );
+    let bundle_root = paths.runtime.join("control-grants").join(name);
+    match fs::read_dir(&bundle_root) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = entry?;
+                ensure!(
+                    entry.file_name().to_str() == active_run && entry.file_type()?.is_dir(),
+                    "skill catalog preflight cleanup unconfirmed; repair private candidate state before retry"
+                );
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
     Ok(())
+}
+
+fn candidate_cleanup_blocks() -> &'static Mutex<BTreeSet<std::path::PathBuf>> {
+    static BLOCKED: OnceLock<Mutex<BTreeSet<std::path::PathBuf>>> = OnceLock::new();
+    BLOCKED.get_or_init(|| Mutex::new(BTreeSet::new()))
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_CANDIDATE_MARKER_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FAIL_CANDIDATE_FALLBACK_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FORCE_PROBE_CLEANUP_UNCONFIRMED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn persist_candidate_cleanup_marker(marker: &std::path::Path) -> Result<()> {
+    #[cfg(test)]
+    if FAIL_CANDIDATE_MARKER_WRITE.with(|fail| fail.get()) {
+        bail!("candidate cleanup marker persistence failed");
+    }
+    crate::config::atomic_write(marker, b"candidate cleanup requires repair\n")
+}
+
+fn persist_candidate_fallback_marker(marker: &std::path::Path) -> Result<()> {
+    #[cfg(test)]
+    if FAIL_CANDIDATE_FALLBACK_WRITE.with(|fail| fail.get()) {
+        bail!("candidate cleanup fallback marker persistence failed");
+    }
+    crate::config::atomic_write(marker, b"candidate cleanup requires repair\n")
 }
 
 fn probe_candidate(
@@ -481,6 +541,7 @@ fn probe_candidate(
     name: &str,
     revision: &str,
     specs: &[process::ProcessSpec],
+    plan: &crate::generated_v2::SecretPlan,
     inputs: Option<crate::candidate_skill_preflight::Inputs>,
     supervisor: &mut process::Supervisor,
 ) -> Result<()> {
@@ -499,7 +560,7 @@ fn probe_candidate(
             &fs::read_to_string(paths.node_graph_path(name))?,
             revision,
         )?;
-        inputs.recheck(paths, name, &fresh)?;
+        inputs.recheck(paths, name, &fresh, plan)?;
         supervisor.verify_control_grants(true)?;
         ensure!(
             format!("{specs:?}") == format!("{fresh:?}"),
@@ -513,11 +574,42 @@ fn probe_candidate(
                 .downcast_ref::<crate::candidate_skill_preflight::Diagnostic>()
                 .is_some_and(|d| d.code == "skill_catalog_preflight_cleanup_unconfirmed")
         });
-        if supervisor.retire_candidate_grants().is_err() || unconfirmed {
+        #[cfg(test)]
+        let unconfirmed = unconfirmed || FORCE_PROBE_CLEANUP_UNCONFIRMED.with(|force| force.get());
+        let retirement = if unconfirmed {
+            supervisor.revoke_candidate_grants_keep_directory()
+        } else {
+            supervisor.retire_candidate_grants()
+        };
+        if retirement.is_err() || unconfirmed {
+            supervisor.detach_candidate_grants();
             let marker = paths
                 .runtime
                 .join(format!("{name}.skill-candidate-cleanup-unconfirmed"));
-            let _ = crate::config::atomic_write(&marker, b"candidate cleanup requires repair\n");
+            // Keep the live manager closed even if the durable marker cannot be written.
+            match candidate_cleanup_blocks().lock() {
+                Ok(mut blocked) => {
+                    blocked.insert(marker.clone());
+                }
+                Err(_) => bail!(
+                    "skill catalog preflight cleanup unconfirmed; repair private candidate state before retry"
+                ),
+            }
+            if persist_candidate_cleanup_marker(&marker).is_err() {
+                tracing::error!(
+                    event_code = "skill_catalog_preflight_cleanup_unconfirmed",
+                    "candidate cleanup marker persistence failed"
+                );
+                let fallback = paths
+                    .data
+                    .join(format!("{name}.skill-candidate-cleanup-unconfirmed"));
+                if persist_candidate_fallback_marker(&fallback).is_err() {
+                    tracing::error!(
+                        event_code = "skill_catalog_preflight_cleanup_unconfirmed",
+                        "candidate cleanup fallback marker persistence failed"
+                    );
+                }
+            }
             return Err(anyhow::Error::new(inputs.diagnostic(
                 &candidate_run,
                 "skill_catalog_preflight_cleanup_unconfirmed",
@@ -539,7 +631,11 @@ fn start_prepared_processes(
     plan: &crate::generated_v2::SecretPlan,
     managed: bool,
 ) -> Result<(Vec<String>, String)> {
-    check_candidate_cleanup_marker(paths, name)?;
+    check_candidate_cleanup_marker(
+        paths,
+        name,
+        managers.get(name).map(|active| active.supervisor.run_id()),
+    )?;
     if managed {
         crate::control_grants::validate_plan(specs)?;
     }
@@ -555,7 +651,7 @@ fn start_prepared_processes(
         active.supervisor.verify_specs(specs)?;
     } else {
         let candidate_inputs = if managed {
-            crate::candidate_skill_preflight::Inputs::collect(paths, name, revision, specs)?
+            crate::candidate_skill_preflight::Inputs::collect(paths, name, revision, specs, plan)?
         } else {
             None
         };
@@ -569,6 +665,7 @@ fn start_prepared_processes(
             name,
             revision,
             specs,
+            plan,
             candidate_inputs,
             &mut supervisor,
         )?;
@@ -1291,8 +1388,16 @@ mod restart_tests {
         let candidate_grants = paths
             .runtime
             .join(format!("control-grants/test/{}", candidate.run_id()));
-        let error = probe_candidate(&paths, "test", &revision, &[], Some(inputs), &mut candidate)
-            .unwrap_err();
+        let error = probe_candidate(
+            &paths,
+            "test",
+            &revision,
+            &[],
+            &crate::generated_v2::SecretPlan::new(),
+            Some(inputs),
+            &mut candidate,
+        )
+        .unwrap_err();
         let diagnostic = error
             .downcast_ref::<crate::candidate_skill_preflight::Diagnostic>()
             .unwrap();
@@ -1339,15 +1444,18 @@ mod restart_tests {
         let mut candidate = process::Supervisor::new(&paths, "test").unwrap();
         candidate.prepare_control_grants(&"c".repeat(64)).unwrap();
         let verifier = candidate.candidate_verifier().unwrap();
+        FAIL_CANDIDATE_MARKER_WRITE.with(|fail| fail.set(true));
         let error = probe_candidate(
             &paths,
             "test",
             &"c".repeat(64),
             &[],
+            &crate::generated_v2::SecretPlan::new(),
             Some(inputs),
             &mut candidate,
         )
         .unwrap_err();
+        FAIL_CANDIDATE_MARKER_WRITE.with(|fail| fail.set(false));
         assert_eq!(
             error
                 .downcast_ref::<crate::candidate_skill_preflight::Diagnostic>()
@@ -1355,9 +1463,90 @@ mod restart_tests {
                 .code,
             "skill_catalog_preflight_cleanup_unconfirmed"
         );
-        assert!(check_candidate_cleanup_marker(&paths, "test").is_err());
+        assert!(check_candidate_cleanup_marker(&paths, "test", None).is_err());
+        assert!(
+            !paths
+                .runtime
+                .join("test.skill-candidate-cleanup-unconfirmed")
+                .exists()
+        );
+        // Simulate a manager restart: the orphan bundle still blocks replacement.
+        candidate_cleanup_blocks().lock().unwrap().clear();
+        assert!(check_candidate_cleanup_marker(&paths, "test", None).is_err());
         fs::set_permissions(&verifier, fs::Permissions::from_mode(0o600)).unwrap();
-        candidate.retire_candidate_grants().unwrap();
+        let orphan = verifier.parent().unwrap();
+        for name in [
+            "egia-control.grant",
+            "operator-control.grant",
+            "verifier.json",
+        ] {
+            fs::remove_file(orphan.join(name)).unwrap();
+        }
+        fs::remove_dir(orphan).unwrap();
+        assert!(check_candidate_cleanup_marker(&paths, "test", None).is_err());
+        fs::remove_file(paths.data.join("test.skill-candidate-cleanup-unconfirmed")).unwrap();
+        check_candidate_cleanup_marker(&paths, "test", None).unwrap();
+    }
+
+    #[test]
+    fn uncertain_probe_cleanup_retains_revoked_orphan_when_both_markers_fail() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = config::Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        paths.prepare().unwrap();
+        let script = temp.path().join("reject.sh");
+        fs::write(&script, "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"ok\":false,\"stage\":\"selection\",\"code\":\"selection_invalid\"}'\nexit 1\n").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        let inputs = crate::candidate_skill_preflight::Inputs::rejection_stub(script);
+        let mut candidate = process::Supervisor::new(&paths, "test").unwrap();
+        candidate.prepare_control_grants(&"c".repeat(64)).unwrap();
+        let orphan = paths
+            .runtime
+            .join(format!("control-grants/test/{}", candidate.run_id()));
+        FAIL_CANDIDATE_MARKER_WRITE.with(|fail| fail.set(true));
+        FAIL_CANDIDATE_FALLBACK_WRITE.with(|fail| fail.set(true));
+        FORCE_PROBE_CLEANUP_UNCONFIRMED.with(|force| force.set(true));
+        let error = probe_candidate(
+            &paths,
+            "test",
+            &"c".repeat(64),
+            &[],
+            &crate::generated_v2::SecretPlan::new(),
+            Some(inputs),
+            &mut candidate,
+        )
+        .unwrap_err();
+        FAIL_CANDIDATE_MARKER_WRITE.with(|fail| fail.set(false));
+        FAIL_CANDIDATE_FALLBACK_WRITE.with(|fail| fail.set(false));
+        FORCE_PROBE_CLEANUP_UNCONFIRMED.with(|force| force.set(false));
+        assert_eq!(
+            error
+                .downcast_ref::<crate::candidate_skill_preflight::Diagnostic>()
+                .unwrap()
+                .code,
+            "skill_catalog_preflight_cleanup_unconfirmed"
+        );
+        assert!(orphan.is_dir());
+        assert!(fs::read_dir(&orphan).unwrap().next().is_none());
+        assert!(
+            !paths
+                .runtime
+                .join("test.skill-candidate-cleanup-unconfirmed")
+                .exists()
+        );
+        assert!(
+            !paths
+                .data
+                .join("test.skill-candidate-cleanup-unconfirmed")
+                .exists()
+        );
+        candidate_cleanup_blocks().lock().unwrap().clear();
+        assert!(check_candidate_cleanup_marker(&paths, "test", None).is_err());
+        fs::remove_dir(&orphan).unwrap();
+        check_candidate_cleanup_marker(&paths, "test", None).unwrap();
     }
 
     #[test]
