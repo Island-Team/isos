@@ -20,6 +20,7 @@ SHARED = [
     "mujoco-child-v2", "reader_identity_invalid", "reader_graph_unsupported",
     "reader_type_unsupported", "reader_feature_unsupported", "reader_binary_mismatch",
     "reader_package_pin_mismatch", "compatible_upgrade",
+    "managed-config-v1", "eos-gateway-client-v2", "uv sync", "/settings/role",
 ]
 
 

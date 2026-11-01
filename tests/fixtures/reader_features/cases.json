@@ -51,7 +51,7 @@
     {
       "id": "mujoco_verified_contribution",
       "operation": "apply",
-      "mutation": "verified_0_1_1_sidecar_with_node_types_flag",
+      "mutation": "verified_0_1_1_sidecar_on_profile_setup_catalog_and_actual_launch_only",
       "expected": {
         "result": "admit",
         "type": "eos.process.mujoco@v0.1",
@@ -318,7 +318,7 @@
         "result": "reject",
         "code": "reader_identity_invalid",
         "stage": "reader",
-        "path": "/cores/isos/layers/process/groups/component/nodes/egia/settings/command/0",
+        "path": "/cores/isos/layers/process/groups/component/nodes/egia/settings/role",
         "binary": "egia",
         "requested_feature": null,
         "saved_bytes_unchanged": true,
@@ -379,12 +379,12 @@
     {
       "id": "wrong_selected_binary_identity",
       "operation": "run",
-      "mutation": "eos_process_command_reports_aether_profile",
+      "mutation": "selected_eos_role_resolves_binary_reporting_aether_profile",
       "expected": {
         "result": "reject",
         "code": "reader_binary_mismatch",
         "stage": "reader",
-        "path": "/cores/isos/layers/process/groups/component/nodes/eos/settings/command/0",
+        "path": "/cores/isos/layers/process/groups/component/nodes/eos/settings/role",
         "binary": "aether-runtime",
         "requested_feature": null,
         "saved_bytes_unchanged": true,
@@ -470,7 +470,7 @@
     {
       "id": "probe_order_deterministic",
       "operation": "validate",
-      "mutation": "two_node_paths_then_two_binary_roles_then_two_features",
+      "mutation": "missing_graph_reader_feature_then_two_node_features",
       "expected": {
         "result": "first_failure",
         "order": [
@@ -478,7 +478,7 @@
           "binary_role",
           "feature_id"
         ],
-        "first_path": "/cores/eos/layers/hardware/groups/camera/nodes/front/node_type",
+        "first_path": "/version",
         "first_binary": "aether-profile",
         "first_feature": "graph-0.1-reader"
       }
@@ -495,16 +495,16 @@
       }
     },
     {
-      "id": "legacy_backend_missing_child_feature",
-      "operation": "restart",
-      "mutation": "verified_legacy_backend_v2_child_runtime_lacks_mujoco_child_v2",
+      "id": "legacy_backend_preempted_by_migration_required",
+      "operation": "run",
+      "mutation": "authored_eos_process_backend_v1_0_before_reader_probe",
       "expected": {
         "result": "reject",
-        "code": "reader_feature_unsupported",
-        "stage": "feature",
+        "code": "migration_required",
+        "stage": "graph",
         "path": "/cores/eos/layers/process/groups/backend/nodes/sim/node_type",
         "binary": "aether-runtime",
-        "requested_feature": "mujoco-child-v2",
+        "requested_feature": null,
         "active_pids_unchanged": true,
         "saved_bytes_unchanged": true,
         "stop_calls": 0,
@@ -552,6 +552,154 @@
         "graph_version": "0.1.0",
         "product_version_not_predicate": true,
         "selected_binary_digests_equal": true
+      }
+    },
+    {
+      "id": "egia_runtime_non_graph_reader_shape",
+      "operation": "validate_apply_run",
+      "mutation": "egia_setup_arrays_four_exact_ids_runtime_features_only",
+      "expected": {
+        "result": "admit_reader_only",
+        "runtime_features": [
+          "managed-config-v1",
+          "eos-gateway-client-v2"
+        ],
+        "runtime_supported_arrays_absent": true,
+        "runtime_gateway_ready": false
+      }
+    },
+    {
+      "id": "egia_runtime_claims_graph_arrays",
+      "operation": "run",
+      "mutation": "egia_runtime_capabilities_add_supported_graph_versions",
+      "expected": {
+        "result": "reject",
+        "code": "reader_identity_invalid",
+        "stage": "reader",
+        "path": "/cores/isos/layers/process/groups/component/nodes/egia/settings/role",
+        "binary": "egia",
+        "requested_feature": null,
+        "saved_bytes_unchanged": true,
+        "stop_calls": 0,
+        "spawn_calls": 0,
+        "active_pids_unchanged": true
+      }
+    },
+    {
+      "id": "egia_missing_managed_config_feature",
+      "operation": "run",
+      "mutation": "egia_runtime_features_without_managed_config_v1",
+      "expected": {
+        "result": "reject",
+        "code": "reader_feature_unsupported",
+        "stage": "feature",
+        "path": "/cores/isos/layers/process/groups/component/nodes/egia/node_type",
+        "binary": "egia",
+        "requested_feature": "managed-config-v1",
+        "saved_bytes_unchanged": true,
+        "stop_calls": 0,
+        "spawn_calls": 0,
+        "active_pids_unchanged": true
+      }
+    },
+    {
+      "id": "egia_missing_gateway_client_feature",
+      "operation": "run",
+      "mutation": "egia_runtime_features_without_eos_gateway_client_v2",
+      "expected": {
+        "result": "reject",
+        "code": "reader_feature_unsupported",
+        "stage": "feature",
+        "path": "/cores/isos/layers/process/groups/component/nodes/egia/node_type",
+        "binary": "egia",
+        "requested_feature": "eos-gateway-client-v2",
+        "saved_bytes_unchanged": true,
+        "stop_calls": 0,
+        "spawn_calls": 0,
+        "active_pids_unchanged": true
+      }
+    },
+    {
+      "id": "egia_missing_interpreter_no_bootstrap",
+      "operation": "run",
+      "mutation": "selected_launcher_default_venv_python_missing",
+      "expected": {
+        "result": "reject",
+        "code": "reader_binary_mismatch",
+        "stage": "reader",
+        "path": "/cores/isos/layers/process/groups/component/nodes/egia/settings/role",
+        "binary": "egia",
+        "requested_feature": null,
+        "saved_bytes_unchanged": true,
+        "stop_calls": 0,
+        "spawn_calls": 0,
+        "active_pids_unchanged": true,
+        "uv_sync_calls": 0,
+        "venv_create_calls": 0
+      }
+    },
+    {
+      "id": "egia_interpreter_changed_after_apply",
+      "operation": "restart",
+      "mutation": "resolved_egia_python_sha256_changed",
+      "expected": {
+        "result": "reject",
+        "code": "generated_manifest_mismatch",
+        "stage": "snapshot",
+        "path": "",
+        "binary": null,
+        "requested_feature": null,
+        "saved_bytes_unchanged": true,
+        "stop_calls": 0,
+        "spawn_calls": 0,
+        "active_pids_unchanged": true
+      }
+    },
+    {
+      "id": "egia_module_tree_changed_after_apply",
+      "operation": "restart",
+      "mutation": "installed_egia_module_tree_sha256_changed",
+      "expected": {
+        "result": "reject",
+        "code": "generated_manifest_mismatch",
+        "stage": "snapshot",
+        "path": "",
+        "binary": null,
+        "requested_feature": null,
+        "saved_bytes_unchanged": true,
+        "stop_calls": 0,
+        "spawn_calls": 0,
+        "active_pids_unchanged": true
+      }
+    },
+    {
+      "id": "eos_capabilities_sidecar_free",
+      "operation": "validate_apply_run",
+      "mutation": "verified_mujoco_sidecar_loaded_only_for_setup_catalog_validation_and_launch",
+      "expected": {
+        "result": "admit",
+        "capabilities_argv": [
+          "--capabilities"
+        ],
+        "catalog_has_verified_contribution": true,
+        "static_supported_node_types_excludes_contribution": true
+      }
+    },
+    {
+      "id": "legacy_scalar_runtime_still_requires_feature",
+      "operation": "run",
+      "mutation": "legacy_scalar_only_runtime_without_mujoco_child_feature",
+      "expected": {
+        "result": "reject",
+        "code": "reader_feature_unsupported",
+        "stage": "feature",
+        "path": "/cores/eos/layers/process/groups/mujoco/nodes/sim/node_type",
+        "binary": "aether-runtime",
+        "requested_feature": "mujoco-child-v2",
+        "saved_bytes_unchanged": true,
+        "stop_calls": 0,
+        "spawn_calls": 0,
+        "active_pids_unchanged": true
       }
     }
   ]

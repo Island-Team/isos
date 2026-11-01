@@ -16,13 +16,14 @@ def main() -> None:
         "version": "0.1.1",
     }
     cases = fixture["cases"]
-    assert len(cases) == 36
+    assert len(cases) == 45
     ids = [case["id"] for case in cases]
     assert len(ids) == len(set(ids))
+    by_id = {case["id"]: case for case in cases}
     operations = {"validate", "apply", "run", "restart", "version_check", "validate_apply_run"}
     outcomes = {"admit", "admit_read_only", "admit_reader_only", "reject", "suggest", "blocked", "first_failure"}
     codes = {
-        "unsupported_graph_version", "unsupported_node_type", "package_invalid_sidecar",
+        "unsupported_graph_version", "unsupported_node_type", "migration_required", "package_invalid_sidecar",
         "package_changed", "generated_manifest_mismatch", "reader_identity_invalid",
         "reader_graph_unsupported", "reader_type_unsupported", "reader_feature_unsupported",
         "reader_binary_mismatch", "reader_package_pin_mismatch",
@@ -35,6 +36,7 @@ def main() -> None:
         if expected["result"] == "reject":
             assert expected["code"] in codes and expected["stage"] in stages
             assert expected["path"] == "" or expected["path"].startswith("/")
+            assert "/settings/command" not in expected["path"]
             assert expected["saved_bytes_unchanged"] is True
             assert expected["stop_calls"] == expected["spawn_calls"] == 0
             if case["operation"] == "restart":
@@ -43,6 +45,13 @@ def main() -> None:
                 assert expected["requested_feature"]
         else:
             assert "code" not in expected
+    assert by_id["probe_order_deterministic"]["expected"]["first_path"] == "/version"
+    assert by_id["legacy_backend_preempted_by_migration_required"]["expected"]["code"] == "migration_required"
+    assert by_id["eos_capabilities_sidecar_free"]["expected"]["capabilities_argv"] == ["--capabilities"]
+    assert by_id["egia_runtime_non_graph_reader_shape"]["expected"]["runtime_supported_arrays_absent"] is True
+    for case_id in ("egia_missing_managed_config_feature", "egia_missing_gateway_client_feature"):
+        assert by_id[case_id]["expected"]["path"].endswith("/node_type")
+    assert by_id["legacy_scalar_runtime_still_requires_feature"]["expected"]["requested_feature"] == "mujoco-child-v2"
     print(f"P05 fixture valid: {len(cases)} unique cases")
 
 

@@ -35,7 +35,7 @@ isos pkg node-sets
 
 若重启时新子进程启动失败，IsOS 会停止本次启动，并按先前的进程配置重新启动先前的运行中修订。若先前的子进程也无法恢复，状态会显示部署已降级及重启错误。
 
-**P05 读取器特性预检——目标，尚未实现：**选择 EOS、可选 EGIA 构建及精确 MuJoCo 包后，运行 `isos version check --json`。比较各启用核心的所选程序、请求的图版本、完整节点类型及必需特性与公布的支持集合。Validate／Apply 对草稿重复检查；Run／Restart 在停止任何子进程前对保存修订重复检查。即使产品版本较新，缺失 `@v0.1` 类型、`mujoco-child-v2` 声明、EGIA runtime 能力探测或已验证包 pin 仍会阻塞。恢复兼容的所选构建并再次 Apply；只有报告给出一个精确已验证发行版时才采用升级建议。现有命令的检查范围较窄；[P05 契约](../interfaces/reader-features_cn.md)规定目标诊断和失败不停止行为。
+**P05 读取器特性预检——目标，尚未实现：**选择 EOS、可选 EGIA 构建及精确 MuJoCo 包后，运行 `isos version check --json`。比较各启用核心的所选程序、请求的图版本、完整节点类型及必需特性与公布的支持集合。Validate／Apply 对草稿重复检查；Run／Restart 在停止任何子进程前对保存修订重复检查。即使产品版本较新，缺失 `@v0.1` 类型、`mujoco-child-v2` 声明、EGIA runtime 的 `managed-config-v1`／`eos-gateway-client-v2` 探测或已验证包 pin 仍会阻塞。对 EGIA，应先选定已有解释器及已安装模块树；能力探测不得创建虚拟环境或运行 `uv sync`，IsOS 在 Restart 前重查解析出的解释器和代码来源。恢复兼容的所选构建并再次 Apply；只有报告给出一个精确已验证发行版时才采用升级建议。现有命令的检查范围较窄；[P05 契约](../interfaces/reader-features_cn.md)规定目标诊断和失败不停止行为。
 
 ### 迁移已保存的旧图
 
