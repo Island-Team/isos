@@ -1,8 +1,7 @@
 //! Human-facing readiness for configured core executables.
 
-use crate::{config::Paths, core_bins, core_setup, isosui, process};
+use crate::{config::Paths, core_bins, core_setup, graph_compat, isosui, process};
 use serde_json::{Value, json};
-use std::fs;
 
 fn process_present(graph: &Value, id: &str) -> bool {
     graph
@@ -14,21 +13,18 @@ fn process_present(graph: &Value, id: &str) -> bool {
 
 pub fn report(paths: &Paths, name: &str, active: Option<&Value>) -> Value {
     let graph_path = paths.node_graph_path(name);
-    let graph: Value = fs::read(&graph_path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or(Value::Null);
-    let graph_version_issue = graph
-        .is_object()
-        .then(|| {
-            (graph["version"] != "1.0.0").then(|| {
-                format!(
-                    "saved graph version {} is incompatible with graph format 1.0.0",
-                    graph["version"]
-                )
+    let saved = graph_compat::read(&graph_path).ok();
+    let graph: Value = saved.map_or(Value::Null, |saved| saved.value);
+    let graph_version_issue = if graph.is_object() {
+        graph_compat::version_diagnostic(&graph)
+            .map(|diagnostic| format!("saved graph is incompatible: {diagnostic}"))
+            .or_else(|| {
+                (graph["version"] == "0.1.0")
+                    .then(|| "saved 0.1.0 graph requires compatible EOS and EGIA readers".into())
             })
-        })
-        .flatten();
+    } else {
+        None
+    };
     let projected = if graph.is_object() {
         process::project_with_packages(paths, &graph.to_string()).ok()
     } else {

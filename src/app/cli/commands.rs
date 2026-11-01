@@ -1,6 +1,9 @@
 use super::{ConfigCommand, InstallArgs, LibraryCommand, PackageCommand, ServiceCommand};
 use crate::manager::service_call;
-use crate::{config, core_setup, lock, node_sets, packages, process, release, services, starter};
+use crate::{
+    config, core_setup, graph_compat, lock, node_sets, packages, process, release, services,
+    starter,
+};
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -51,6 +54,50 @@ pub(crate) fn apply_graph_file(
 ) -> Result<Vec<process::ProcessSpec>> {
     let source = fs::read_to_string(file)?;
     let graph = process::normalize_source(&source)?;
+    graph_compat::admit(&graph, process::catalog().ok().as_ref())?;
+    let destination = paths.node_graph_path(name);
+    let mut expected_saved_revision = None;
+    {
+        let _lock = lock::Lock::take(paths)?;
+        if destination.exists() {
+            let saved = graph_compat::read(&destination)?;
+            if saved.value["version"] == "1.0.0" {
+                if let Some(diagnostic) = graph_compat::changed_legacy_diagnostic(&saved, &graph) {
+                    if graph_compat::requires_migration(
+                        &saved,
+                        &graph,
+                        paths
+                            .generated(name)
+                            .join("core-setup/launch-inputs.json")
+                            .is_file(),
+                    ) {
+                        bail!(diagnostic);
+                    }
+                    expected_saved_revision = Some(saved.revision.clone());
+                } else {
+                    process::validate_value(paths, &saved.value)?;
+                    let specs = process::project_with_packages(
+                        paths,
+                        &serde_json::to_string(&saved.value)?,
+                    )?;
+                    let rendered =
+                        core_setup::render_graph(paths, name, &saved.value, &saved.revision)?;
+                    core_setup::write_rendered(paths, name, rendered)?;
+                    return Ok(specs);
+                }
+            }
+            if saved.value["version"] != "1.0.0" {
+                bail!(saved.diagnostics.into_iter().next().map_or_else(
+                    || "/version: migration_required: saved graph is read-only".to_owned(),
+                    |diagnostic| diagnostic.to_string()
+                ));
+            }
+        }
+    }
+    ensure!(
+        graph["version"] == "1.0.0",
+        "/version: 0.1.0 writer is unavailable until core readers advertise support"
+    );
     process::validate_value(paths, &graph)?;
     let normalized = serde_json::to_vec_pretty(&graph)?;
     let specs = process::project_with_packages(paths, &String::from_utf8(normalized.clone())?)?;
@@ -59,6 +106,21 @@ pub(crate) fn apply_graph_file(
     let _lock = lock::Lock::take(paths)?;
     let destination = paths.node_graph_path(name);
     let previous = fs::read(&destination).ok();
+    ensure!(
+        previous.as_deref().map(graph_compat::revision) == expected_saved_revision,
+        "saved graph changed during Apply; reload before retrying"
+    );
+    if let Some(bytes) = &previous {
+        let saved = graph_compat::parse(bytes)?;
+        ensure!(
+            saved.value["version"] == "1.0.0"
+                && !paths
+                    .generated(name)
+                    .join("core-setup/launch-inputs.json")
+                    .is_file(),
+            "saved graph changed or became applied during Apply; reload before migration"
+        );
+    }
     config::atomic_write(&destination, &normalized)?;
     if let Err(error) = core_setup::write_rendered(paths, name, rendered) {
         if let Some(previous) = previous {

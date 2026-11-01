@@ -1,7 +1,7 @@
 //! Bounded, on-demand setup adapters for the saved node graph.
 use crate::{
     config::{self, Paths},
-    packages,
+    graph_compat, packages, process,
 };
 use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
@@ -325,6 +325,7 @@ pub fn call(
     graph: &Value,
     graph_revision: &str,
 ) -> Result<Value> {
+    graph_compat::admit(graph, process::catalog().ok().as_ref())?;
     let request = request(paths, name, role, op, graph, graph_revision)?;
     invoke(&selected_adapter(paths, role)?, &request)
 }
@@ -354,13 +355,14 @@ pub fn identity(paths: &Paths, role: &str) -> Result<Value> {
 
 pub fn prepare_run(paths: &Paths, name: &str, expected_revision: &str) -> Result<()> {
     let graph_path = paths.node_graph_path(name);
-    let bytes = fs::read(&graph_path).with_context(|| format!("read {}", graph_path.display()))?;
-    ensure!(bytes.len() <= MAX_REQUEST, "node graph exceeds 1 MiB");
+    let saved = graph_compat::read(&graph_path)
+        .with_context(|| format!("read {}", graph_path.display()))?;
     ensure!(
-        revision(&bytes) == expected_revision,
+        saved.revision == expected_revision,
         "node graph revision changed during setup"
     );
-    let graph: Value = serde_json::from_slice(&bytes)?;
+    let graph = saved.value;
+    graph_compat::admit(&graph, process::catalog().ok().as_ref())?;
     let files = render_graph(paths, name, &graph, expected_revision)?;
     let _lock = crate::lock::Lock::take(paths)?;
     ensure!(
@@ -381,9 +383,16 @@ pub fn refresh_after_init(paths: &Paths, name: &str) -> Result<Option<String>> {
         return Ok(None);
     }
     let graph_path = paths.node_graph_path(name);
-    let bytes = fs::read(&graph_path).with_context(|| format!("read {}", graph_path.display()))?;
-    ensure!(bytes.len() <= MAX_REQUEST, "node graph exceeds 1 MiB");
-    let graph: Value = serde_json::from_slice(&bytes)?;
+    let saved = graph_compat::read(&graph_path)
+        .with_context(|| format!("read {}", graph_path.display()))?;
+    let graph = saved.value;
+    if let Some(diagnostic) = graph_compat::version_diagnostic(&graph) {
+        bail!(
+            "saved graph version is incompatible: {diagnostic}; run `isos init` to create a v1 starter after resolving migration; {} was left untouched",
+            graph_path.display()
+        );
+    }
+    graph_compat::admit(&graph, process::catalog().ok().as_ref())?;
     ensure!(
         graph["version"] == "1.0.0",
         "saved graph version {} cannot be refreshed as graph format 1.0.0; back up {}, run `isos init` to create a v1 starter, then add nodes and Save graph; the old file was left untouched",
@@ -393,7 +402,7 @@ pub fn refresh_after_init(paths: &Paths, name: &str) -> Result<Option<String>> {
     crate::process::validate_value(paths, &graph)?;
     let specs = crate::process::project_with_packages(paths, &serde_json::to_string(&graph)?)?;
     crate::preflight::verify_processes(paths, &specs)?;
-    let expected_revision = revision(&bytes);
+    let expected_revision = saved.revision;
     let files = render_graph(paths, name, &graph, &expected_revision)?;
     let _lock = crate::lock::Lock::take(paths)?;
     ensure!(

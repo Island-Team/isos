@@ -1,7 +1,7 @@
 //! Loopback configuration API and verified static IsosUI server.
 use crate::{
     config::{self, Paths},
-    core_setup, lock,
+    core_setup, graph_compat, lock,
     log_store::LogStore,
     node_options, node_sets, packages, process, readiness,
 };
@@ -301,14 +301,25 @@ async fn node_graph(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResul
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return ok(json!({
                 "revision":"",
-                "graph":{"version":"1.0.0","robot":{"id":"robot","name":"Robot"},"cores":{}}
+                "graph":{"version":"1.0.0","robot":{"id":"robot","name":"Robot"},"cores":{}},
+                "read_only":false,"diagnostics":[]
             }));
         }
         Err(error) => return Err(err(StatusCode::INTERNAL_SERVER_ERROR, error)),
     };
-    let graph: Value = serde_json::from_slice(&bytes)
+    let saved = graph_compat::parse(&bytes)
         .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
-    ok(json!({"revision":revision(&bytes),"graph":graph}))
+    let applied = app
+        .paths
+        .generated(&app.deployment)
+        .join("core-setup/launch-inputs.json")
+        .is_file();
+    let catalog = process::catalog().ok();
+    let editable_starter = !applied
+        && saved.value["version"] == "1.0.0"
+        && graph_compat::admission_diagnostic(&saved.value, catalog.as_ref()).is_none();
+    ok(json!({"revision":saved.revision,"graph":saved.value,
+        "read_only":saved.read_only && !editable_starter,"diagnostics":saved.diagnostics}))
 }
 
 #[derive(Deserialize)]
@@ -327,6 +338,10 @@ async fn validate_node_graph(
     authorized(&app, &headers)?;
     if edit.schema_version != 1 {
         return Err(err(StatusCode::BAD_REQUEST, "API schema_version must be 1"));
+    }
+    let catalog = process::catalog().ok();
+    if let Some(diagnostic) = graph_compat::admission_diagnostic(&edit.graph, catalog.as_ref()) {
+        return ok(json!({"valid":false,"diagnostics":[diagnostic]}));
     }
     let edge_diagnostics = process::catalog()
         .map(|catalog| edge_diagnostics(&edit.graph, &catalog))
@@ -355,6 +370,84 @@ async fn apply_node_graph(
         return Err(err(StatusCode::BAD_REQUEST, "API schema_version must be 1"));
     }
     let graph = edit.graph;
+    let catalog = process::catalog().ok();
+    if let Some(diagnostic) = graph_compat::admission_diagnostic(&graph, catalog.as_ref()) {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"schema_version":1,"ok":false,
+                "data":{"diagnostics":[diagnostic]},"error":"graph admission rejected"})),
+        ));
+    }
+    let path = app.paths.node_graph_path(&app.deployment);
+    {
+        let _lock = lock::Lock::take(&app.paths)
+            .map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR, error))?;
+        if path.exists() {
+            let saved = graph_compat::read(&path)
+                .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
+            if edit.revision.as_deref() != Some(saved.revision.as_str()) {
+                return Err(err(
+                    StatusCode::CONFLICT,
+                    "node graph revision changed; reload before applying",
+                ));
+            }
+            if saved.value["version"] == "1.0.0" {
+                if graph_compat::changed_legacy_diagnostic(&saved, &graph).is_none() {
+                    process::validate_value(&app.paths, &saved.value)
+                        .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
+                    let rendered = core_setup::render_graph(
+                        &app.paths,
+                        &app.deployment,
+                        &saved.value,
+                        &saved.revision,
+                    )
+                    .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
+                    core_setup::write_rendered(&app.paths, &app.deployment, rendered)
+                        .map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR, error))?;
+                    return ok(json!({"revision":saved.revision,"graph":saved.value}));
+                }
+                if graph_compat::requires_migration(
+                    &saved,
+                    &graph,
+                    app.paths
+                        .generated(&app.deployment)
+                        .join("core-setup/launch-inputs.json")
+                        .is_file(),
+                ) {
+                    let diagnostic = graph_compat::changed_legacy_diagnostic(&saved, &graph)
+                        .expect("changed legacy graph has migration diagnostic");
+                    return Err((
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        Json(json!({"schema_version":1,"ok":false,
+                            "data":{"diagnostics":[diagnostic]},"error":"migration required"})),
+                    ));
+                }
+            }
+            if saved.value["version"] != "1.0.0" {
+                let diagnostic =
+                    saved
+                        .diagnostics
+                        .into_iter()
+                        .next()
+                        .unwrap_or(graph_compat::Diagnostic {
+                            path: "/version".into(),
+                            code: "migration_required",
+                            message: "saved graph requires a compatible migration writer".into(),
+                        });
+                return Err((
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    Json(json!({"schema_version":1,"ok":false,
+                        "data":{"diagnostics":[diagnostic]},"error":"saved graph is read-only"})),
+                ));
+            }
+        }
+    }
+    if graph["version"] != "1.0.0" {
+        return Err(err(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "0.1.0 writer is unavailable until core readers advertise support",
+        ));
+    }
     if let Ok(catalog) = process::catalog()
         && let Some(diagnostic) = edge_diagnostics(&graph, &catalog).into_iter().next()
     {
@@ -382,6 +475,21 @@ async fn apply_node_graph(
                 StatusCode::CONFLICT,
                 "node graph revision changed; reload before applying",
             ));
+        }
+        if app
+            .paths
+            .generated(&app.deployment)
+            .join("core-setup/launch-inputs.json")
+            .is_file()
+        {
+            let saved = graph_compat::parse(bytes)
+                .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
+            if graph_compat::requires_migration(&saved, &graph, true) {
+                return Err(err(
+                    StatusCode::CONFLICT,
+                    "graph became applied during editing; reload before migration",
+                ));
+            }
         }
     } else if edit
         .revision
@@ -1012,6 +1120,144 @@ mod tests {
                 .unwrap();
             let response = test_router().oneshot(request).await.unwrap();
             assert_eq!(response.status(), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn saved_future_graph_is_inspectable_but_read_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = Arc::new(App {
+            paths: Paths {
+                config: temp.path().join("config"),
+                data: temp.path().join("data"),
+                runtime: temp.path().join("run"),
+            },
+            deployment: "default".into(),
+        });
+        let path = app.paths.node_graph_path("default");
+        let source = include_bytes!("../../tests/fixtures/graph_compat/future_2_0_0.json");
+        config::atomic_write(&path, source).unwrap();
+        let request = Request::builder()
+            .uri("/api/isos/v1/node-graph")
+            .header(header::HOST, "127.0.0.1:16000")
+            .body(Body::empty())
+            .unwrap();
+        let response = router(app).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 1_000_000).await.unwrap())
+                .unwrap();
+        assert_eq!(body["data"]["revision"], graph_compat::revision(source));
+        assert_eq!(body["data"]["graph"]["version"], "2.0.0");
+        assert_eq!(body["data"]["read_only"], true);
+        assert_eq!(body["data"]["diagnostics"][0]["path"], "/version");
+        assert_eq!(fs::read(path).unwrap(), source);
+    }
+
+    #[tokio::test]
+    async fn changed_legacy_apply_reports_migration_without_writing() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = Arc::new(App {
+            paths: Paths {
+                config: temp.path().join("config"),
+                data: temp.path().join("data"),
+                runtime: temp.path().join("run"),
+            },
+            deployment: "default".into(),
+        });
+        let path = app.paths.node_graph_path("default");
+        let source =
+            include_bytes!("../../tests/fixtures/graph_compat/legacy_1_0_0_whitespace.json");
+        config::atomic_write(&path, source).unwrap();
+        let inspection = Request::builder()
+            .uri("/api/isos/v1/node-graph")
+            .header(header::HOST, "127.0.0.1:16000")
+            .body(Body::empty())
+            .unwrap();
+        let inspected = router(app.clone()).oneshot(inspection).await.unwrap();
+        let body: Value =
+            serde_json::from_slice(&to_bytes(inspected.into_body(), 1_000_000).await.unwrap())
+                .unwrap();
+        assert_eq!(body["data"]["read_only"], false);
+        config::atomic_write(
+            &app.paths
+                .generated("default")
+                .join("core-setup/launch-inputs.json"),
+            b"[]",
+        )
+        .unwrap();
+        let inspection = Request::builder()
+            .uri("/api/isos/v1/node-graph")
+            .header(header::HOST, "127.0.0.1:16000")
+            .body(Body::empty())
+            .unwrap();
+        let inspected = router(app.clone()).oneshot(inspection).await.unwrap();
+        let body: Value =
+            serde_json::from_slice(&to_bytes(inspected.into_body(), 1_000_000).await.unwrap())
+                .unwrap();
+        assert_eq!(body["data"]["read_only"], true);
+        let mut changed: Value = serde_json::from_slice(source).unwrap();
+        changed["robot"]["name"] = json!("changed");
+        let request = Request::builder()
+            .method(Method::PUT)
+            .uri("/api/isos/v1/node-graph")
+            .header(header::HOST, "127.0.0.1:16000")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&json!({"schema_version":1,
+                "revision":graph_compat::revision(source),"graph":changed}))
+                .unwrap(),
+            ))
+            .unwrap();
+        let response = router(app).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 1_000_000).await.unwrap())
+                .unwrap();
+        assert_eq!(body["data"]["diagnostics"][0]["code"], "migration_required");
+        assert_eq!(body["data"]["diagnostics"][0]["path"], "/version");
+        assert_eq!(fs::read(path).unwrap(), source);
+    }
+
+    #[tokio::test]
+    async fn validation_rejects_future_version_and_unsafe_process_at_exact_paths() {
+        for (source, path, code) in [
+            (
+                include_bytes!("../../tests/fixtures/graph_compat/future_2_0_0.json").as_slice(),
+                "/version",
+                "unsupported_graph_version",
+            ),
+            (
+                include_bytes!("../../tests/fixtures/graph_compat/unsafe_component_1_0_0.json")
+                    .as_slice(),
+                "/cores/isos/layers/process/groups/component/nodes/eos/node_type",
+                "unsafe_process_node",
+            ),
+            (
+                include_bytes!("../../tests/fixtures/graph_compat/unknown_type_1_0_0.json")
+                    .as_slice(),
+                "/cores/eos/layers/dispatcher/groups/control/nodes/command/node_type",
+                "unsupported_node_type",
+            ),
+        ] {
+            let graph: Value = serde_json::from_slice(source).unwrap();
+            let request = Request::builder()
+                .method(Method::POST)
+                .uri("/api/isos/v1/node-graph/validate")
+                .header(header::HOST, "127.0.0.1:16000")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({"schema_version":1,"graph":graph})).unwrap(),
+                ))
+                .unwrap();
+            let response = test_router().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body: Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), 1_000_000).await.unwrap())
+                    .unwrap();
+            assert_eq!(body["data"]["valid"], false);
+            assert_eq!(body["data"]["diagnostics"][0]["path"], path);
+            assert_eq!(body["data"]["diagnostics"][0]["code"], code);
         }
     }
 
