@@ -2,7 +2,7 @@
 
 [English](../../../docs/isos/interfaces/log-cursors.md) · [P06 事件](events_cn.md) · [本地 API](local-api_cn.md) · [设计](../design/log-cursors_cn.md) · [首次使用](../usage/get-started_cn.md) · [P07 任务](../../../../Island-eos/docs/island/implementation-todo.md)
 
-**目标设计——尚未实现。** IsOS 负责每个部署的当前日志范围、保留的首条事件、游标、轮转和缺口诊断。IsosUI 呈现归属方状态。P06 脱敏事件信封和 IsOS 进程状态分别是事件内容与实时健康的权威。本扩展不改变未带 `view=current` 的旧版 `GET /api/isos/v1/logs`、schema-1 HTTP 信封或未带 `--current` 的 `isos logs` 尾部输出。
+**P07 已实现。** IsOS 负责每个部署的当前日志范围、保留的首条事件、游标、轮转和缺口诊断。IsosUI 呈现归属方状态。P06 脱敏事件信封和 IsOS 进程状态分别是事件内容与实时健康的权威。本扩展不改变未带 `view=current` 的旧版 `GET /api/isos/v1/logs`、schema-1 HTTP 信封或未带 `--current` 的 `isos logs` 尾部输出。
 
 ## 端点和查询
 

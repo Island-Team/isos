@@ -618,12 +618,26 @@ mod tests {
             runtime: temp.path().join("run"),
         };
         let logs = crate::log_store::LogStore::new(&paths, "default").unwrap();
+        logs.publish_run("r-isos-test").unwrap();
         for record in &records {
             logs.append_selected(record).unwrap();
         }
         let source = logs.read("eos", None, 10).unwrap();
         let all = logs.read("all", None, 10).unwrap();
         assert_eq!(source["lines"], all["lines"]);
+        let current = logs
+            .read_current(crate::log_store::CurrentQuery {
+                source: "all",
+                level: "info",
+                node_path: None,
+                correlation_id: None,
+                cursor: None,
+                limit: 10,
+                active_revision: None,
+            })
+            .unwrap();
+        assert_eq!(current["scope"]["run_id"], "r-isos-test");
+        assert_eq!(current["anchor"]["event"]["event_code"], "eos_start_failed");
     }
 
     #[test]
@@ -653,6 +667,7 @@ mod tests {
             runtime: temp.path().join("run"),
         };
         let logs = crate::log_store::LogStore::new(&paths, "default").unwrap();
+        logs.publish_run("r-isos-test").unwrap();
         let records: Vec<_> = output
             .stderr
             .split_inclusive(|byte| *byte == b'\n')
@@ -667,6 +682,24 @@ mod tests {
         let source = logs.read("egia", None, 10).unwrap();
         let all = logs.read("all", None, 10).unwrap();
         assert_eq!(source["lines"], all["lines"]);
+        let current = logs
+            .read_current(crate::log_store::CurrentQuery {
+                source: "all",
+                level: "info",
+                node_path: None,
+                correlation_id: None,
+                cursor: None,
+                limit: 10,
+                active_revision: None,
+            })
+            .unwrap();
+        assert_eq!(current["scope"]["run_id"], "r-isos-test");
+        if let Some(first) = records.iter().find(|event| event["level"] == "error") {
+            assert_eq!(
+                current["anchor"]["event"]["event_code"],
+                first["event_code"]
+            );
+        }
     }
     #[test]
     fn strict_role_and_duplicate_admission() {

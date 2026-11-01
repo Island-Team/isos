@@ -1,8 +1,8 @@
 use super::{ConfigCommand, InstallArgs, LibraryCommand, PackageCommand, ServiceCommand};
-use crate::manager::service_call;
+use crate::manager::{manager_session_id, next_correlation_id, service_call};
 use crate::{
-    config, core_setup, graph_compat, graph_migration, lock, node_sets, packages, process, release,
-    services, starter,
+    config, core_setup, graph_compat, graph_migration, lock, log_store, node_sets, packages,
+    process, release, services, starter,
 };
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
@@ -56,7 +56,27 @@ pub(crate) fn config_command(paths: &config::Paths, name: &str, cmd: ConfigComma
             println!("valid node graph: {} IsOS processes", specs.len());
         }
         ConfigCommand::Apply { file, revision } => {
-            let specs = apply_graph_file(paths, name, &file, revision.as_deref())?;
+            let specs =
+                apply_graph_file(paths, name, &file, revision.as_deref()).inspect_err(|_| {
+                    if let Ok(logs) = log_store::LogStore::new(paths, name) {
+                        let correlation = next_correlation_id();
+                        let manager = logs
+                            .manager_scope_id()
+                            .unwrap_or_else(|| manager_session_id().to_owned());
+                        let _ = logs.append_apply_failure_context(
+                            "isos",
+                            "error",
+                            "deployment_preflight_failed",
+                            "Graph Apply failed; inspect the command diagnostic",
+                            log_store::LogContext {
+                                run_id: Some(&manager),
+                                correlation_id: Some(&correlation),
+                                node_path: None,
+                                fields: json!({}),
+                            },
+                        );
+                    }
+                })?;
             println!("applied node graph: {} IsOS processes", specs.len());
         }
         ConfigCommand::Migrate {

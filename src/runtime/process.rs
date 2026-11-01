@@ -1207,6 +1207,9 @@ impl Supervisor {
     pub fn run_id(&self) -> &str {
         &self.run_id
     }
+    pub fn publish_run_scope(&self) -> Result<()> {
+        self.logs.publish_run(&self.run_id)
+    }
     pub fn set_run_id(&mut self, run_id: String) {
         self.run_id = run_id;
     }

@@ -2,7 +2,7 @@
 
 [English](../../../docs/isos/design/log-cursors.md) · [归属接口](../interfaces/log-cursors_cn.md) · [P06 事件设计](events_cn.md) · [固定样例](../../../tests/fixtures/log_cursors/README_cn.md)
 
-**目标设计——尚未实现。** [归属接口](../interfaces/log-cursors_cn.md)固定 API。P07 在 P06 事件准入后扩展 `src/runtime/log_store.rs::read_filtered`、`src/app/http.rs::logs`、`src/app/cli/mod.rs::Logs`、`src/app/entry.rs` 和管理器状态。不改变旧版 inode／offset 游标路径。IsosUI 使用显式 `view=current`，仍以 `process-status` 为实时状态权威。
+**P07 已实现。** [归属接口](../interfaces/log-cursors_cn.md)固定 API。P07 在 P06 事件准入后扩展 `src/runtime/log_store.rs::read_filtered`、`src/app/http.rs::logs`、`src/app/cli/mod.rs::Logs`、`src/app/entry.rs` 和管理器状态。不改变旧版 inode／offset 游标路径。IsosUI 使用显式 `view=current`，仍以 `process-status` 为实时状态权威。
 
 ## 状态与追加顺序
 
@@ -22,10 +22,12 @@ P06 目前从 Validate 和 Apply 均发出 `deployment_preflight_failed`。向 P
 
 ## 验证
 
-[P07 固定样例](../../../tests/fixtures/log_cursors/README_cn.md)固定响应键、管理器／运行锚点、筛选、分页进度、跨备份、过期游标、换运行、收集中断和终结保留。单元测试使用模拟文件段代际、有界读取器和模拟时钟。边界测试使用真实 `LogStore`、HTTP 路由、CLI 与所选 P06 子进程流。注入 rename／fsync 失败和管理器重启，确认状态仍权威且不伪造就绪事件。完整 IsOS format、Clippy、test、build 和 IsosUI 边界输出保存于忽略的 `logs/test/<run-id>/`。本设计提交仅提供契约证据。
+[P07 固定样例](../../../tests/fixtures/log_cursors/README_cn.md)固定响应键、管理器／运行锚点、筛选、分页进度、跨备份、过期游标、换运行、收集中断和终结保留。单元测试使用临时保留文件段与有界读取。边界测试使用真实 `LogStore`、HTTP 路由、管理器子进程屏障以及所选 P06 EOS／EGIA 子进程流。发布与锚点故障、状态损坏及管理器会话变化均按关闭原则处理。完整 IsOS format、Clippy、test 和 build 输出位于忽略的 `logs/test/<run-id>/`；IsosUI 呈现边界属于其独立切片。此前的设计提交先于实现提供契约证据。
 
 **设计证据（2026-11-01）。** `python3 tests/fixtures/log_cursors/check_cases.py` 的 21 个线路案例和 9 个状态场景通过；`python3 -m json.tool tests/fixtures/log_cursors/cases.json`、`python3 -m py_compile tests/fixtures/log_cursors/check_cases.py`、对 12 个变更页面的本地 Markdown 链接检查及 `git diff --check` 均通过。完整命令输出保存在被忽略的 `logs/test/20261101-p07-log-cursors-design/`。本设计切片没有改动运行时代码或边界测试。 使用 `/home/ashex/.cargo/bin/cargo` 运行的 `cargo fmt --all -- --check` 通过。
 
 **设计修订证据（2026-11-01）。** `python3 tests/fixtures/log_cursors/check_cases.py` 的 21 个线路案例和 7 个可执行状态场景通过。两个样例 JSON 均可解析；Python 编译、12 个页面的本地链接、`cargo fmt --all -- --check` 和 `git diff --check` 均通过。输出保存在被忽略的 `logs/test/20261101-p07-log-cursors-design-r2/`。
 
 **样例参考检查器修订证据（2026-11-01）。** 参考检查器按已接纳位置比较，保留之后的同码事件，并从完整双运行历史恢复最新运行。`python3 tests/fixtures/log_cursors/check_cases.py` 的 21 个线路案例及 9 个状态场景通过；两个 JSON 解析、Python 编译、12 页链接检查、`cargo fmt --all -- --check` 和 `git diff --check` 均通过。输出保存在被忽略的 `logs/test/20261101-p07-log-cursors-design-r3/`。
+
+**实现证据（2026-11-01）。** 本 IsOS 工作树的 `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test --no-fail-fast` 与 `cargo build --all-targets` 均通过。测试通过 `EOS_P06_RUNTIME_BIN=/home/ashex/projects/Island-eos/target/debug/aether-runtime`、`EGIA_P06_LAUNCHER=/home/ashex/projects/Island-egia/bin/egia` 和 `EGIA_P06_PYTHON=/home/ashex/projects/Island-egia/.venv/bin/python` 选用真实归属方生产者，并将其故障事件流交给 P07 范围读取器。测试覆盖子进程生成前的发布失败、不确定发布、双运行恢复、锚点写入失败、绑定筛选条件的游标、有界扫描、保留与过期轮转以及有类型 HTTP 错误。`python3 tests/fixtures/log_cursors/check_cases.py` 的 21 个线路案例和 9 个状态场景通过；两个样例 JSON 解析、Python 编译、六个变更页面链接检查及 `git diff --check` 均通过。完整输出位于被忽略的 `logs/test/20261101-p07-log-cursors-implementation/`。

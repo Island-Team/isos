@@ -129,7 +129,7 @@ fn record(app: &App, source: &str, message: &str) {
     }
 }
 
-fn record_graph_failure(app: &App, result: &ApiResult) {
+fn record_graph_failure(app: &App, result: &ApiResult, apply: bool) {
     let body = match result {
         Ok(Json(body)) if body["data"]["valid"] == false => body,
         Err((StatusCode::FORBIDDEN | StatusCode::UNAUTHORIZED, _)) => return,
@@ -149,13 +149,22 @@ fn record_graph_failure(app: &App, result: &ApiResult) {
             fields.insert("diagnostic_path".into(), json!(path));
         }
         let correlation = crate::manager::next_correlation_id();
-        let _ = logs.append_event_context(
+        let manager_scope = logs
+            .manager_scope_id()
+            .unwrap_or_else(|| crate::manager::manager_session_id().to_owned());
+        let append = if apply {
+            LogStore::append_apply_failure_context
+        } else {
+            LogStore::append_event_context
+        };
+        let _ = append(
+            &logs,
             "isos",
             "error",
             "deployment_preflight_failed",
             "Deployment preflight failed before launch",
             crate::log_store::LogContext {
-                run_id: Some(crate::manager::manager_session_id()),
+                run_id: Some(&manager_scope),
                 correlation_id: Some(&correlation),
                 node_path: None,
                 fields: Value::Object(fields),
@@ -177,9 +186,12 @@ fn record_package(
             .and_then(|_| packages::verify(&app.paths, id, version).ok())
             .map(|verified| verified.receipt);
         let correlation = crate::manager::next_correlation_id();
+        let manager_scope = logs
+            .manager_scope_id()
+            .unwrap_or_else(|| crate::manager::manager_session_id().to_owned());
         let _ = logs.append_event_context("packages", level, code,
             if level == "error" { "Package verification or installation failed" } else if code == "package_verified" { "Verified package release recorded" } else { "Local package link recorded without a release manifest" },
-            crate::log_store::LogContext { run_id: Some(crate::manager::manager_session_id()), correlation_id: Some(&correlation), node_path: None,
+            crate::log_store::LogContext { run_id: Some(&manager_scope), correlation_id: Some(&correlation), node_path: None,
             fields: json!({"package_id":id,"package_version":version,
                 "source_commit":receipt.as_ref().and_then(|receipt| receipt.source_commit.as_deref()),
                 "asset_sha256":receipt.as_ref().and_then(|receipt| receipt.asset_sha256.as_deref()),
@@ -539,7 +551,7 @@ async fn validate_node_graph(
     Json(edit): Json<NodeGraphEdit>,
 ) -> ApiResult {
     let result = validate_node_graph_inner(State(app.clone()), headers, Json(edit)).await;
-    record_graph_failure(&app, &result);
+    record_graph_failure(&app, &result, false);
     result
 }
 
@@ -604,7 +616,7 @@ async fn apply_node_graph(
     Json(edit): Json<NodeGraphEdit>,
 ) -> ApiResult {
     let result = apply_node_graph_inner(State(app.clone()), headers, Json(edit)).await;
-    record_graph_failure(&app, &result);
+    record_graph_failure(&app, &result, true);
     result
 }
 
@@ -1199,12 +1211,14 @@ async fn process_control(
                 if let Some(remote) = error.downcast_ref::<crate::manager::RemoteDiagnosticError>()
                     && remote.data["diagnostics"].is_array()
                 {
-                    let status =
-                        if remote.data["diagnostics"][0]["code"] == "generated_commit_uncertain" {
-                            StatusCode::INTERNAL_SERVER_ERROR
-                        } else {
-                            StatusCode::UNPROCESSABLE_ENTITY
-                        };
+                    let status = if matches!(
+                        remote.data["diagnostics"][0]["code"].as_str(),
+                        Some("generated_commit_uncertain" | "log_scope_publish_failed")
+                    ) {
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    } else {
+                        StatusCode::UNPROCESSABLE_ENTITY
+                    };
                     (
                         status,
                         Json(json!({"schema_version":1,"ok":false,
@@ -1223,6 +1237,45 @@ async fn logs(
     axum::extract::Query(query): axum::extract::Query<std::collections::BTreeMap<String, String>>,
 ) -> ApiResult {
     authorized(&app, &headers)?;
+    if let Some(view) = query.get("view") {
+        if view != "current" {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({"schema_version":1,"ok":false,
+                "data":{"diagnostics":[{"path":"/query/view","code":"log_view_invalid","message":"Log view invalid"}]},
+                "error":"log query rejected"})),
+            ));
+        }
+        let limit = query.get("limit").map(|value| value.parse::<usize>()).transpose()
+            .map_err(|_| (StatusCode::BAD_REQUEST, Json(json!({"schema_version":1,"ok":false,
+                "data":{"diagnostics":[{"path":"/query/limit","code":"log_limit_invalid","message":"Log limit invalid"}]},
+                "error":"log query rejected"}))))?.unwrap_or(100);
+        let store = LogStore::new(&app.paths, &app.deployment)
+            .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, Json(json!({
+                "schema_version":1,"ok":false,
+                "data":{"diagnostics":[{"path":"/scope","code":"log_scope_unavailable","message":"Current log scope unavailable"}]},
+                "error":"log scope unavailable"
+            }))))?;
+        let status =
+            crate::manager::manager_call(&app.paths, &app.deployment, "deployment_status").ok();
+        let active_revision = status
+            .as_ref()
+            .and_then(|value| value["active_revision"].as_str());
+        let data = store.read_current(crate::log_store::CurrentQuery {
+            source: query.get("source").map_or("all", String::as_str),
+            level: query.get("level").map_or("info", String::as_str),
+            node_path: query.get("node_path").map(String::as_str),
+            correlation_id: query.get("correlation_id").map(String::as_str),
+            cursor: query.get("cursor").map(String::as_str),
+            limit,
+            active_revision,
+        }).map_err(|error| (
+            StatusCode::from_u16(error.status).unwrap_or(StatusCode::BAD_REQUEST),
+            Json(json!({"schema_version":1,"ok":false,"data":{"diagnostics":[error.diagnostic()]},
+                "error":error.public_error()})),
+        ))?;
+        return ok(data);
+    }
     let default_source = std::env::var("ISOS_LOG_DEFAULT_SOURCE").unwrap_or_else(|_| "all".into());
     let source = query.get("source").unwrap_or(&default_source);
     let limit = query
@@ -1442,7 +1495,7 @@ mod tests {
         let result = Ok(Json(json!({"data":{"valid":false,"diagnostics":[
             {"code":"unsupported_core","path":"/cores/evil"}
         ]}})));
-        record_graph_failure(&app, &result);
+        record_graph_failure(&app, &result, false);
         let lines = LogStore::new(&app.paths, "default")
             .unwrap()
             .read("isos", None, 10)
@@ -1457,6 +1510,7 @@ mod tests {
             &Ok(Json(json!({"data":{"valid":false,"diagnostics":[
                 {"code":"unsupported_core","path":"/cores/bad\nkey"}
             ]}}))),
+            false,
         );
         let lines = LogStore::new(&app.paths, "default")
             .unwrap()
@@ -1473,6 +1527,7 @@ mod tests {
                 StatusCode::FORBIDDEN,
                 "cross-site request requires Origin",
             )),
+            false,
         );
         assert_eq!(
             LogStore::new(&app.paths, "default")
@@ -1917,6 +1972,80 @@ mod tests {
                 assert_eq!(body["data"]["lines"][0]["message"], "ready");
                 assert_eq!(body["data"]["lines"][0]["source"], "isos");
                 assert!(body["data"]["next_cursor"].is_string());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn current_logs_preserve_typed_errors_and_legacy_route() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = Arc::new(App {
+            paths: Paths {
+                config: temp.path().join("config"),
+                data: temp.path().join("data"),
+                runtime: temp.path().join("run"),
+            },
+            deployment: "default".into(),
+        });
+        let store = LogStore::new(&app.paths, "default").unwrap();
+        let run = "rhttp1";
+        store.publish_run(run).unwrap();
+        store
+            .append_event_context(
+                "isos",
+                "info",
+                "deployment_ready",
+                "ready",
+                crate::log_store::LogContext {
+                    run_id: Some(run),
+                    correlation_id: None,
+                    node_path: None,
+                    fields: json!({}),
+                },
+            )
+            .unwrap();
+        for (route, status, code) in [
+            ("/api/isos/v1/logs?view=current", StatusCode::OK, ""),
+            (
+                "/api/isos/v1/logs?view=current&cursor=123:456",
+                StatusCode::BAD_REQUEST,
+                "log_cursor_invalid",
+            ),
+            (
+                "/api/isos/v1/logs?view=current&node_path=bad",
+                StatusCode::BAD_REQUEST,
+                "log_node_path_invalid",
+            ),
+            (
+                "/api/isos/v1/logs?view=other",
+                StatusCode::BAD_REQUEST,
+                "log_view_invalid",
+            ),
+            ("/api/isos/v1/logs?source=isos", StatusCode::OK, ""),
+        ] {
+            let request = Request::builder()
+                .uri(route)
+                .header(header::HOST, "127.0.0.1:16000")
+                .body(Body::empty())
+                .unwrap();
+            let response = router(app.clone()).oneshot(request).await.unwrap();
+            assert_eq!(response.status(), status, "{route}");
+            let body: Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), 1_000_000).await.unwrap())
+                    .unwrap();
+            if code.is_empty() && route.contains("view=current") {
+                assert_eq!(
+                    body["data"]["anchor"]["event"]["event_code"],
+                    "deployment_ready"
+                );
+                assert!(
+                    body["data"]["next_cursor"]
+                        .as_str()
+                        .unwrap()
+                        .starts_with("lc1.")
+                );
+            } else if !code.is_empty() {
+                assert_eq!(body["data"]["diagnostics"][0]["code"], code);
             }
         }
     }

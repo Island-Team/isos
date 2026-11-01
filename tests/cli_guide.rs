@@ -34,6 +34,34 @@ fn unmapped_legacy_cli_validate_and_apply_fail_at_exact_pointer_without_write() 
 }
 
 #[test]
+fn failed_cli_apply_is_the_manager_scope_anchor_but_validate_is_not() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let source = include_bytes!("fixtures/graph_compat/legacy_unmapped_1_0_0.json");
+    let path = temp.path().join("legacy.json");
+    std::fs::write(&path, source).unwrap();
+    let name = path.to_str().unwrap();
+    assert!(!isos(&home, &["config", "validate", name]).status.success());
+    let before = isos(&home, &["logs", "all", "--current"]);
+    assert!(before.status.success());
+    assert!(before.stdout.is_empty());
+    assert!(!isos(&home, &["config", "apply", name]).status.success());
+    let after = isos(&home, &["logs", "eos", "--current", "--level", "error"]);
+    assert!(
+        after.status.success(),
+        "{}",
+        String::from_utf8_lossy(&after.stderr)
+    );
+    let anchor: serde_json::Value = serde_json::from_slice(after.stdout.trim_ascii()).unwrap();
+    assert_eq!(anchor["event_code"], "deployment_preflight_failed");
+    assert_eq!(anchor["source"], "isos");
+    let status = isos(&home, &["status", "--json"]);
+    assert!(status.status.success());
+    let body: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(body["run_id_state"], "none");
+}
+
+#[test]
 fn help_prints_quick_start_without_creating_home() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("isos-home");

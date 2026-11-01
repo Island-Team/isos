@@ -2,8 +2,11 @@
 
 use crate::config::Paths;
 use crate::event_policy;
+#[path = "log_store/cursor.rs"]
+mod cursor;
 use anyhow::{Context, Result, ensure};
 use chrono::{SecondsFormat, Utc};
+pub use cursor::{CurrentError, CurrentQuery};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -25,6 +28,7 @@ const MAX_READ_BYTES: u64 = 65_536;
 static INGEST_REJECTED: AtomicU64 = AtomicU64::new(0);
 static WRITE_FAILED: AtomicU64 = AtomicU64::new(0);
 static REJECTION_REASONS: OnceLock<Mutex<BTreeMap<&'static str, u64>>> = OnceLock::new();
+static DEPLOYMENT_LOSSES: OnceLock<Mutex<BTreeMap<PathBuf, Arc<AtomicU64>>>> = OnceLock::new();
 
 fn saturating_increment(counter: &AtomicU64) {
     let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
@@ -32,8 +36,9 @@ fn saturating_increment(counter: &AtomicU64) {
     });
 }
 
-fn reject(reason: &'static str) {
+fn reject(store: &LogStore, reason: &'static str) {
     saturating_increment(&INGEST_REJECTED);
+    saturating_increment(&store.losses);
     let mut reasons = REJECTION_REASONS
         .get_or_init(|| Mutex::new(BTreeMap::new()))
         .lock()
@@ -73,6 +78,7 @@ pub struct LogStore {
     level: u8,
     lock: Arc<Mutex<()>>,
     suppression: Arc<Mutex<BTreeMap<String, (Instant, u32)>>>,
+    losses: Arc<AtomicU64>,
 }
 
 fn token_valid(value: &str, max: usize) -> bool {
@@ -102,6 +108,16 @@ pub fn valid_source(source: &str) -> bool {
 fn shared_lock() -> Arc<Mutex<()>> {
     static LOCK: OnceLock<Arc<Mutex<()>>> = OnceLock::new();
     LOCK.get_or_init(|| Arc::new(Mutex::new(()))).clone()
+}
+
+fn shared_losses(root: &Path) -> Arc<AtomicU64> {
+    DEPLOYMENT_LOSSES
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .unwrap()
+        .entry(root.to_path_buf())
+        .or_insert_with(|| Arc::new(AtomicU64::new(0)))
+        .clone()
 }
 
 pub fn level_rank(level: &str) -> Option<u8> {
@@ -159,6 +175,7 @@ impl LogStore {
             "ISOS_LOG_MAX_SOURCES must be 10..256"
         );
         let root = paths.data.join("logs").join(deployment);
+        let fresh_root = !root.exists();
         private_dir(&root)?;
         for source in [
             "events", "isos", "packages", "graph", "ui", "eos", "egia", "mujoco", "bridge",
@@ -171,7 +188,7 @@ impl LogStore {
                 .open(root.join(format!("{source}.log")))?;
             file.set_permissions(fs::Permissions::from_mode(0o600))?;
         }
-        Ok(Self {
+        let store = Self {
             root,
             max_bytes,
             backups,
@@ -179,11 +196,40 @@ impl LogStore {
             level,
             lock: shared_lock(),
             suppression: Arc::new(Mutex::new(BTreeMap::new())),
-        })
+            losses: shared_losses(&paths.data.join("logs").join(deployment)),
+        };
+        if cursor::initialize(&store, fresh_root).is_err() {
+            saturating_increment(&WRITE_FAILED);
+            saturating_increment(&store.losses);
+        }
+        Ok(store)
     }
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub fn publish_run(&self, run_id: &str) -> Result<()> {
+        cursor::publish_run(self, run_id)
+    }
+
+    pub fn run_identity(&self) -> (Option<String>, &'static str) {
+        cursor::status(self)
+    }
+
+    pub fn manager_scope_id(&self) -> Option<String> {
+        cursor::manager_scope_id(self)
+    }
+
+    pub fn begin_manager_session(&self) -> Result<()> {
+        cursor::begin_manager_session(self)
+    }
+
+    pub fn read_current(
+        &self,
+        query: CurrentQuery<'_>,
+    ) -> std::result::Result<Value, CurrentError> {
+        cursor::read_current(self, query)
     }
 
     fn path(&self, source: &str) -> Result<PathBuf> {
@@ -275,6 +321,29 @@ impl LogStore {
         message: &str,
         context: LogContext<'_>,
     ) -> Result<()> {
+        self.append_event_context_marked(source, level, event_code, message, context, false)
+    }
+
+    pub fn append_apply_failure_context(
+        &self,
+        source: &str,
+        level: &str,
+        event_code: &str,
+        message: &str,
+        context: LogContext<'_>,
+    ) -> Result<()> {
+        self.append_event_context_marked(source, level, event_code, message, context, true)
+    }
+
+    fn append_event_context_marked(
+        &self,
+        source: &str,
+        level: &str,
+        event_code: &str,
+        message: &str,
+        context: LogContext<'_>,
+        apply_failure: bool,
+    ) -> Result<()> {
         let LogContext {
             run_id,
             correlation_id,
@@ -352,10 +421,16 @@ impl LogStore {
             );
             safe_message.pop();
         };
-        self.append_record(&path, source, &value)
+        self.append_record(&path, source, &value, apply_failure)
     }
 
-    fn append_record(&self, path: &Path, source: &str, value: &Value) -> Result<()> {
+    fn append_record(
+        &self,
+        path: &Path,
+        source: &str,
+        value: &Value,
+        apply_failure: bool,
+    ) -> Result<()> {
         let mut line = serde_json::to_vec(value)?;
         line.push(b'\n');
         ensure!(
@@ -371,8 +446,9 @@ impl LogStore {
             }
             Ok(())
         })();
-        if result.is_err() {
+        if result.is_err() || cursor::record_accept(self, value, apply_failure).is_err() {
             saturating_increment(&WRITE_FAILED);
+            saturating_increment(&self.losses);
         }
         result
     }
@@ -438,13 +514,14 @@ impl LogStore {
             return Ok(());
         }
         let _guard = self.lock.lock().unwrap();
-        self.append_record(&self.path(source)?, source, value)
+        self.append_record(&self.path(source)?, source, value, false)
     }
 
     fn append_raw(&self, path: &Path, raw: &[u8]) {
         let _guard = self.lock.lock().unwrap();
         if self.append_file(path, raw).is_err() {
             saturating_increment(&WRITE_FAILED);
+            saturating_increment(&self.losses);
         }
     }
 
@@ -644,7 +721,7 @@ fn capture_stream<R: std::io::Read>(
                             }
                         }
                     }
-                    reject("raw_oversize");
+                    reject(&store, "raw_oversize");
                     continue;
                 }
                 if stream == "stderr"
@@ -658,7 +735,7 @@ fn capture_stream<R: std::io::Read>(
                         {
                             let _ = store.append_selected(&event);
                         }
-                        Ok(_) => reject("node_owner"),
+                        Ok(_) => reject(&store, "node_owner"),
                         Err(error) => {
                             let message = error.to_string();
                             let reason = if message.contains("run mismatch") {
@@ -678,7 +755,7 @@ fn capture_stream<R: std::io::Read>(
                             } else {
                                 "invalid_envelope"
                             };
-                            reject(reason);
+                            reject(&store, reason);
                         }
                     }
                 }
@@ -871,7 +948,14 @@ mod tests {
         assert_eq!(events["lines"][1]["source"], "service-extra");
         let source = store.read("service-extra", None, 10).unwrap();
         assert_eq!(source["lines"][0]["message"], "bounded");
-        assert_eq!(fs::read_dir(&store.root).unwrap().count(), 10);
+        assert_eq!(
+            fs::read_dir(&store.root)
+                .unwrap()
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "log"))
+                .count(),
+            10
+        );
     }
 
     #[test]

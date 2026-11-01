@@ -2,7 +2,7 @@
 
 [中文](../../../docs_cn/isos/interfaces/log-cursors_cn.md) · [P06 events](events.md) · [Local API](local-api.md) · [Design](../design/log-cursors.md) · [First use](../usage/get-started.md) · [P07 task](../../../../Island-eos/docs/island/implementation-todo.md)
 
-**Target design — not implemented.** IsOS owns the per-deployment current log scope, retained first event, cursor, rotation and gap diagnostics. IsosUI presents this owner state. The P06 sanitized event envelope and IsOS process status remain authoritative for event content and live health respectively. This P07 extension does not change legacy `GET /api/isos/v1/logs` calls without `view=current`, the schema-1 HTTP envelope, or `isos logs` tail output without `--current`.
+**Implemented in P07.** IsOS owns the per-deployment current log scope, retained first event, cursor, rotation and gap diagnostics. IsosUI presents this owner state. The P06 sanitized event envelope and IsOS process status remain authoritative for event content and live health respectively. This P07 extension does not change legacy `GET /api/isos/v1/logs` calls without `view=current`, the schema-1 HTTP envelope, or `isos logs` tail output without `--current`.
 
 ## Endpoint and query
 

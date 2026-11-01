@@ -214,6 +214,13 @@ pub(crate) fn run() -> Result<()> {
             } else {
                 json!({"schema_version":"1.0.0","state":"stopped","active_revision":null,"processes":[]})
             };
+            if status.get("run_id_state").is_none() {
+                let (run_id, run_id_state) = log_store::LogStore::new(&paths, &name)
+                    .map(|store| store.run_identity())
+                    .unwrap_or((None, "unavailable"));
+                status["run_id"] = json!(run_id);
+                status["run_id_state"] = json!(run_id_state);
+            }
             status["manager"] = if UnixStream::connect(paths.socket()).is_ok() {
                 manager_call(&paths, &name, "manager_identity")?
             } else {
@@ -230,8 +237,35 @@ pub(crate) fn run() -> Result<()> {
             source,
             lines,
             level,
+            current,
         } => {
             let store = log_store::LogStore::new(&paths, &name)?;
+            if current {
+                let active_revision = manager_call(&paths, &name, "deployment_status")
+                    .ok()
+                    .and_then(|status| status["active_revision"].as_str().map(str::to_owned));
+                let page = store
+                    .read_current(log_store::CurrentQuery {
+                        source: &source,
+                        level: &level,
+                        node_path: None,
+                        correlation_id: None,
+                        cursor: None,
+                        limit: lines as usize,
+                        active_revision: active_revision.as_deref(),
+                    })
+                    .map_err(|error| anyhow::anyhow!("{}: {}", error.code, error.message))?;
+                if let Some(anchor) = page["anchor"]["event"].as_object() {
+                    println!("{}", serde_json::to_string(anchor)?);
+                }
+                for entry in page["lines"].as_array().into_iter().flatten() {
+                    println!("{}", serde_json::to_string(entry)?);
+                }
+                for diagnostic in page["diagnostics"].as_array().into_iter().flatten() {
+                    eprintln!("{}", serde_json::to_string(diagnostic)?);
+                }
+                return Ok(());
+            }
             for entry in store.tail_filtered(&source, lines as usize, Some(&level))? {
                 println!(
                     "{} {} [{}] {}",
