@@ -58,9 +58,9 @@ def resolve(state, retained, history_complete=False):
     """Reference scope selector. The durable last-run ID survives log rotation."""
     last = state.get("last_run_id") if state["valid"] else None
     if last is None and not state["valid"]:
-        admitted = {e["run_id"] for e in retained if e["event_code"] == "deployment_starting"}
-        if history_complete and len(admitted) == 1:
-            last = admitted.pop()
+        starts = [e for e in retained if e["event_code"] == "deployment_starting"]
+        if history_complete and starts:
+            last = max(starts, key=lambda e: e["accepted_position"])["run_id"]
     if last is None and (not state["valid"] or not state.get("never_run", False)):
         return {"http": 503, "code": "log_scope_unavailable", "path": "/scope",
                 "run_id_state": "unavailable", "scope_kind": None, "scope_run_id": None}
@@ -71,7 +71,7 @@ def resolve(state, retained, history_complete=False):
     anchor = state.get("anchor") if state["valid"] else None
     if anchor and anchor["run_id"] == last:
         out["anchor_code"] = anchor["event_code"]
-        out["lines"] = [e["event_code"] for e in retained if e["run_id"] == last and e["event_code"] != anchor["event_code"]]
+        out["lines"] = [e["event_code"] for e in retained if e["run_id"] == last and e["accepted_position"] > anchor["accepted_position"]]
     elif not state["valid"] or state.get("admission_interrupted"):
         out["anchor_state"] = "unavailable"
         out["diagnostic"] = "log_anchor_unavailable"
@@ -101,8 +101,11 @@ def admit(state, candidate, publication):
 
 state_cases = json.loads((HERE / "state-scenarios.json").read_text())
 assert state_cases["contract"] == "isos-log-cursors-p07-state-v1"
-assert len(state_cases["cases"]) == 7
+assert len(state_cases["cases"]) == 9
 for scenario in state_cases["cases"]:
+    retained = scenario.get("retained_events", [])
+    positions = [e["accepted_position"] for e in retained]
+    assert positions == sorted(set(positions)), scenario["name"]
     if "publication" in scenario:
         actual = admit(scenario["state"], scenario["candidate_run_id"], scenario["publication"])
     else:
