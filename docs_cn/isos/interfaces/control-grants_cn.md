@@ -2,7 +2,7 @@
 
 [English](../../../docs/isos/interfaces/control-grants.md) · [设计](../design/control-grants_cn.md) · [首次使用](../usage/get-started_cn.md#r03-托管控制授权重放) · [固定用例](../../../tests/fixtures/control_grants/README_cn.md)
 
-**IsOS 签发方已实现；跨仓库 R03 验证仍待完成。** IsOS 负责为托管部署运行签发和传递授权；EOS 负责验证、准入、Dispatcher 和持久结果。[EOS gRPC 契约](https://github.com/Island-Team/Island-eos/blob/refactor%28v2%29/runtime-main/docs/eos/interfaces/grpc.md#r03-governed-actuator-admission-target-contract)定义请求元数据和操作语义。图连线、软件包、生成配置、浏览器请求及客户端自称的阶段均不能授予执行器权限。信任边界是本机操作系统用户；本契约不声称能区分同 UID 的不同进程。
+**EOS/IsOS 本地 R03 重放已通过；已审查 PR 的合并仍待完成。** IsOS 负责为托管部署运行签发和传递授权；EOS 负责验证、准入、Dispatcher 和持久结果。[EOS gRPC 契约](https://github.com/Island-Team/Island-eos/blob/refactor%28v2%29/runtime-main/docs/eos/interfaces/grpc.md#r03-governed-actuator-admission-target-contract)定义请求元数据和操作语义。图连线、软件包、生成配置、浏览器请求及客户端自称的阶段均不能授予执行器权限。信任边界是本机操作系统用户；本契约不声称能区分同 UID 的不同进程。
 
 ## 输入、文件和接收方
 
@@ -38,4 +38,6 @@ EOS 仅在**同时**收到所选 IsOS `v2/<revision>/<generation>/eos/graph.json
 
 为 IsOS 启动边界提出以下稳定代码：`control_grant_unsafe_path`、`control_grant_invalid_file`、`control_grant_mismatch`、`control_grant_issue_failed` 和 `control_grant_delivery_failed`。各代码使用 `stage:"spawn"` 及空的图 `path`，因为这些文件属于运行时状态，不是图字段。`control_grant_unsafe_path` 覆盖所有权、权限、符号链接和非常规文件；`control_grant_invalid_file` 覆盖形状与长度；`control_grant_mismatch` 覆盖运行、修订或摘要不一致；`control_grant_issue_failed` 覆盖随机生成和持久发布；`control_grant_delivery_failed` 覆盖停止前检测到候选计划遗漏必需的 EOS 或已声明的已选 EGIA/bridge 接收方，以及候选启动后的实际注入故障。后一种情况不能保证旧 PID 不变；它终止候选运行，并在可能时启动不同的恢复运行。可选 EGIA 或 bridge 规格不存在并非错误。图作者写入的所有者保留标志另返回 `control_grant_reserved_arg`，使用 `stage:"graph"` 与精确的 `/cores/isos/layers/process/groups/component/nodes/<id>/settings/args/<index>` 指针；`--run-id=...` 指向其数组元素。重复 `--profile` 仍由 P04 生成 profile 检查负责。CLI 非零退出，API 沿用现有错误信封。错误文案只说明修复动作，不含授权字节或文件内容。运行时操作鉴权错误属于 EOS gRPC 状态码，不属于 IsOS 图诊断。
 
-实现关闭前，使用干净的 `ISOS_HOME`、实际所选 EOS 和受监管 EGIA/bridge stub 重放[固定用例](../../../tests/fixtures/control_grants/README_cn.md)。检查文件权限、各子进程环境隔离、预检拒绝后的活动 PID 不变、运行轮换、同运行自动重启恢复、新运行旧授权拒绝、就绪前失败和脱敏日志。完整输出保存于 `logs/test/<run-id>/`；运行 IsOS 格式、严格 Clippy、测试与构建，以及 EOS R03 边界重放。授权测试不能证明 MuJoCo 实体运动；R05/R06 负责其 epoch fence 和 stop/reap 证据。
+发布验证时，使用干净的 `ISOS_HOME`、实际所选 EOS 和受监管 EGIA/bridge stub 重放[固定用例](../../../tests/fixtures/control_grants/README_cn.md)。检查文件权限、各子进程环境隔离、预检拒绝后的活动 PID 不变、运行轮换、同运行自动重启恢复、新运行旧授权拒绝、就绪前失败和脱敏日志。完整输出保存于 `logs/test/<run-id>/`；运行 IsOS 格式、严格 Clippy、测试与构建，以及 EOS R03 边界重放。授权测试不能证明 MuJoCo 实体运动；R05/R06 负责其 epoch fence 和 stop/reap 证据。
+
+使用 mock CXX 底盘绑定、IsOS `5c1cb278` 和 EOS 运行时代码 `607eb0a93824c9488d17d38c9785c44f87ca4934` 的本地 EOS/IsOS 重放已通过：已选 V2、私有授权包及按接收方传递、真实 gRPC 运动/Get、错误角色和过期修订拒绝、显式轮换、旧授权拒绝和停止后撤销。精确环境、命令和结果见[设计证据](../design/control-grants_cn.md#集成边界与测试)及忽略的 `logs/test/20261102-r03-cross-repo/mock-base-grpc-rotation.log`。R03 关闭前仍需合并已审查的 PR；MuJoCo 实体验证属于 R05/R06。
