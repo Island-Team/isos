@@ -63,6 +63,12 @@ pub fn counters() -> (u64, u64) {
     )
 }
 
+/// Account for a stop event that could not enter the bounded log queue.
+/// This must remain free of filesystem calls on the stop response path.
+pub fn record_stop_event_loss() {
+    saturating_increment(&WRITE_FAILED);
+}
+
 pub struct LogContext<'a> {
     pub run_id: Option<&'a str>,
     pub correlation_id: Option<&'a str>,
@@ -388,6 +394,7 @@ impl LogStore {
             && !matches!(
                 event_code,
                 "deployment_starting"
+                    | "deployment_stopping"
                     | "deployment_ready"
                     | "deployment_failed"
                     | "deployment_stopped"

@@ -17,6 +17,7 @@ use std::{
     sync::{
         OnceLock,
         atomic::{AtomicU64, Ordering},
+        mpsc::{self, Receiver, SyncSender},
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -96,6 +97,128 @@ fn stop_log_gate() -> &'static (std::sync::Barrier, std::sync::Barrier) {
     GATE.get_or_init(|| (std::sync::Barrier::new(2), std::sync::Barrier::new(2)))
 }
 
+#[cfg(test)]
+fn stalled_stop_log_gate() -> &'static (std::sync::Barrier, std::sync::Barrier) {
+    static GATE: OnceLock<(std::sync::Barrier, std::sync::Barrier)> = OnceLock::new();
+    GATE.get_or_init(|| (std::sync::Barrier::new(2), std::sync::Barrier::new(2)))
+}
+
+struct StopLogJob {
+    paths: config::Paths,
+    deployment: String,
+    run_id: String,
+    correlation: String,
+    terminal: Receiver<(dependent_stop::Terminal, bool)>,
+}
+
+fn stop_log_queue() -> Option<&'static SyncSender<StopLogJob>> {
+    static QUEUE: OnceLock<Option<SyncSender<StopLogJob>>> = OnceLock::new();
+    QUEUE
+        .get_or_init(|| {
+            let (sender, receiver) = mpsc::sync_channel::<StopLogJob>(32);
+            std::thread::Builder::new()
+                .name("isos-stop-events".into())
+                .spawn(move || {
+                    while let Ok(job) = receiver.recv() {
+                        write_stop_log_job(job);
+                    }
+                })
+                .ok()
+                .map(|_| sender)
+        })
+        .as_ref()
+}
+
+fn write_stop_log_job(job: StopLogJob) {
+    let logs = log_store::LogStore::new(&job.paths, &job.deployment);
+    if let Ok(logs) = &logs {
+        let _ = logs.append_event_context(
+            "isos",
+            "info",
+            "deployment_stopping",
+            "Deployment stopping",
+            log_store::LogContext {
+                run_id: Some(&job.run_id),
+                correlation_id: Some(&job.correlation),
+                node_path: None,
+                fields: json!({}),
+            },
+        );
+    }
+    let Ok((terminal, failed_candidate)) = job.terminal.recv_timeout(Duration::from_secs(125))
+    else {
+        log_store::record_stop_event_loss();
+        return;
+    };
+    let (code, level, message) = if terminal.outcome == "unknown" {
+        (
+            "deployment_stop_unconfirmed",
+            "error",
+            "Deployment stop unconfirmed",
+        )
+    } else if failed_candidate {
+        ("deployment_failed", "error", "Deployment failed")
+    } else {
+        ("deployment_stopped", "info", "Deployment stopped")
+    };
+    #[cfg(test)]
+    if job.deployment == "p06-stop-order" && code == "deployment_stopped" {
+        let gate = stop_log_gate();
+        gate.0.wait();
+        gate.1.wait();
+    }
+    #[cfg(test)]
+    if job.deployment == "r06-stop-log-stall" {
+        let gate = stalled_stop_log_gate();
+        gate.0.wait();
+        gate.1.wait();
+    }
+    if let Ok(logs) = &logs {
+        let _ = logs.append_event_context(
+            "isos",
+            level,
+            code,
+            message,
+            log_store::LogContext {
+                run_id: Some(&terminal.run_id),
+                correlation_id: Some(&job.correlation),
+                node_path: None,
+                fields: json!({"outcome":terminal.outcome,"reason_code":terminal.reason_code}),
+            },
+        );
+    } else {
+        log_store::record_stop_event_loss();
+    }
+}
+
+fn queue_stop_events(
+    paths: &config::Paths,
+    deployment: &str,
+    run_id: &str,
+    correlation: String,
+) -> Option<SyncSender<(dependent_stop::Terminal, bool)>> {
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let Some(queue) = stop_log_queue() else {
+        log_store::record_stop_event_loss();
+        log_store::record_stop_event_loss();
+        return None;
+    };
+    let job = StopLogJob {
+        paths: paths.clone(),
+        deployment: deployment.into(),
+        run_id: run_id.into(),
+        correlation,
+        terminal: receiver,
+    };
+    if queue.try_send(job).is_err() {
+        log_store::record_stop_event_loss();
+        log_store::record_stop_event_loss();
+        None
+    } else {
+        Some(sender)
+    }
+}
+
 fn log_deployment(paths: &config::Paths, name: &str, run_id: &str, code: &str, level: &str) {
     #[cfg(test)]
     if name == "p06-stop-order" && code == "deployment_stopped" {
@@ -138,49 +261,18 @@ fn stop_active(
 ) -> (Vec<String>, dependent_stop::Terminal) {
     let already = active.supervisor.terminal().is_some();
     let correlation = next_correlation_id();
+    let pending_event = if already {
+        None
+    } else {
+        queue_stop_events(paths, name, active.supervisor.run_id(), correlation)
+    };
     let (stopped, terminal) = active.supervisor.stop_with_terminal();
-    if !already {
-        let _ = log_store::LogStore::new(paths, name).and_then(|logs| {
-            logs.append_event_context(
-                "isos",
-                "info",
-                "deployment_stopping",
-                "Deployment stopping",
-                log_store::LogContext {
-                    run_id: Some(&terminal.run_id),
-                    correlation_id: Some(&correlation),
-                    node_path: None,
-                    fields: json!({}),
-                },
-            )
-        });
-    }
-    if !already {
-        let (code, level, message) = if terminal.outcome == "unknown" {
-            (
-                "deployment_stop_unconfirmed",
-                "error",
-                "Deployment stop unconfirmed",
-            )
-        } else if failed_candidate {
-            ("deployment_failed", "error", "Deployment failed")
-        } else {
-            ("deployment_stopped", "info", "Deployment stopped")
-        };
-        #[cfg(test)]
-        if name == "p06-stop-order" && code == "deployment_stopped" {
-            let gate = stop_log_gate();
-            gate.0.wait();
-            gate.1.wait();
-        }
-        let _ =
-            log_store::LogStore::new(paths, name).and_then(|logs| {
-                logs.append_event_context(
-            "isos", level, code, message,
-            log_store::LogContext { run_id: Some(&terminal.run_id),
-                correlation_id: Some(&correlation), node_path: None,
-                fields: json!({"outcome":terminal.outcome,"reason_code":terminal.reason_code}) })
-            });
+    if let Some(sender) = pending_event
+        && sender
+            .try_send((terminal.clone(), failed_candidate))
+            .is_err()
+    {
+        log_store::record_stop_event_loss();
     }
     if terminal.outcome == "unknown" {
         active.last_error = Some("dependent stop unconfirmed; owner recovery required".into());
@@ -1998,5 +2090,69 @@ mod restart_tests {
             reaped,
             "old child remained live while stop event was stalled"
         );
+    }
+
+    #[test]
+    fn stalled_terminal_log_does_not_hold_stop_response() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = config::Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        let spec = process::ProcessSpec {
+            id: "stub".into(),
+            path: "isos/process/component/stub".into(),
+            settings: serde_json::from_value(json!({"command":["/bin/sleep","30"]})).unwrap(),
+            package: None,
+            fingerprint: None,
+        };
+        let mut managers = Deployments::new();
+        restart_processes(&paths, &mut managers, "r06-stop-log-stall", "old", &[spec]).unwrap();
+        let mut active = managers.remove("r06-stop-log-stall").unwrap();
+        let run_id = active.supervisor.run_id().to_owned();
+        let log_paths = paths.clone();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let worker = std::thread::spawn(move || {
+            let started = std::time::Instant::now();
+            let (_, terminal) = stop_active(&paths, "r06-stop-log-stall", &mut active, false);
+            sender.send((terminal, started.elapsed())).unwrap();
+        });
+        let gate = stalled_stop_log_gate();
+        gate.0.wait();
+        let response = receiver.recv_timeout(Duration::from_secs(1));
+        gate.1.wait();
+        let (terminal, elapsed) = response.unwrap();
+        assert_eq!(terminal.outcome, "confirmed");
+        assert!(elapsed < Duration::from_secs(1));
+        worker.join().unwrap();
+        let logs = log_store::LogStore::new(&log_paths, "r06-stop-log-stall").unwrap();
+        let until = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let lines = logs.read("all", None, 100).unwrap();
+            let events: Vec<_> = lines["lines"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|line| line["run_id"].as_str() == Some(run_id.as_str()))
+                .filter(|line| {
+                    matches!(
+                        line["event_code"].as_str(),
+                        Some("deployment_stopping" | "deployment_stopped")
+                    )
+                })
+                .collect();
+            if events.len() == 2 {
+                assert_eq!(events[0]["event_code"], "deployment_stopping");
+                assert_eq!(events[1]["event_code"], "deployment_stopped");
+                assert_eq!(events[0]["correlation_id"], events[1]["correlation_id"]);
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < until,
+                "stop events were not written"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 }

@@ -1305,6 +1305,8 @@ pub struct Supervisor {
     eos_backend: String,
     eos_parts: Vec<(String, String)>,
     unexpected_exit: bool,
+    #[cfg(test)]
+    retirement_gate: Option<Arc<(std::sync::Barrier, std::sync::Barrier)>>,
 }
 
 impl Supervisor {
@@ -1380,6 +1382,8 @@ impl Supervisor {
             eos_backend: String::new(),
             eos_parts: Vec::new(),
             unexpected_exit: false,
+            #[cfg(test)]
+            retirement_gate: None,
         })
     }
 
@@ -2022,10 +2026,28 @@ impl Supervisor {
                 })
                 .collect();
         }
-        if let Some(bundle) = self.control_grants.take()
-            && bundle.retire().is_err()
-        {
-            first_reason.get_or_insert("control_grant_retire_failed");
+        if let Some(bundle) = self.control_grants.take() {
+            let (sender, receiver) = mpsc::sync_channel(1);
+            #[cfg(test)]
+            let retirement_gate = self.retirement_gate.clone();
+            let launched = thread::Builder::new()
+                .name("isos-grant-retire".into())
+                .spawn(move || {
+                    #[cfg(test)]
+                    if let Some(gate) = retirement_gate {
+                        gate.0.wait();
+                        gate.1.wait();
+                    }
+                    let _ = sender.try_send(bundle.retire().is_ok());
+                })
+                .is_ok();
+            let retirement_until = deadline - Duration::from_millis(500);
+            let allowance = retirement_until
+                .saturating_duration_since(Instant::now())
+                .min(Duration::from_millis(500));
+            if !launched || !receiver.recv_timeout(allowance).unwrap_or(false) {
+                first_reason.get_or_insert("control_grant_retire_failed");
+            }
         }
         if Instant::now() >= deadline {
             first_reason = Some("stop_deadline_exceeded");
@@ -2811,6 +2833,35 @@ sleep 2
         assert_eq!(terminal.processes[0].id, "dependent");
         assert_eq!(terminal.processes[0].outcome, "confirmed");
         assert_eq!(terminal.processes[1].id, "provider");
+    }
+
+    #[test]
+    fn stalled_grant_retirement_is_bounded_and_stays_unknown() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        paths.prepare().unwrap();
+        let mut supervisor = Supervisor::new(&paths, "retire-stall").unwrap();
+        supervisor.publish_run_scope().unwrap();
+        supervisor.prepare_control_grants(&"a".repeat(64)).unwrap();
+        supervisor.prepare_run(&[], &"a".repeat(64)).unwrap();
+        let gate = Arc::new((std::sync::Barrier::new(2), std::sync::Barrier::new(2)));
+        supervisor.retirement_gate = Some(gate.clone());
+        let started = Instant::now();
+        let releaser = thread::spawn(move || {
+            gate.0.wait();
+            thread::sleep(Duration::from_millis(800));
+            gate.1.wait();
+        });
+        let (_, terminal) = supervisor.stop_with_terminal();
+        assert!(started.elapsed() < Duration::from_millis(700));
+        assert_eq!(terminal.outcome, "unknown");
+        assert_eq!(terminal.reason_code, Some("control_grant_retire_failed"));
+        releaser.join().unwrap();
+        assert_eq!(supervisor.stop_with_terminal().1, terminal);
     }
 
     #[test]
