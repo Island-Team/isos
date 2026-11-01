@@ -32,6 +32,14 @@ API 只绑定 `127.0.0.1`，不提供前端文件。IsosUI 通过地址和端口
 
 草稿的注册端口类型不匹配时，校验在正常的 schema-1 成功封套中返回 `{"valid":false,"diagnostics":[{"path":"/cores/eos/layers/control/groups/manual/nodes/target/inputs/status/0","code":"edge_type_mismatch","message":"eos/control/manual/source.out (base_observation) cannot feed eos/control/manual/target.status (status); compare the registered data type and its unit schema","source":"eos/control/manual/source","target":"eos/control/manual/target","input":"status"}]}`。`path` 是指向出错输入来源的 JSON 指针（单个来源对象也以 `/0` 标识），`source` 与 `target` 是四段规范路径。数据类型 ID 必须精确一致。单位由注册数据类型 schema 的 `x-unit` 字段注解提供，用于展示；字段值单位校验仍属目标工作，不会推断单位换算。其他校验失败当前仍返回通用的 `/` 路径和 `invalid_graph` 代码。Apply 对同样的不匹配返回 HTTP 422，不修改已保存图。
 
+### 首个兼容读取切片——已实现
+
+`GET /node-graph` 保留 schema-1 封装，返回 `data:{revision,graph,read_only,diagnostics}`。对于已应用的 `1.0.0` 图，迁移功能尚不可用时为 `read_only:true`，且 `revision` 是精确已保存字节的 SHA-256，因此即使图结构相同，空白或键顺序不同也会得到不同修订号。此切片中，无图或初始图尚无 `core-setup/launch-inputs.json` 快照时，仍返回 `read_only:false` 的可编辑 `1.0.0` 草稿；首次安全 Apply 使用现有规范 JSON 序列化，并返回实际写入字节的 SHA-256。写入器改用 `0.1.0` 要等 EOS 读取器就绪。对于句法正确但未知的版本，如 `2.0.0`，返回原始图对象、原始字节修订号、`read_only:true`，以及 `diagnostics:[{"path":"/version","code":"unsupported_graph_version","message":"supported graph versions: 1.0.0, 0.1.0"}]`。文件 JSON 无效或超限时返回 HTTP 422，不返回图对象。GET 不会规范化或改写已保存字节。
+
+`POST /node-graph/validate`、PUT Apply、CLI Apply、核心 setup、Run 和 Restart 只准入精确支持版本及已注册类型 ID。解析 `0.1.0` 文档仅允许查看；在 EOS 与 EGIA 声明兼容读取集合之前，不允许通过旧适配器 Apply 或启动。未知版本使用相同的 `/version` 错误码；未知类型使用 `/cores/<core>/layers/<layer>/groups/<group>/nodes/<id>/node_type` 和 `unsupported_node_type`；不安全进程使用其精确节点或 `settings/command` 路径和 `unsafe_process_node`。校验在 `data.diagnostics` 中返回这些错误；Apply 返回 HTTP 422，`data.diagnostics` 中包含同样的诊断，`error` 包含可读说明。安全且已保存的旧图在修订匹配、提交的 JSON 结构相同时返回原修订号，不写文件，即使提交文本格式不同。已应用的旧图有改动时返回 HTTP 422，在 `/version` 给出 `migration_required`；未应用的初始图可使用现有写入器首次提交改动；修订过期仍为 HTTP 409。此切片不保存 `0.1.0` 图。后续显式预览／迁移操作须在图锁内比较已保存修订号，只在软件包及核心 setup 校验完成后发布，且运行中修订号在 Restart 前不变。
+
+[`图兼容样例`](../../../tests/fixtures/graph_compat/README.md)固定预期路径及字节不变的行为。CLI 与管理器预检须显示相同版本／类型失败；准入失败时 GET 仍可查看原图。
+
 进程管理器在启动前重新校验已保存图和精确版本的软件包。EOS 将 MuJoCo 作为直接子进程启动，并在停止获准的执行器后终止它。图布局属于编辑器；HTTP 图只包含运行配置和有类型连接。
 
 ### 按需核心配置适配器

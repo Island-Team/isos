@@ -41,4 +41,10 @@ IsOS 校验边的来源、目的类型、`priority` 和 `frequency_hz`。**当�
 
 ## 实现里程碑
 
+### G01–G02 兼容读取证据
+
+首个读取切片只准入精确注册的旧类型身份，并按 JSON 指针拒绝未知版本和不安全进程节点；修订号来自已保存的原始字节。首次未应用初始图编辑仍使用 `1.0.0` 写入器。`0.1.0` 写入器和显式迁移尚未实现。上述算法第一步的共享规范化投影留待后续迁移切片；本切片把原始 JSON 值传给既有归属方类型化校验器，由它们应用已确立的可选字段默认值。
+
+在 IsOS 仓库根目录运行 `cargo fmt --all -- --check`、`cargo test --no-default-features`、`cargo clippy --all-targets --no-default-features -- -D warnings` 和 `cargo build --no-default-features`。2026-11-01 全部通过，共 76 个单元测试及 5 个集成测试；完整本地输出保存在 `logs/test/2026-11-01-g01-g02/`。另外，用干净的临时 `ISOS_HOME` 和指向 EOS release 程序的 `ISOS_AETHER_BIN_DIR` 验证了首次编辑初始图 Apply、结构相同且空白不同的图无写入 Apply 保留 SHA-256，以及已应用旧图改动返回 `migration_required` 且字节不变。精确输入及预期路径见[`tests/fixtures/graph_compat/`](../../../tests/fixtures/graph_compat/README.md)。
+
 依赖顺序、产出及验收门槛统一放在 [IsOS 里程碑计划](../maintenance/roadmap_cn.md)。本页负责上述算法，契约字段仍放在 `interfaces/`，节点行为见[节点目录](../layers/README_cn.md)。本次发布不包含 WorkflowService、ActionList 或 workflow DAG。

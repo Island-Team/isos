@@ -14,6 +14,8 @@ mod core_setup;
 mod entry;
 #[path = "app/foreground.rs"]
 mod foreground;
+#[path = "runtime/graph_compat.rs"]
+mod graph_compat;
 #[path = "app/http.rs"]
 mod http;
 #[path = "app/isosui.rs"]

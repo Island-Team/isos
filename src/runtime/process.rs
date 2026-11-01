@@ -3,7 +3,7 @@
 //! The graph remains the authored source. This module admits only registered
 //! IsOS process nodes and keeps direct child handles in the manager process.
 
-use crate::{backend, config::Paths, core_bins, log_store, packages};
+use crate::{backend, config::Paths, core_bins, graph_compat, log_store, packages};
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -720,12 +720,16 @@ pub fn normalize_source(source: &str) -> Result<Value> {
         source.len() as u64 <= MAX_GRAPH_BYTES,
         "node graph exceeds 1 MiB"
     );
-    if source.trim_start().starts_with('{') {
-        Ok(serde_json::from_str(source)?)
+    let graph = if source.trim_start().starts_with('{') {
+        serde_json::from_str(source)?
     } else {
         let value: toml::Value = toml::from_str(source)?;
-        Ok(serde_json::to_value(value)?)
+        serde_json::to_value(value)?
+    };
+    if let Some(diagnostic) = graph_compat::version_diagnostic(&graph) {
+        bail!(diagnostic);
     }
+    Ok(graph)
 }
 
 pub fn validate_value(paths: &Paths, graph: &Value) -> Result<()> {
@@ -733,6 +737,7 @@ pub fn validate_value(paths: &Paths, graph: &Value) -> Result<()> {
 }
 
 pub fn validate_value_with_profile(paths: &Paths, graph: &Value, profile: &Path) -> Result<()> {
+    graph_compat::admit(graph, catalog().ok().as_ref())?;
     reject_obsolete_nodes(graph)?;
     paths.prepare()?;
     let mut file = tempfile::Builder::new()
@@ -751,6 +756,7 @@ pub fn validate_value_with_profile(paths: &Paths, graph: &Value, profile: &Path)
 /// validates the process projection again before supervising any child.
 pub fn validate_full_graph(path: &Path) -> Result<()> {
     let graph = normalize_source(&fs::read_to_string(path)?)?;
+    graph_compat::admit(&graph, catalog().ok().as_ref())?;
     reject_obsolete_nodes(&graph)?;
     validate_with_program(path, &core_bins::resolve("aether-profile")?)
 }
