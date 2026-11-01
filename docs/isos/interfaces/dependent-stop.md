@@ -2,7 +2,7 @@
 
 [中文](../../../docs_cn/isos/interfaces/dependent-stop_cn.md) · [Design](../design/dependent-stop.md) · [First use](../usage/get-started.md#r06-dependent-stop-target) · [Frozen cases](../../../tests/fixtures/dependent_stop/README.md) · [R06 task](../../../../Island-eos/docs/island/implementation-todo.md)
 
-**Target design — not implemented.** IsOS owns the lifecycle of its direct EOS, EGIA, bridge and config child process groups, the response to its owner-only manager and loopback API callers, and the durable unknown stop intent. EOS owns Dispatcher stop admission, physical base and arm stop, and its direct MuJoCo child. MuJoCo owns the physical simulator acknowledgment. IsOS does not send actuator commands, adopt the simulator, or infer a safe stop from a disappeared PID.
+**Implementation under qualification.** IsOS owns the lifecycle of its direct EOS, EGIA, bridge and config child process groups, the response to its owner-only manager and loopback API callers, and the durable unknown stop intent. EOS owns Dispatcher stop admission, physical base and arm stop, and its direct MuJoCo child. MuJoCo owns the physical simulator acknowledgment. IsOS does not send actuator commands, adopt the simulator, or infer a safe stop from a disappeared PID.
 
 ## Caller, boundary and outcome
 

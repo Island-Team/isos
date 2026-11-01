@@ -2,7 +2,7 @@
 
 [English](../../../docs/isos/interfaces/dependent-stop.md) · [设计](../design/dependent-stop_cn.md) · [首次使用](../usage/get-started_cn.md#r06-依赖停止目标) · [冻结用例](../../../tests/fixtures/dependent_stop/README_cn.md) · [R06 任务](../../../../Island-eos/docs/island/implementation-todo.md)
 
-**目标设计，尚未实现。** IsOS 管理其直接子进程 EOS、EGIA、bridge 和 config 的进程组、同用户管理器及 loopback API 的响应、以及持久的未知停止意图。EOS 管理 Dispatcher 停止准入、底盘和机械臂实体停止及其直接 MuJoCo 子进程；MuJoCo 负责仿真器确认。IsOS 不发送执行器命令、不接管仿真器，也不把 PID 消失解释为安全停止。
+**实现中，尚待验证。** IsOS 管理其直接子进程 EOS、EGIA、bridge 和 config 的进程组、同用户管理器及 loopback API 的响应、以及持久的未知停止意图。EOS 管理 Dispatcher 停止准入、底盘和机械臂实体停止及其直接 MuJoCo 子进程；MuJoCo 负责仿真器确认。IsOS 不发送执行器命令、不接管仿真器，也不把 PID 消失解释为安全停止。
 
 ## 调用方、边界与结果
 

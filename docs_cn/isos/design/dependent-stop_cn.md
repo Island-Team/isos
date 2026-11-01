@@ -2,7 +2,7 @@
 
 [English](../../../docs/isos/design/dependent-stop.md) · [归属方契约](../interfaces/dependent-stop_cn.md) · [冻结用例](../../../tests/fixtures/dependent_stop/README_cn.md) · [首次使用](../usage/get-started_cn.md#r06-依赖停止目标)
 
-**目标设计，尚未实现。** [归属方契约](../interfaces/dependent-stop_cn.md)规定 API 字段、单位、终结原因和事件代码。本文说明管理器如何在 CLI、API、Ctrl+C、Restart、回滚、提供者丢失及 Shutdown 中作出同一停止判定。EOS 与 MuJoCo 仍各自拥有执行器和仿真器边界。
+**实现中，尚待验证。** [归属方契约](../interfaces/dependent-stop_cn.md)规定 API 字段、单位、终结原因和事件代码。本文说明管理器如何在 CLI、API、Ctrl+C、Restart、回滚、提供者丢失及 Shutdown 中作出同一停止判定。EOS 与 MuJoCo 仍各自拥有执行器和仿真器边界。
 
 ## 现有边界与改动
 
@@ -41,3 +41,11 @@ IsOS 独立设计评审须核对冻结的 EOS 收据／解析器边界及宽限�
 2026-11-02 EOS 收据对齐校验：`/home/ashex/.cargo/bin/cargo fmt --all -- --check`、`/home/ashex/.cargo/bin/cargo clippy --all-targets -- -D warnings` 和 `/home/ashex/.cargo/bin/cargo test` 在未改动的 Rust 源码上通过（191 个单元、6 个 CLI 指南、1 个已移除命令、9 个连线准入测试）。`python3 tests/fixtures/dependent_stop/check_cases.py` 检查 56 个设计用例，包括原始管道身份、无效／过晚／第二条收据、缺失 EOF、缺失支持 token、EOS 零码退出以及 15／20／30 秒期限关系。两个规范 JSON 用例与经评审的 EOS 归属方契约示例一致。相对 Markdown 链接、JSON 示例和 `git diff --check` 均通过。完整输出在忽略的 `logs/test/20261102-r06-eos-receipt-alignment/`。这是设计检查；仍须使用真实 EOS 和 MuJoCo 验证。
 
 2026-11-02 原因优先级评审修订：`python3 tests/fixtures/dependent_stop/check_cases.py` 仍检查 56 个用例。选中 EOS 管道上的错误运行 ID 为无效；仅其他管道有收据时，选中管道仍为缺失。实时终结状态格在总期限到达或超过时若尚未决定，`stop_deadline_exceeded` 优先于过晚收据。总期限用例在强制清理之前已回收 EOS 组，不会由较早的强制 KILL 结果遮蔽该边界。相对链接、JSON 示例、`cargo fmt --all -- --check` 与 `git diff --check` 均通过。完整聚焦输出在忽略的 `logs/test/20261102-r06-reason-precedence/`。
+
+## 2026-11-02 实现证据
+
+主题分支现已为每次运行建立仅归属方可读写的 `running` 与 `stopping/unknown` 持久记录；运行范围内的终结单元由截止计时器保护。停止路径使用不回收的子进程首领观察，在进程组信号前核对启动时钟、会话与 PGID，并按依赖逆序停止。只有所选 EOS 原始 stdout 管道的严格收据可参与确认。Stop、Restart、启动失败、提供者丢失和管理器关闭共用监督器结果；未知结果阻止替换运行。重复 Stop 与状态返回同一实时终结结果；管理器重启后按 P07 最后运行 ID 保守恢复为未知。CLI 对未知停止返回非零状态。
+
+可重放命令为 `/home/ashex/.cargo/bin/cargo fmt --all -- --check`、`/home/ashex/.cargo/bin/cargo clippy --all-targets -- -D warnings`、`/home/ashex/.cargo/bin/cargo test`、`/home/ashex/.cargo/bin/cargo build`、`python3 tests/fixtures/dependent_stop/check_cases.py` 与 `git diff --check`。完整输出保存在忽略的 `logs/test/20261102-r06-implementation/`。单元和替身测试覆盖持久恢复、收据精确字段与重复键、所选原始管道的帧与 EOF、错误运行与管道写端滞留收据、首领已退出但未回收的真实 Linux 进程组、幂等归属方 Stop，以及在部分启动时列出尚未生成的所选子进程。用例检查器验证全部 56 个冻结设计用例的形状；它不逐个执行这些情景。
+
+主 EOS debug 二进制尚未声明 `managed-stop-v1`，所以经由该可执行文件的托管启动在预检时拒绝。跨归属方重放必须使用 EOS R06 主题分支构建，且仍待其 generation-ID 收据修订。合并或声称 R06 合格前仍须完成真实 EOS/MuJoCo 双场景、实体停止证明、干净 home 的 CLI/HTTP/Ctrl+C 重放和独立实现评审。
