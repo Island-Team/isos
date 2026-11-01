@@ -101,6 +101,19 @@ fn admission_diagnostic(error: &anyhow::Error) -> Value {
             packages::PackageFailure::diagnostic,
         )
 }
+fn node_option_err(error: &anyhow::Error) -> (StatusCode, Json<Value>) {
+    if let Some(diagnostic) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<graph_compat::Diagnostic>())
+    {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"schema_version":1,"ok":false,
+            "data":{"diagnostics":[diagnostic]},"error":"graph admission rejected"})),
+        );
+    }
+    admission_err(error)
+}
 fn ok(data: Value) -> ApiResult {
     Ok(Json(
         json!({"schema_version":1,"ok":true,"data":data,"error":null}),
@@ -753,19 +766,52 @@ async fn node_options_for_graph(
     if request.schema_version != 1 {
         return Err(err(StatusCode::BAD_REQUEST, "schema_version must be 1"));
     }
-    let options = node_options::for_graph(&request.graph)
-        .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
+    let mut options = node_options::for_graph(&app.paths, &request.graph)
+        .map_err(|error| node_option_err(&error))?;
+    options["graph_revision"] = Value::Null;
+    options["read_only"] = json!(false);
     ok(options)
 }
 
 async fn node_options_current(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
     authorized(&app, &headers)?;
-    let bytes = fs::read(app.paths.node_graph_path(&app.deployment))
-        .map_err(|error| err(StatusCode::NOT_FOUND, error))?;
-    let graph: Value = serde_json::from_slice(&bytes)
-        .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
-    let options = node_options::for_graph(&graph)
-        .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
+    let bytes = match fs::read(app.paths.node_graph_path(&app.deployment)) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(err(StatusCode::INTERNAL_SERVER_ERROR, error)),
+    };
+    let graph: Value = if bytes.is_empty() {
+        crate::starter::draft(&app.paths, &app.deployment)
+            .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?
+    } else {
+        serde_json::from_slice(&bytes)
+            .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?
+    };
+    let mut options =
+        node_options::for_graph(&app.paths, &graph).map_err(|error| node_option_err(&error))?;
+    options["graph_revision"] = json!(if bytes.is_empty() {
+        String::new()
+    } else {
+        graph_compat::revision(&bytes)
+    });
+    let applied = app
+        .paths
+        .generated(&app.deployment)
+        .join("core-setup/launch-inputs.json")
+        .is_file();
+    let read_only = if bytes.is_empty() || graph["version"] == "0.1.0" {
+        false
+    } else {
+        let saved = graph_compat::parse(&bytes)
+            .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
+        let catalog = process::catalog().ok();
+        let editable_starter = !applied
+            && saved.value["version"] == "1.0.0"
+            && graph_compat::legacy_projection(&saved.value, &saved.revision, catalog.as_ref())
+                .is_ok_and(|projection| projection.is_some());
+        saved.read_only && !editable_starter
+    };
+    options["read_only"] = json!(read_only);
     ok(options)
 }
 
