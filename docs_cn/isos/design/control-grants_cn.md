@@ -2,7 +2,7 @@
 
 [English](../../../docs/isos/design/control-grants.md) · [所有者契约](../interfaces/control-grants_cn.md) · [用例](../../../tests/fixtures/control_grants/README_cn.md)
 
-**目标设计，尚未实现。** R03 使 IsOS 成为 EOS 托管 Dispatcher 权限的签发方。签发属于管理器的 Run/Restart 事务，不属于 Apply 或不可变的 P04 生成代。已保存图确定精确修订和接收方，但不含凭据字段。所选 P04 叶目录提供已验证的 EOS 投影；独立的私有运行时授权包绑定运行及其修订。
+**IsOS 签发方已实现；跨仓库 R03 验证仍待完成。** R03 使 IsOS 成为 EOS 托管 Dispatcher 权限的签发方。签发属于管理器的 Run/Restart 事务，不属于 Apply 或不可变的 P04 生成代。已保存图确定精确修订和接收方，但不含凭据字段。所选 P04 叶目录提供已验证的 EOS 投影；独立的私有运行时授权包绑定运行及其修订。
 
 ## 事务
 
@@ -14,6 +14,8 @@
 
 运行授权包是权限能力；祖先符号链接、错误 UID、宽松权限、特殊文件、目标冲突、截断十六进制、缺少换行、额外字段、摘要变化、运行或修订不匹配都必须在就绪前失败。文件描述符和路径读取执行 no-follow 检查；接收方边界再次检查权限。停止旧进程前准备的候选授权包不会附着到旧进程。清理错误以脱敏本地诊断报告，不能使未验证子进程变为 ready。文件内容、授权摘要、bearer 元数据和运动实参均不得进入事件、状态或图错误体。
 
+已选 EOS `--capabilities` 探测必须声明精确的 `managed-control-grants`，IsOS 才能签发授权包或停止旧子进程。这道 P05 跨版本门槛拒绝会忽略验证文件的旧二进制。R03-I26 在原有 25 个设计用例之外加入此反例；EOS 只有具备托管验证和准入路径才声明该特性。
+
 ## 集成边界与测试
 
 当前 `Supervisor` 保存一个 `run_id`，把 `--run-id` 传给已选 EOS 子进程，把 `ISOS_RUN_ID` 传给 EGIA，并在自动子进程重启时保留。`restart_processes_with_plan` 分配候选运行；替换失败时再分配恢复运行。实现时，应将授权包作为随 supervisor 保留的运行对象，通过私有启动计划传给 `spawn`，不得表示成图 `settings.env`、`env_from` 或生成文件。`generated_v2::selected_root` 可能返回 G03 回退路径，故授权预检须先要求并验证保存修订的显式 schema-2 V2 选择/manifest；只有该叶目录提供 profile 字节。预检必须在 `managers.remove(name)` 与停止子进程之前完成。当前首次使用状态公开保存/活动修订及运行 ID；继续作为可观察身份，不加入凭据字段。
@@ -23,3 +25,5 @@
 合并前需获得独立设计及实现审查；运行 `python3 tests/fixtures/control_grants/check_cases.py`、`cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test`、`cargo build` 及干净 home 的 Run/Restart/Stop 边界测试。完整输出存于忽略的 `logs/test/<run-id>/`，并在此记录精确提交、命令和结果。本文档自身不构成实现证据。
 
 设计基线证据（2026-11-02）：IsOS 基础提交 `ace8f4c60b8a74b3a998fe2ae78da4c38afa2020`，Linux `7.0.0-38-generic` x86_64，Cargo 1.98.1。从仓库根运行 `python3 tests/fixtures/control_grants/check_cases.py`、`git diff --check`、`/home/ashex/.cargo/bin/cargo fmt --check`、`/home/ashex/.cargo/bin/cargo clippy --all-targets -- -D warnings`、`/home/ashex/.cargo/bin/cargo test`、`/home/ashex/.cargo/bin/cargo build` 均通过。既有 Rust 套件报告 179 个单元、六个 CLI 指南、一个已移除命令和九个边准入测试。完整输出位于忽略的 `logs/test/20261102-r03-control-grants-design/`。这些门槛只检查设计文件和未变的基线；新增 25 个 R03 用例仍需实现和独立审查。
+
+IsOS 签发方实现证据（2026-11-02）：在 Linux `7.0.0-38-generic` x86_64、Cargo 1.98.1 环境中，`python3 tests/fixtures/control_grants/check_cases.py`、`/home/ashex/.cargo/bin/cargo fmt --all -- --check`、`/home/ashex/.cargo/bin/cargo clippy --all-targets -- -D warnings`、`/home/ashex/.cargo/bin/cargo test`、`/home/ashex/.cargo/bin/cargo build` 和 `git diff --check` 均通过。测试报告 191 个单元、六个 CLI 指南、一个已移除命令和九个边准入测试。完整输出保存在忽略的 `logs/test/20261102-r03-control-grants-impl/`。Rust 测试覆盖签发、私有文件检查、精确 V2 选择、子进程环境隔离、同一运行自动重启、停止前拒绝、候选运行终止失败、独立恢复授权，以及运行范围发布失败时撤销授权。由于已选 EOS 二进制必须证明新特性，R03-I26 将矩阵扩展到 26 项。设置 `ISOS_BIN=/home/ashex/projects/isos-admission-grants/target/debug/isos ISOS_AETHER_BIN_DIR=/home/ashex/projects/Island-eos-admission-revision/target/debug` 后运行 `python3 tests/reader_features_cli.py`，七个干净 home 用例通过；因未设置 `ISOS_REAL_EGIA_ROOT`，一个真实 EGIA 用例跳过；已选旧 EOS 的反例通过。R03 关闭前仍需 EOS 跨边界重放和独立审查。

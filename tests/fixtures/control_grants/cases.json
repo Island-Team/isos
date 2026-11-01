@@ -23,5 +23,6 @@
   {"id":"R03-I22","operation":"restart","mutation":"zero_point_one_g03_or_missing_v2_selection","expected":"prestop_rejection_unchanged_active"},
   {"id":"R03-I23","operation":"restart","mutation":"authored_run_id_flag","expected":"control_grant_reserved_arg_exact_pointer_unchanged_active"},
   {"id":"R03-I24","operation":"restart","mutation":"authored_run_id_equals_flag","expected":"control_grant_reserved_arg_exact_pointer_unchanged_active"},
-  {"id":"R03-I25","operation":"restart","mutation":"selected_grant_injection_failure_after_deployment_starting","expected":"candidate_run_terminal_failure_distinct_recovery"}
+  {"id":"R03-I25","operation":"restart","mutation":"selected_grant_injection_failure_after_deployment_starting","expected":"candidate_run_terminal_failure_distinct_recovery"},
+  {"id":"R03-I26","operation":"restart","mutation":"selected_old_eos_binary_without_managed_control_grants_feature","expected":"reader_feature_unsupported_before_stop_old_pid_and_bundle_unchanged"}
 ]

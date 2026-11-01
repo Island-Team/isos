@@ -4,8 +4,8 @@
 //! IsOS process nodes and keeps direct child handles in the manager process.
 
 use crate::{
-    backend, config::Paths, core_bins, edge_admission, graph_compat, graph_migration, log_store,
-    mujoco_catalog, packages,
+    backend, config::Paths, control_grants, core_bins, edge_admission, graph_compat,
+    graph_migration, log_store, mujoco_catalog, packages,
 };
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -1134,7 +1134,9 @@ pub struct Supervisor {
     order: Vec<String>,
     logs: log_store::LogStore,
     paths: Paths,
+    deployment: String,
     run_id: String,
+    control_grants: Option<control_grants::Bundle>,
     admitted_nodes: Arc<BTreeSet<String>>,
 }
 
@@ -1199,7 +1201,9 @@ impl Supervisor {
             order: Vec::new(),
             logs: log_store::LogStore::new(paths, deployment)?,
             paths: paths.clone(),
+            deployment: deployment.to_owned(),
             run_id: crate::manager::next_run_id(),
+            control_grants: None,
             admitted_nodes: Arc::new(admitted_nodes),
         })
     }
@@ -1212,6 +1216,32 @@ impl Supervisor {
     }
     pub fn set_run_id(&mut self, run_id: String) {
         self.run_id = run_id;
+    }
+    pub fn prepare_control_grants(&mut self, revision: &str) -> Result<()> {
+        ensure!(
+            self.control_grants.is_none(),
+            "control grant bundle is already attached"
+        );
+        self.control_grants = Some(control_grants::Bundle::issue(
+            &self.paths,
+            &self.deployment,
+            &self.run_id,
+            revision,
+        )?);
+        Ok(())
+    }
+    pub fn verify_control_grants(&self, required: bool) -> Result<()> {
+        if let Some(bundle) = &self.control_grants {
+            bundle.verify()?;
+        } else if required {
+            return Err(anyhow::Error::new(control_grants::Diagnostic {
+                code: "control_grant_invalid_file",
+                stage: "spawn",
+                path: String::new(),
+                message: "Repair private control-grant state and retry launch",
+            }));
+        }
+        Ok(())
     }
 
     fn spawn(
@@ -1271,10 +1301,33 @@ impl Supervisor {
             }
         }
         command.envs(&spec.settings.env);
+        for reserved in control_grants::RESERVED_ENVS {
+            command.env_remove(reserved);
+        }
         for source in secret_sources {
             command.env_remove(source);
         }
         command.envs(secrets);
+        if let Some(bundle) = &self.control_grants {
+            bundle.verify()?;
+            #[cfg(test)]
+            if spec
+                .settings
+                .env
+                .get("ISOS_R03_TEST_FAIL_DELIVERY")
+                .is_some_and(|value| value == "1")
+            {
+                return Err(anyhow::Error::new(control_grants::Diagnostic {
+                    code: "control_grant_delivery_failed",
+                    stage: "spawn",
+                    path: String::new(),
+                    message: "Repair private control-grant delivery and retry",
+                }));
+            }
+            if let Some((key, path)) = bundle.launch_env(&spec.id) {
+                command.env(key, path);
+            }
+        }
         if spec.id == "egia" && spec.settings.role.as_deref() == Some("egia") {
             command.env("ISOS_RUN_ID", &self.run_id);
         }
@@ -1420,6 +1473,9 @@ impl Supervisor {
         specs: &[ProcessSpec],
         secrets: &crate::generated_v2::SecretPlan,
     ) -> Result<Vec<String>> {
+        if let Some(bundle) = &self.control_grants {
+            bundle.verify()?;
+        }
         let secret_sources: BTreeSet<String> = self
             .running
             .values()
@@ -1496,6 +1552,11 @@ impl Supervisor {
                 terminate(&mut process.child);
                 stopped.push(id);
             }
+        }
+        if let Some(bundle) = self.control_grants.take()
+            && let Err(error) = bundle.retire()
+        {
+            eprintln!("isos: {error}");
         }
         stopped
     }
@@ -1657,8 +1718,127 @@ fn terminate(child: &mut Child) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::MetadataExt;
     use std::os::unix::net::UnixListener;
     use std::sync::mpsc;
+
+    #[test]
+    fn managed_grants_are_delivered_only_to_the_named_children_and_retired_after_stop() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        paths.prepare().unwrap();
+        let script = temp.path().join("capture-env.sh");
+        fs::write(
+            &script,
+            r#"#!/bin/sh
+set -eu
+for name in EOS_CONTROL_GRANTS_FILE EGIA_EOS_CONTROL_GRANT_FILE AETHER_BRIDGE_CONTROL_GRANT_FILE; do
+  eval 'value=${'"$name"'-}'
+  if [ -n "$value" ]; then printf '%s\n' "$name" >> "$CAPTURE_PATH"; fi
+done
+sleep 10
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut supervisor = Supervisor::new(&paths, "test").unwrap();
+        let run_id = supervisor.run_id().to_owned();
+        supervisor.prepare_control_grants(&"a".repeat(64)).unwrap();
+        let mut specs = Vec::new();
+        for id in ["eos", "config", "egia", "bridge", "other"] {
+            let capture = temp.path().join(format!("{id}.env"));
+            let spec = ProcessSpec {
+                id: id.into(),
+                path: format!("isos/process/component/{id}"),
+                settings: serde_json::from_value(serde_json::json!({
+                    "command":[script],
+                    "env":{
+                        "CAPTURE_PATH":capture,
+                        "EOS_CONTROL_GRANTS_FILE":"authored-fake",
+                        "EGIA_EOS_CONTROL_GRANT_FILE":"authored-fake",
+                        "AETHER_BRIDGE_CONTROL_GRANT_FILE":"authored-fake"
+                    },
+                    "start_timeout_ms":1000
+                }))
+                .unwrap(),
+                package: None,
+                fingerprint: None,
+            };
+            specs.push(spec);
+        }
+        supervisor.start(&specs).unwrap();
+        for (id, expected) in [
+            ("eos", "EOS_CONTROL_GRANTS_FILE\n"),
+            ("config", ""),
+            ("egia", "EGIA_EOS_CONTROL_GRANT_FILE\n"),
+            ("bridge", "AETHER_BRIDGE_CONTROL_GRANT_FILE\n"),
+            ("other", ""),
+        ] {
+            let capture = temp.path().join(format!("{id}.env"));
+            let content = fs::read_to_string(capture).unwrap_or_default();
+            assert_eq!(content, expected, "recipient {id}");
+        }
+        let bundle = paths.runtime.join(format!("control-grants/test/{run_id}"));
+        assert!(bundle.exists());
+        assert_eq!(supervisor.stop().len(), specs.len());
+        assert!(!bundle.exists());
+    }
+
+    #[test]
+    fn automatic_child_restart_reuses_run_and_control_grant_bundle() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        paths.prepare().unwrap();
+        let sentinel = temp.path().join("first-start");
+        let script = temp.path().join("restart-once.sh");
+        fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nif [ ! -e '{}' ]; then touch '{}'; sleep 0.3; exit 1; fi\nsleep 10\n",
+                sentinel.display(),
+                sentinel.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut supervisor = Supervisor::new(&paths, "test").unwrap();
+        let run_id = supervisor.run_id().to_owned();
+        supervisor.prepare_control_grants(&"a".repeat(64)).unwrap();
+        let verifier = paths
+            .runtime
+            .join(format!("control-grants/test/{run_id}/verifier.json"));
+        let original_inode = fs::symlink_metadata(&verifier).unwrap().ino();
+        let spec = ProcessSpec {
+            id: "eos".into(),
+            path: "isos/process/component/eos".into(),
+            settings: serde_json::from_value(serde_json::json!({
+                "command":[script], "restart":"on_failure", "max_restarts":1,
+                "start_timeout_ms":1000
+            }))
+            .unwrap(),
+            package: None,
+            fingerprint: None,
+        };
+        supervisor.start(&[spec]).unwrap();
+        thread::sleep(Duration::from_millis(400));
+        supervisor.poll().unwrap();
+        assert_eq!(supervisor.run_id(), run_id);
+        assert_eq!(supervisor.status_snapshot()[0].restarts, 1);
+        assert_eq!(
+            fs::symlink_metadata(&verifier).unwrap().ino(),
+            original_inode
+        );
+        supervisor.stop();
+        assert!(!verifier.exists());
+    }
 
     fn wait_for_file(path: &Path, expected_lines: usize) -> String {
         for _ in 0..200 {
@@ -1884,14 +2064,17 @@ sleep 2
         });
         let specs = project(&graph(&settings.to_string())).unwrap();
         let listener_path = socket.clone();
+        let (go_tx, go_rx) = mpsc::channel();
         let (done_tx, done_rx) = mpsc::channel();
         let listener = thread::spawn(move || {
+            go_rx.recv().unwrap();
             thread::sleep(Duration::from_millis(150));
             let _listener = UnixListener::bind(listener_path).unwrap();
             let _ = done_rx.recv_timeout(Duration::from_secs(2));
         });
         let mut supervisor = Supervisor::new(&paths, "test").unwrap();
         let start = Instant::now();
+        go_tx.send(()).unwrap();
         assert_eq!(supervisor.start(&specs).unwrap(), vec!["eos"]);
         assert!(start.elapsed() >= Duration::from_millis(100));
         assert_eq!(supervisor.stop(), vec!["eos"]);

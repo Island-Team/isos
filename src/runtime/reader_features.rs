@@ -745,6 +745,15 @@ fn check_inner(
             for token in ["graph-0.1-reader", "node-types", "data-idl"] {
                 feature(&claims, graph, "/version", None, token)?;
             }
+            if id == "eos" {
+                feature(
+                    &claims,
+                    graph,
+                    &format!("{pointer}/node_type"),
+                    None,
+                    "managed-control-grants",
+                )?;
+            }
         }
         if id == "bridge" {
             feature(
@@ -884,6 +893,20 @@ mod tests {
         assert_eq!(
             error.path,
             "/cores/eos/layers/hardware/groups/camera/nodes/front/node_type"
+        );
+    }
+
+    #[test]
+    fn old_eos_runtime_without_managed_grant_feature_is_rejected_at_its_process_node() {
+        let selected = parse_claims(claims(), &reply(), true, false).unwrap();
+        let graph = json!({"version":"0.1.0"});
+        let path = "/cores/isos/layers/process/groups/component/nodes/eos/node_type";
+        let error = feature(&selected, &graph, path, None, "managed-control-grants").unwrap_err();
+        assert_eq!(error.code, "reader_feature_unsupported");
+        assert_eq!(error.path, path);
+        assert_eq!(
+            error.context["reader"]["requested"]["feature"],
+            "managed-control-grants"
         );
     }
 

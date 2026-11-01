@@ -124,6 +124,52 @@ class ReaderFeaturesReplay(unittest.TestCase):
         self.assertEqual(status, 200, after)
         self.assertEqual({item["id"]: item["pid"] for item in after["data"]["processes"]}, pids)
 
+    def test_old_eos_without_managed_grant_feature_keeps_active_run(self):
+        selected = self.case.root / "selected-eos"
+        selected.mkdir()
+        for name in ("aether-profile", "aether-runtime", "aether-http-bridge",
+                     "aether-config-server"):
+            shutil.copy2(EOS_BIN_DIR / name, selected / name)
+        runtime = selected / "aether-runtime"
+        original = EOS_BIN_DIR / "aether-runtime"
+        capabilities = json.loads(subprocess.check_output([str(original), "--capabilities"]))
+        self.assertIn("managed-control-grants", capabilities["features"])
+        weaker = dict(capabilities, features=[feature for feature in capabilities["features"]
+                                             if feature != "managed-control-grants"])
+        toggle = self.case.root / "drop-managed-grants"
+        runtime.write_text("#!/usr/bin/env python3\nimport os,sys\n"
+                           "if sys.argv[1:] == ['--capabilities']:\n"
+                           f" print({json.dumps(json.dumps(weaker))} if os.path.exists({str(toggle)!r}) "
+                           f"else {json.dumps(json.dumps(capabilities))}); sys.exit(0)\n"
+                           f"os.execv({str(original)!r}, [{str(original)!r}, *sys.argv[1:]])\n")
+        runtime.chmod(0o700)
+        self.case.env["ISOS_AETHER_BIN_DIR"] = str(selected)
+        self.case.apply(self.graph)
+        self.case.start_server()
+        status, reply = self.case.control("run")
+        self.assertEqual(status, 200, reply)
+        status, before = self.case.api("process-status")
+        self.assertEqual(status, 200, before)
+        pids = {item["id"]: item["pid"] for item in before["data"]["processes"]}
+        run_id = before["data"]["run_id"]
+        bundles = self.case.home / "run" / "control-grants" / "default"
+        self.assertEqual(sorted(path.name for path in bundles.iterdir()), [run_id])
+        toggle.write_text("omit managed-control-grants\n")
+        status, reply = self.case.control("restart")
+        self.assertEqual(status, 422, reply)
+        diagnostic = reply["data"]["diagnostics"][0]
+        self.assertEqual((diagnostic["code"], diagnostic["path"], diagnostic["stage"]),
+                         ("reader_feature_unsupported",
+                          "/cores/isos/layers/process/groups/component/nodes/eos/node_type",
+                          "feature"))
+        self.assertEqual(diagnostic["reader"]["requested"]["feature"],
+                         "managed-control-grants")
+        status, after = self.case.api("process-status")
+        self.assertEqual(status, 200, after)
+        self.assertEqual({item["id"]: item["pid"] for item in after["data"]["processes"]}, pids)
+        self.assertEqual(after["data"]["run_id"], run_id)
+        self.assertEqual(sorted(path.name for path in bundles.iterdir()), [run_id])
+
     def test_egia_module_change_invalidates_selected_generation(self):
         self.case.seed_egia_distribution()
         nodes = self.graph["cores"]["isos"]["layers"]["process"]["groups"]["component"]["nodes"]

@@ -2,11 +2,11 @@
 
 [English](../../../docs/isos/interfaces/control-grants.md) · [设计](../design/control-grants_cn.md) · [首次使用](../usage/get-started_cn.md#r03-托管控制授权重放) · [固定用例](../../../tests/fixtures/control_grants/README_cn.md)
 
-**目标契约，尚未实现。** IsOS 负责为托管部署运行签发和传递授权；EOS 负责验证、准入、Dispatcher 和持久结果。[EOS gRPC 契约](https://github.com/Island-Team/Island-eos/blob/refactor%28v2%29/runtime-main/docs/eos/interfaces/grpc.md#r03-governed-actuator-admission-target-contract)定义请求元数据和操作语义。图连线、软件包、生成配置、浏览器请求及客户端自称的阶段均不能授予执行器权限。信任边界是本机操作系统用户；本契约不声称能区分同 UID 的不同进程。
+**IsOS 签发方已实现；跨仓库 R03 验证仍待完成。** IsOS 负责为托管部署运行签发和传递授权；EOS 负责验证、准入、Dispatcher 和持久结果。[EOS gRPC 契约](https://github.com/Island-Team/Island-eos/blob/refactor%28v2%29/runtime-main/docs/eos/interfaces/grpc.md#r03-governed-actuator-admission-target-contract)定义请求元数据和操作语义。图连线、软件包、生成配置、浏览器请求及客户端自称的阶段均不能授予执行器权限。信任边界是本机操作系统用户；本契约不声称能区分同 UID 的不同进程。
 
 ## 输入、文件和接收方
 
-IsOS 仅在软件包、读取器、所有者渲染、二进制和密钥预检完成后，接受精确的已保存 `0.1.0` 图修订与**显式选中的 P04 schema-2 V2 代**。已保存字节的 SHA-256 是 `active_revision`；EOS 投影摘要是另一个身份。签发前，IsOS 验证选择条目、`data/generated/<deployment>/v2/<revision>/<generation>/manifest.json` 以及其中唯一列出的常规文件 `eos/graph.json`。即使图为 `0.1.0`，缺少选择或回退到 G03 也不得签发授权或停止活动子进程。旧 `1.0.0` 图与 G03 快照不获控制授权包。Validate、Apply 和迁移均不签发授权。
+IsOS 仅在软件包、读取器、所有者渲染、二进制和密钥预检完成后，接受精确的已保存 `0.1.0` 图修订与**显式选中的 P04 schema-2 V2 代**。已选 EOS 运行时必须声明精确的 P05 `managed-control-grants` 特性；旧二进制在停止任何活动子进程或签发授权前失败。已保存字节的 SHA-256 是 `active_revision`；EOS 投影摘要是另一个身份。签发前，IsOS 验证选择条目、`data/generated/<deployment>/v2/<revision>/<generation>/manifest.json` 以及其中唯一列出的常规文件 `eos/graph.json`。即使图为 `0.1.0`，缺少选择或回退到 G03 也不得签发授权或停止活动子进程。旧 `1.0.0` 图与 G03 快照不获控制授权包。Validate、Apply 和迁移均不签发授权。
 
 每个新的部署 `run_id` 由 IsOS 从操作系统 CSPRNG 独立生成**两个 32 字节随机值**。在私有运行时根目录下创建 `run/control-grants/<deployment>/<run_id>/`，目录权限为 `0700`，路径不得含符号链接或已存在的目标。每个授权文件是权限 `0600` 的常规文件，内容恰为 64 个小写十六进制字符及一个换行符，解码后为 32 字节。独立的 `0600` 验证 JSON 不包含授权原文：
 
