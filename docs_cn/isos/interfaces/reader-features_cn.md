@@ -2,7 +2,7 @@
 
 [English](../../../docs/isos/interfaces/reader-features.md)
 
-**目标设计，尚未实现。**IsOS 在 Apply、Run 或 Restart 之前负责准入实际保存的部署图、精确软件包固定版本和已选核心程序。EOS、EGIA 各自负责程序发出的能力身份。本契约扩展[版本准入概览](configuration_cn.md#版本准入)和 schema-1 [本地 API](local-api_cn.md#已配置构建与版本就绪)。读取兼容不等于运行就绪：启用 EGIA 时，仍须通过 EOS 网关健康屏障。
+**P05 契约已实现；新增 R03 托管授权校验。**IsOS 在 Apply、Run 或 Restart 之前负责准入实际保存的部署图、精确软件包固定版本和已选核心程序。EOS、EGIA 各自负责程序发出的能力身份。本契约扩展[版本准入概览](configuration_cn.md#版本准入)和 schema-1 [本地 API](local-api_cn.md#已配置构建与版本就绪)。读取兼容不等于运行就绪：启用 EGIA 时，仍须通过 EOS 网关健康屏障。
 
 ## 调用、真实来源和探测
 
@@ -31,6 +31,8 @@ IsOS 从实际图读取版本，并在各 JSON 指针读取每个启用节点的
 对 `0.1.0` EOS 图，`aether-profile`、`aether-runtime` 和启用的 `aether-config-server` 均需要 `graph-0.1-reader`、`node-types`、`data-idl`。`aether-profile` 还需要 `setup-v1` 与 `catalog`；`aether-runtime` 还按启用节点和参数需要：IsOS 传入 `--log-dir` 时的 `log-dir`、原语节点的 `primitive-binding`、相机闸的 `vision-gate`，以及已准入 `eos.process.mujoco@v0.1` 或 `@v1.0` 启动的 `mujoco-child-v2`。EOS 自身对旧 `eos.process.backend@v1.0` 的 v2 子进程路径也要求此特性，但 IsOS G01／G03 会先以 `migration_required` 拒绝该旧图节点，所以 IsOS 不存在其 P05 runtime 特性用例。原有固定的 EOS `short-paths` 进程检查保持。只要启用 `aether-http-bridge` 进程，就需要其 `vision-ws` 传输特性，不要求它声明图读取能力。对 `0.1.0` 外壳，EGIA setup 需要 `setup-v1`、`catalog`、`graph-0.1-reader`、四个精确注册旧类型及其图／类型集合。所选 EGIA runtime 对任一可接受图外壳需要 `managed-config-v1` 与 `eos-gateway-client-v2`，不要求图／类型数组。这些只证明托管启动和客户端行为，不证明 EOS 网关就绪或未来 EGIA 阶段。即使读取器声明 `0.1.0`，缺少请求的完整注册类型或必需特性仍不兼容。
 
 ## 结构化失败与版本报告
+
+R03 托管 `0.1.0` 启动还要求已选 `aether-runtime` 声明精确的 `managed-control-grants`。若缺失，则在签发授权或替换活动子进程前，以 `/cores/isos/layers/process/groups/component/nodes/eos/node_type` 路径报告 `reader_feature_unsupported`。现有 P05 有界 `--capabilities` 探测核验已选可执行文件的字节，旧 EOS 二进制不能忽略新验证文件而仍获执行器启动资格。
 
 schema-1 HTTP 封装保留 `ok:false`、`error` 和 `data.diagnostics`；CLI 输出同一稳定代码及脱敏修复消息；`isos version check --json` 在每个核心现有的 `ready`、`reason`、`action` 字段旁包含同样的诊断对象。P05 每条诊断恰含 `code`、`path`、`message`、`stage` 和 `reader`。`reader` 含 `core`、`binary`、`binary_sha256`（小写 64 位十六进制；所选输入无法读取时为 `null`；对 EGIA，它是解析后的启动器／解释器／绑定／模块清单的规范摘要，不只是包装脚本）、`requested` 和 `supported`。`requested` 仅含适用的 `graph_version`、完整 `node_type`、`feature` 和精确 `{id,version}` 包 pin；不适用值为 `null`。`supported` 含排序且唯一的 `graph_versions`、`node_type_versions`、完整 `node_types`、`features`；未知集合为空数组。对 EGIA，`binary_sha256` 是紧凑、按键排序的 JSON 的 SHA-256；其中包含所选 `egia_chain` 对象，以及 `launchers` 中所选 `egia` 和 `egia-config` 文件的 SHA-256。全图要求指向 `/version`；节点或包要求指向精确的 `/node_type` 或 `/package`，并转义 JSON 指针。缺少运行时特性时指向提出要求的进程或设备 `/node_type`。所选子进程程序或启动链故障在图中有 `settings.role` 时指向该 IsOS 进程节点的 `/settings/role`，否则指向该节点 `/node_type`；命令路径由 IsOS 合成。setup 读取器使用 `""`。`stage` 为 `graph`、`package`、`reader` 或 `feature`。稳定代码为 `reader_identity_invalid`、`reader_graph_unsupported`、`reader_type_unsupported`、`reader_feature_unsupported`、`reader_binary_mismatch`、`reader_package_pin_mismatch`。`message` 点名所选程序及修复动作，不包含原始 stderr、密钥、本机路径或猜测的发行版。
 

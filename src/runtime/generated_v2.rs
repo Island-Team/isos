@@ -1340,6 +1340,31 @@ pub fn selected_root(
         .unwrap_or_else(|| paths.generated(name).join(revision)))
 }
 
+/// Return only an explicitly selected, fully verified schema-2 V2 generation.
+pub fn selected_v2_root(
+    paths: &Paths,
+    name: &str,
+    graph: &Value,
+    revision: &str,
+) -> Result<PathBuf, Diagnostic> {
+    let root = selected(paths, name, graph, revision, None)?.ok_or_else(|| missing("snapshot"))?;
+    let manifest: Manifest =
+        serde_json::from_slice(&inspect_regular(&root.join("manifest.json"), "snapshot")?)
+            .map_err(|_| mismatch())?;
+    if manifest.schema_version != 2
+        || manifest
+            .files
+            .iter()
+            .filter(|file| file.path == "eos/graph.json")
+            .count()
+            != 1
+    {
+        return Err(mismatch());
+    }
+    inspect_regular(&root.join("eos/graph.json"), "snapshot")?;
+    Ok(root)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1433,7 +1458,43 @@ mod tests {
         );
         assert_eq!(
             selected(&paths, "test", &graph, &revision, Some(&files)).unwrap(),
-            Some(first)
+            Some(first.clone())
+        );
+        assert_eq!(
+            selected_v2_root(&paths, "test", &graph, &revision).unwrap(),
+            first
+        );
+    }
+
+    #[test]
+    fn managed_run_requires_explicit_v2_selection_not_g03_fallback() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path());
+        let graph = graph();
+        let revision = applied(&paths, &graph);
+        assert!(selected_root(&paths, "test", &graph, &revision).is_ok());
+        assert_eq!(
+            selected_v2_root(&paths, "test", &graph, &revision)
+                .unwrap_err()
+                .code,
+            "generated_missing_input"
+        );
+        let mut selection = Selection {
+            schema_version: 2,
+            entries: BTreeMap::new(),
+        };
+        selection.entries.insert(revision.clone(), Entry::G03);
+        private_dir(&paths.generated("test")).unwrap();
+        write_private(
+            &paths.generated("test").join("selection.json"),
+            &serde_json::to_vec(&selection).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            selected_v2_root(&paths, "test", &graph, &revision)
+                .unwrap_err()
+                .code,
+            "generated_missing_input"
         );
     }
 

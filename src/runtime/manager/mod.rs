@@ -26,6 +26,7 @@ use protocol::*;
 
 pub(crate) struct ActiveDeployment {
     active_revision: String,
+    managed: bool,
     supervisor: process::Supervisor,
     last_error: Option<String>,
     expected_processes: usize,
@@ -143,6 +144,11 @@ fn log_prelaunch_failure(
                     .downcast_ref::<crate::generated_v2::Diagnostic>()
                     .map(|d| (d.code, d.path.as_str()))
             })
+            .or_else(|| {
+                cause
+                    .downcast_ref::<crate::control_grants::Diagnostic>()
+                    .map(|d| (d.code, d.path.as_str()))
+            })
     });
     let mut fields = serde_json::Map::new();
     if let Some((code, path)) = diagnostic {
@@ -210,7 +216,7 @@ fn preflight_packages(
 ) -> Result<Vec<process::ProcessSpec>> {
     let graph: Value = serde_json::from_str(source)?;
     let selected = if graph["version"] == "0.1.0" {
-        Some(crate::generated_v2::selected_root(
+        Some(crate::generated_v2::selected_v2_root(
             paths, name, &graph, revision,
         )?)
     } else {
@@ -220,6 +226,7 @@ fn preflight_packages(
     let mut specs = process::project_with_packages(paths, source)?;
     core_setup::verify_launch_inputs(paths, name)?;
     if let Some(selected) = selected {
+        crate::control_grants::validate_plan(&specs)?;
         let generated = selected.join("eos/graph.json");
         process::use_generated_eos_profile(&mut specs, &generated)?;
         process::use_generated_egia_config(&mut specs, &selected.join("egia"))?;
@@ -255,7 +262,7 @@ fn verify_selected_before_reader(
 ) -> Result<()> {
     let saved = graph_compat::parse(source.as_bytes())?;
     if saved.value["version"] == "0.1.0" {
-        crate::generated_v2::selected_root(paths, name, &saved.value, revision)?;
+        crate::generated_v2::selected_v2_root(paths, name, &saved.value, revision)?;
     }
     Ok(())
 }
@@ -269,7 +276,7 @@ pub(crate) fn restart_processes(
     specs: &[process::ProcessSpec],
 ) -> Result<Vec<String>> {
     let plan = crate::generated_v2::secret_plan(specs)?;
-    restart_processes_with_plan(paths, managers, name, revision, specs, &plan)
+    restart_processes_with_plan(paths, managers, name, revision, specs, &plan, false)
 }
 
 fn restart_processes_with_plan(
@@ -279,12 +286,24 @@ fn restart_processes_with_plan(
     revision: &str,
     specs: &[process::ProcessSpec],
     plan: &crate::generated_v2::SecretPlan,
+    managed: bool,
 ) -> Result<Vec<String>> {
+    if managed {
+        crate::control_grants::validate_plan(specs)?;
+    }
+    if let Some(active) = managers.get(name) {
+        active
+            .supervisor
+            .verify_control_grants(active.managed && active.last_error.is_none())?;
+    }
     let old_plan = managers
         .get(name)
         .map(|active| crate::generated_v2::secret_plan(&active.supervisor.specs()))
         .transpose()?;
     let mut supervisor = process::Supervisor::new(paths, name)?;
+    if managed {
+        supervisor.prepare_control_grants(revision)?;
+    }
     let candidate_run = supervisor.run_id().to_owned();
     let previous = managers.remove(name).map(|mut active| {
         let old_specs = active.supervisor.specs();
@@ -322,6 +341,22 @@ fn restart_processes_with_plan(
             if let Some((mut active, old_specs)) = previous {
                 let recovery_run = next_run_id();
                 active.supervisor.set_run_id(recovery_run.clone());
+                if let Err(recovery_error) = if active.managed {
+                    active
+                        .supervisor
+                        .prepare_control_grants(&active.active_revision)
+                } else {
+                    Ok(())
+                } {
+                    log_deployment(paths, name, &recovery_run, "deployment_failed", "error");
+                    active.last_error = Some(format!(
+                        "restart failed: {error:#}; recovery grant preparation failed: {recovery_error}"
+                    ));
+                    managers.insert(name.to_owned(), active);
+                    bail!(
+                        "restart failed: {error:#}; recovery grant preparation failed: {recovery_error}"
+                    );
+                }
                 publish_run_scope(&active.supervisor)?;
                 log_deployment(paths, name, &recovery_run, "deployment_starting", "info");
                 let empty = crate::generated_v2::SecretPlan::new();
@@ -363,6 +398,7 @@ fn restart_processes_with_plan(
         name.to_owned(),
         ActiveDeployment {
             active_revision: revision.to_owned(),
+            managed,
             supervisor,
             last_error: None,
             expected_processes: specs.len(),
@@ -378,8 +414,16 @@ fn start_prepared_processes(
     revision: &str,
     specs: &[process::ProcessSpec],
     plan: &crate::generated_v2::SecretPlan,
+    managed: bool,
 ) -> Result<(Vec<String>, String)> {
+    if managed {
+        crate::control_grants::validate_plan(specs)?;
+    }
     if let Some(active) = managers.get_mut(name) {
+        ensure!(
+            active.managed == managed,
+            "saved graph management mode changed; restart required"
+        );
         ensure!(
             active.active_revision == revision,
             "saved graph changed while running; stop before restart"
@@ -387,6 +431,10 @@ fn start_prepared_processes(
         active.supervisor.verify_specs(specs)?;
     } else {
         let supervisor = process::Supervisor::new(paths, name)?;
+        let mut supervisor = supervisor;
+        if managed {
+            supervisor.prepare_control_grants(revision)?;
+        }
         publish_run_scope(&supervisor)?;
         log_deployment(
             paths,
@@ -399,6 +447,7 @@ fn start_prepared_processes(
             name.to_owned(),
             ActiveDeployment {
                 active_revision: revision.to_owned(),
+                managed,
                 supervisor,
                 last_error: None,
                 expected_processes: specs.len(),
@@ -604,8 +653,10 @@ pub(crate) fn api_call(
                 starter::revision(&path)? == revision,
                 "saved graph revision changed during core setup; reload before restart"
             );
-            let started =
-                restart_processes_with_plan(paths, managers, &name, &revision, &specs, &plan)?;
+            let managed = serde_json::from_str::<Value>(&source)?["version"] == "0.1.0";
+            let started = restart_processes_with_plan(
+                paths, managers, &name, &revision, &specs, &plan, managed,
+            )?;
             Ok(json!({"started":started,"active_revision":revision}))
         }
         "deployment_start" => {
@@ -627,8 +678,10 @@ pub(crate) fn api_call(
                 starter::revision(&path)? == revision,
                 "saved graph revision changed during core setup; reload before run"
             );
-            let (started, run_id) =
-                start_prepared_processes(paths, managers, &name, &revision, &specs, &plan)?;
+            let managed = serde_json::from_str::<Value>(&source)?["version"] == "0.1.0";
+            let (started, run_id) = start_prepared_processes(
+                paths, managers, &name, &revision, &specs, &plan, managed,
+            )?;
             Ok(json!({"started":started,"active_revision":revision,"run_id":run_id}))
         }
         "deployment_stop" => {
@@ -804,6 +857,11 @@ pub(crate) fn handle_client(
                         .or_else(|| {
                             cause
                                 .downcast_ref::<crate::generated_v2::Diagnostic>()
+                                .map(|diagnostic| json!({"diagnostics":[diagnostic]}))
+                        })
+                        .or_else(|| {
+                            cause
+                                .downcast_ref::<crate::control_grants::Diagnostic>()
                                 .map(|diagnostic| json!({"diagnostics":[diagnostic]}))
                         })
                         .or_else(|| {
@@ -1029,6 +1087,268 @@ pub(crate) fn service_call(
 mod restart_tests {
     use super::*;
     use std::net::Shutdown;
+
+    #[test]
+    fn grant_plan_preflight_leaves_active_pid_and_current_run_scope_unchanged() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = config::Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        paths.prepare().unwrap();
+        let active_spec = process::ProcessSpec {
+            id: "stub".into(),
+            path: "isos/process/component/stub".into(),
+            settings: serde_json::from_value(
+                json!({"command":["/bin/sleep","30"],"start_timeout_ms":500}),
+            )
+            .unwrap(),
+            package: None,
+            fingerprint: None,
+        };
+        let mut managers = Deployments::new();
+        restart_processes(&paths, &mut managers, "test", "old", &[active_spec]).unwrap();
+        let original = managers.get_mut("test").unwrap();
+        let old_run = original.supervisor.run_id().to_owned();
+        let old_pid = original.supervisor.status().unwrap()[0].pid;
+        let mut candidate = process::ProcessSpec {
+            id: "eos".into(),
+            path: "isos/process/component/eos".into(),
+            settings: serde_json::from_value(json!({"command":["/bin/true"],"role":"eos"}))
+                .unwrap(),
+            package: None,
+            fingerprint: None,
+        };
+        let revision = "a".repeat(64);
+        let empty = crate::generated_v2::SecretPlan::new();
+        let error = restart_processes_with_plan(
+            &paths,
+            &mut managers,
+            "test",
+            &revision,
+            &[candidate.clone()],
+            &empty,
+            true,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<crate::control_grants::Diagnostic>()
+                .unwrap()
+                .code,
+            "control_grant_delivery_failed"
+        );
+        log_prelaunch_failure(&paths, "test", &error, "p-grant");
+        let preflight = log_store::LogStore::new(&paths, "test")
+            .unwrap()
+            .read("isos", None, 20)
+            .unwrap();
+        let event = preflight["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|line| line["event_code"] == "deployment_preflight_failed")
+            .unwrap();
+        assert_eq!(event["run_id"], manager_session_id());
+        assert_eq!(event["correlation_id"], "p-grant");
+        assert_eq!(
+            event["fields"]["diagnostic_code"],
+            "control_grant_delivery_failed"
+        );
+        let active = managers.get_mut("test").unwrap();
+        assert_eq!(active.supervisor.status().unwrap()[0].pid, old_pid);
+        assert_eq!(active.supervisor.run_id(), old_run);
+        assert_eq!(active.active_revision, "old");
+        assert_eq!(
+            log_store::LogStore::new(&paths, "test")
+                .unwrap()
+                .run_identity()
+                .0
+                .as_deref(),
+            Some(old_run.as_str())
+        );
+        candidate.settings.args = vec!["--run-id=spoof".into()];
+        let mut config = candidate.clone();
+        config.id = "config".into();
+        config.path = "isos/process/component/config".into();
+        config.settings.args.clear();
+        let error = restart_processes_with_plan(
+            &paths,
+            &mut managers,
+            "test",
+            &revision,
+            &[candidate, config],
+            &empty,
+            true,
+        )
+        .unwrap_err();
+        let diagnostic = error
+            .downcast_ref::<crate::control_grants::Diagnostic>()
+            .unwrap();
+        assert_eq!(
+            diagnostic.path,
+            "/cores/isos/layers/process/groups/component/nodes/eos/settings/args/0"
+        );
+        assert_eq!(
+            managers
+                .get_mut("test")
+                .unwrap()
+                .supervisor
+                .status()
+                .unwrap()[0]
+                .pid,
+            old_pid
+        );
+        managers.get_mut("test").unwrap().supervisor.stop();
+    }
+
+    #[test]
+    fn failed_managed_replacement_rotates_grants_again_for_recovery() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = config::Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        paths.prepare().unwrap();
+        let script = temp.path().join("owner-stub.sh");
+        fs::write(
+            &script,
+            concat!(
+                "#!/bin/sh\nset -eu\nrun=missing\n",
+                "while [ \"$#\" -gt 0 ]; do\n",
+                "  if [ \"$1\" = --run-id ]; then shift; run=\"$1\"; fi\n",
+                "  shift\ndone\n",
+                "if [ \"$STUB_FAIL\" = 1 ]; then exit 1; fi\n",
+                "if [ \"$STUB_ID\" = eos ]; then fields='{\"state\":\"ready\",\"node_count\":1}'; message='EOS runtime ready'; ",
+                "else fields='{\"state\":\"ready\"}'; message='EOS config ready'; fi\n",
+                "printf '{\"timestamp\":\"2026-11-01T10:00:01.000Z\",\"level\":\"info\",",
+                "\"source\":\"%s\",\"core\":\"eos\",\"event_code\":\"%s_ready\",",
+                "\"run_id\":\"%s\",\"message\":\"%s\",\"fields\":%s}\\n' ",
+                "\"$STUB_ID\" \"$STUB_ID\" \"$run\" \"$message\" \"$fields\" >&2\n",
+                "sleep 10\n"
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        let make = |id: &str, fail: bool| process::ProcessSpec {
+            id: id.into(),
+            path: format!("isos/process/component/{id}"),
+            settings: serde_json::from_value(json!({
+                "command":[script], "role":"eos", "start_timeout_ms":1000,
+                "env":{"STUB_ID":id,"STUB_FAIL":if fail {"1"} else {"0"}}
+            }))
+            .unwrap(),
+            package: None,
+            fingerprint: None,
+        };
+        let old_specs = [make("eos", false), make("config", false)];
+        let mut managers = Deployments::new();
+        let revision = "a".repeat(64);
+        let empty = crate::generated_v2::SecretPlan::new();
+        restart_processes_with_plan(
+            &paths,
+            &mut managers,
+            "test",
+            &revision,
+            &old_specs,
+            &empty,
+            true,
+        )
+        .unwrap();
+        let old_run = managers.get("test").unwrap().supervisor.run_id().to_owned();
+        let old_bundle = paths.runtime.join(format!("control-grants/test/{old_run}"));
+        assert!(old_bundle.is_dir());
+        let old_pid = managers
+            .get_mut("test")
+            .unwrap()
+            .supervisor
+            .status()
+            .unwrap()[0]
+            .pid;
+        let grant = old_bundle.join("egia-control.grant");
+        fs::set_permissions(&grant, fs::Permissions::from_mode(0o644)).unwrap();
+        let error = restart_processes_with_plan(
+            &paths,
+            &mut managers,
+            "test",
+            &revision,
+            &old_specs,
+            &empty,
+            true,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<crate::control_grants::Diagnostic>()
+                .unwrap()
+                .code,
+            "control_grant_unsafe_path"
+        );
+        assert_eq!(
+            managers
+                .get_mut("test")
+                .unwrap()
+                .supervisor
+                .status()
+                .unwrap()[0]
+                .pid,
+            old_pid
+        );
+        assert_eq!(managers.get("test").unwrap().supervisor.run_id(), old_run);
+        fs::set_permissions(&grant, fs::Permissions::from_mode(0o600)).unwrap();
+        let mut candidate_specs = [make("eos", false), make("config", false)];
+        candidate_specs[1]
+            .settings
+            .env
+            .insert("ISOS_R03_TEST_FAIL_DELIVERY".into(), "1".into());
+        let error = restart_processes_with_plan(
+            &paths,
+            &mut managers,
+            "test",
+            &revision,
+            &candidate_specs,
+            &empty,
+            true,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("previous revision restored"));
+        assert!(error.to_string().contains("control_grant_delivery_failed"));
+        let recovered = managers.get_mut("test").unwrap();
+        let recovery_run = recovered.supervisor.run_id().to_owned();
+        assert_ne!(recovery_run, old_run);
+        assert_eq!(recovered.supervisor.status().unwrap().len(), 2);
+        assert!(!old_bundle.exists());
+        assert!(
+            paths
+                .runtime
+                .join(format!("control-grants/test/{recovery_run}"))
+                .exists()
+        );
+        let events = log_store::LogStore::new(&paths, "test")
+            .unwrap()
+            .read("all", None, 100)
+            .unwrap();
+        let candidate_run = events["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|line| line["event_code"] == "deployment_failed")
+            .unwrap()["run_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_ne!(candidate_run, old_run);
+        assert_ne!(candidate_run, recovery_run);
+        assert!(
+            !paths
+                .runtime
+                .join(format!("control-grants/test/{candidate_run}"))
+                .exists()
+        );
+        recovered.supervisor.stop();
+    }
 
     #[test]
     fn rejected_start_is_logged_under_manager_session_before_reply() {
@@ -1322,7 +1642,8 @@ mod restart_tests {
                 "test",
                 "revision",
                 &[spec("/bin/false")],
-                &plan
+                &plan,
+                false
             )
             .is_err()
         );
@@ -1334,6 +1655,7 @@ mod restart_tests {
             "revision",
             &[spec("/bin/sleep")],
             &plan,
+            false,
         )
         .unwrap();
         let events = log_store::LogStore::new(&paths, "test")
@@ -1383,6 +1705,7 @@ mod restart_tests {
             "revision",
             &[spec],
             &crate::generated_v2::SecretPlan::new(),
+            false,
         )
         .unwrap_err();
         assert!(error.downcast_ref::<ScopePublishFailure>().is_some());
@@ -1394,6 +1717,46 @@ mod restart_tests {
                 .as_array()
                 .unwrap()
                 .len(),
+            0
+        );
+    }
+
+    #[test]
+    fn managed_scope_publication_failure_retires_prepared_grants() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = config::Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        paths.prepare().unwrap();
+        let specs = ["eos", "config"].map(|id| process::ProcessSpec {
+            id: id.into(),
+            path: format!("isos/process/component/{id}"),
+            settings: serde_json::from_value(json!({
+                "command": ["/bin/sleep", "30"], "role": "eos", "start_timeout_ms": 200
+            }))
+            .unwrap(),
+            package: None,
+            fingerprint: None,
+        });
+        let mut managers = Deployments::new();
+        let error = start_prepared_processes(
+            &paths,
+            &mut managers,
+            "p07-publish-fail",
+            &"a".repeat(64),
+            &specs,
+            &crate::generated_v2::SecretPlan::new(),
+            true,
+        )
+        .unwrap_err();
+        assert!(error.downcast_ref::<ScopePublishFailure>().is_some());
+        assert!(managers.is_empty());
+        assert_eq!(
+            fs::read_dir(paths.runtime.join("control-grants/p07-publish-fail"))
+                .unwrap()
+                .count(),
             0
         );
     }

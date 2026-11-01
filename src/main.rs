@@ -6,6 +6,8 @@ mod backend;
 mod cli;
 #[path = "app/config.rs"]
 mod config;
+#[path = "runtime/control_grants.rs"]
+mod control_grants;
 #[path = "runtime/core_bins.rs"]
 mod core_bins;
 #[path = "runtime/core_setup.rs"]

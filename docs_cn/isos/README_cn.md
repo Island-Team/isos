@@ -4,4 +4,6 @@ IsOS 在本地管理已保存图、后端软件包、工作台 API 和直接子�
 
 已保存的 `.nodes.json` 图是唯一部署路径；可选用户单元可运行产品模式的 `isos serve`。**当前程序写入 `0.1.0`、读取安全的 `1.0.0` 与 `0.1.0`，并提供按修订号检查的显式迁移。**节点类型独立版本化。IsOS 校验 MuJoCo 软件包并启动 EOS；EOS 启动 MuJoCo 并连接适配器；EGIA common 节点当前仅供设计。P01 [已验证软件包契约](interfaces/package-verification_cn.md)说明下一步完整性边界。后续目标行为在各契约中标明。
 
+R03 的[托管控制授权契约](interfaces/control-grants_cn.md)和[启动设计](design/control-grants_cn.md)定义 IsOS 尚待实现的签发与子进程交接。仅 EOS 注入测试授权通过，不能关闭托管 R03。
+
 [English](../../docs/isos/README.md)
