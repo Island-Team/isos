@@ -265,8 +265,9 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<(), Diagnostic> {
 
 fn read_selection(generated: &Path) -> Result<Option<Selection>, Diagnostic> {
     let path = generated.join("selection.json");
+    check_parent_dirs(&path, "snapshot")?;
     match fs::symlink_metadata(&path) {
-        Ok(metadata) if !metadata.file_type().is_file() => return Err(mismatch()),
+        Ok(metadata) if !metadata.file_type().is_file() => return Err(unsafe_path("snapshot")),
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err(mismatch()),
@@ -300,11 +301,24 @@ fn leaf(generated: &Path, revision: &str, generation: &str) -> PathBuf {
 }
 
 fn inspect_regular(path: &Path, stage: &'static str) -> Result<Vec<u8>, Diagnostic> {
+    check_parent_dirs(path, stage)?;
     let metadata = fs::symlink_metadata(path).map_err(|_| missing(stage))?;
     if !metadata.file_type().is_file() {
         return Err(unsafe_path(stage));
     }
     fs::read(path).map_err(|_| missing(stage))
+}
+
+fn check_parent_dirs(path: &Path, stage: &'static str) -> Result<(), Diagnostic> {
+    for parent in path.ancestors().skip(1) {
+        match fs::symlink_metadata(parent) {
+            Ok(metadata) if !metadata.file_type().is_dir() => return Err(unsafe_path(stage)),
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(unsafe_path(stage)),
+        }
+    }
+    Ok(())
 }
 
 fn walk_tree(root: &Path, source: &str) -> Result<(Vec<DefaultEntry>, Files), Diagnostic> {
@@ -560,8 +574,11 @@ fn effective_files(
     let (roots, defaults, component) = defaults(graph)?;
     if roots.is_some() {
         require_egia_owner_overlays(owner_files)?;
+    } else if owner_files.iter().any(|(path, _)| path.starts_with("egia")) {
+        return Err(unsafe_path("render"));
     }
     let mut files = BTreeMap::new();
+    let mut owner_paths = BTreeSet::new();
     for (relative, bytes) in component {
         files.insert(PathBuf::from("egia").join(relative), bytes);
     }
@@ -572,7 +589,10 @@ fn effective_files(
             relative.clone()
         };
         checked_relative(&path).map_err(|_| unsafe_path("render"))?;
-        if files.insert(path, bytes.clone()).is_some() && !relative.starts_with("egia") {
+        if !owner_paths.insert(path.clone()) {
+            return Err(unsafe_path("render"));
+        }
+        if files.insert(path, bytes.clone()).is_some() && !is_egia_overlay(relative) {
             return Err(unsafe_path("render"));
         }
     }
@@ -591,7 +611,23 @@ fn effective_files(
     Ok((files.into_iter().collect(), roots, defaults))
 }
 
+fn is_egia_overlay(path: &Path) -> bool {
+    [
+        "egia/egia.toml",
+        "egia/modes.toml",
+        "egia/profiles/isos.toml",
+    ]
+    .iter()
+    .any(|allowed| path == Path::new(allowed))
+}
+
 fn require_egia_owner_overlays(owner_files: &[(PathBuf, Vec<u8>)]) -> Result<(), Diagnostic> {
+    if owner_files
+        .iter()
+        .any(|(path, _)| path.starts_with("egia") && !is_egia_overlay(path))
+    {
+        return Err(unsafe_path("render"));
+    }
     for required in [
         "egia/egia.toml",
         "egia/modes.toml",
@@ -733,6 +769,40 @@ fn injected_parent_sync_failure(path: &Path) -> bool {
     }
 }
 
+/// Debug-build fault injection for the P04 HTTP publication replay only.
+#[cfg(debug_assertions)]
+pub(crate) fn test_fail_parent_sync(path: &Path, kind: &str) -> bool {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static FIRED: AtomicBool = AtomicBool::new(false);
+    if std::env::var("ISOS_P04_TEST_FAIL_SYNC").ok().as_deref() != Some(kind) {
+        return false;
+    }
+    let Some(home) = std::env::var_os("ISOS_HOME").map(PathBuf::from) else {
+        return false;
+    };
+    let Some(deployment) = std::env::var_os("ISOS_P04_TEST_FAIL_SYNC_DEPLOYMENT") else {
+        return false;
+    };
+    let deployment = deployment.to_string_lossy();
+    if crate::process::validate_deployment_name(&deployment).is_err() {
+        return false;
+    }
+    let required_parent = home.join(format!("data/generated/{deployment}/v2/required"));
+    let scoped = match kind {
+        "selection" => path == home.join(format!("data/generated/{deployment}/selection.json")),
+        "marker" => {
+            path.parent() == Some(required_parent.as_path())
+                && path
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .is_some_and(valid_hash)
+        }
+        "graph" => path == home.join(format!("config/deployments/{deployment}.nodes.json")),
+        _ => false,
+    };
+    scoped && !FIRED.swap(true, Ordering::SeqCst)
+}
+
 fn publish_file_replace(path: &Path, bytes: &[u8]) -> Result<(), Diagnostic> {
     let parent = path.parent().ok_or_else(|| unsafe_path("publish"))?;
     private_dir(parent)?;
@@ -746,6 +816,20 @@ fn publish_file_replace(path: &Path, bytes: &[u8]) -> Result<(), Diagnostic> {
     fs::rename(&temporary, path).map_err(|_| unsafe_path("publish"))?;
     #[cfg(test)]
     if injected_parent_sync_failure(path) {
+        return Err(commit_uncertain());
+    }
+    #[cfg(debug_assertions)]
+    if test_fail_parent_sync(
+        path,
+        if path
+            .file_name()
+            .is_some_and(|name| name == "selection.json")
+        {
+            "selection"
+        } else {
+            "marker"
+        },
+    ) {
         return Err(commit_uncertain());
     }
     fs::File::open(parent)
@@ -860,15 +944,17 @@ fn verify_marker(path: &Path, revision: &str) -> Result<(), Diagnostic> {
 }
 
 fn marker_present(path: &Path) -> Result<bool, Diagnostic> {
+    check_parent_dirs(path, "snapshot")?;
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_file() => Ok(true),
-        Ok(_) => Err(mismatch()),
+        Ok(_) => Err(unsafe_path("snapshot")),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(_) => Err(mismatch()),
     }
 }
 
 fn verify_leaf(root: &Path, expected: &Manifest) -> Result<(), Diagnostic> {
+    check_parent_dirs(root, "snapshot")?;
     let bytes = inspect_regular(&root.join("manifest.json"), "snapshot")?;
     let manifest: Manifest = serde_json::from_slice(&bytes).map_err(|_| mismatch())?;
     if manifest != *expected || manifest.schema_version != 2 {
@@ -877,14 +963,9 @@ fn verify_leaf(root: &Path, expected: &Manifest) -> Result<(), Diagnostic> {
     let mut actual = BTreeSet::new();
     let mut pending = vec![root.to_path_buf()];
     while let Some(dir) = pending.pop() {
-        if fs::symlink_metadata(&dir)
-            .map_err(|_| mismatch())?
-            .permissions()
-            .mode()
-            & 0o777
-            != 0o700
-        {
-            return Err(mismatch());
+        let metadata = fs::symlink_metadata(&dir).map_err(|_| mismatch())?;
+        if !metadata.file_type().is_dir() || metadata.permissions().mode() & 0o777 != 0o700 {
+            return Err(unsafe_path("snapshot"));
         }
         for child in fs::read_dir(&dir).map_err(|_| mismatch())? {
             let path = child.map_err(|_| mismatch())?.path();
@@ -1178,6 +1259,35 @@ mod tests {
     }
 
     #[test]
+    fn symlinked_generated_ancestors_reject_byte_identical_leaf() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path());
+        let graph = graph();
+        let revision = applied(&paths, &graph);
+        let root = publish(&paths, "test", &graph, &revision, &files(b"profile")).unwrap();
+        let generated = paths.generated("test");
+        let moved = paths.data.join("generated-copy");
+        fs::rename(&generated, &moved).unwrap();
+        std::os::unix::fs::symlink(&moved, &generated).unwrap();
+        let error = selected(&paths, "test", &graph, &revision, None).unwrap_err();
+        assert_eq!(
+            (error.code, error.stage, error.path.as_str()),
+            ("generated_unsafe_path", "snapshot", "")
+        );
+        fs::remove_file(&generated).unwrap();
+        fs::rename(&moved, &generated).unwrap();
+        let revision_dir = root.parent().unwrap();
+        let moved_revision = generated.join("v2/revision-copy");
+        fs::rename(revision_dir, &moved_revision).unwrap();
+        std::os::unix::fs::symlink(&moved_revision, revision_dir).unwrap();
+        let error = selected(&paths, "test", &graph, &revision, None).unwrap_err();
+        assert_eq!(
+            (error.code, error.stage, error.path.as_str()),
+            ("generated_unsafe_path", "snapshot", "")
+        );
+    }
+
+    #[test]
     fn valid_selection_recovers_missing_marker_only_for_saved_revision() {
         let temp = tempfile::tempdir().unwrap();
         let paths = paths(temp.path());
@@ -1226,7 +1336,7 @@ mod tests {
             selected(&paths, "test", &graph, &revision, None)
                 .unwrap_err()
                 .code,
-            "generated_manifest_mismatch"
+            "generated_unsafe_path"
         );
         fs::remove_file(&map).unwrap();
         fs::rename(&copy, &map).unwrap();
@@ -1424,6 +1534,13 @@ mod tests {
             ),
         ];
         require_egia_owner_overlays(&complete).unwrap();
+        let mut extra = complete.clone();
+        extra.push((PathBuf::from("egia/prompts.toml"), b"override".to_vec()));
+        let error = require_egia_owner_overlays(&extra).unwrap_err();
+        assert_eq!(
+            (error.code, error.stage, error.path.as_str()),
+            ("generated_unsafe_path", "render", "")
+        );
         for omitted in [
             "egia/egia.toml",
             "egia/modes.toml",

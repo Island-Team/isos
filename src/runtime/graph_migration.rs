@@ -127,6 +127,10 @@ fn sync_graph_parent(path: &std::path::Path) -> Result<(), MigrationError> {
             return Err(MigrationError::OutcomeUncertain);
         }
     }
+    #[cfg(debug_assertions)]
+    if crate::generated_v2::test_fail_parent_sync(path, "graph") {
+        return Err(MigrationError::OutcomeUncertain);
+    }
     fs::File::open(path.parent().unwrap())
         .and_then(|file| file.sync_all())
         .map_err(|_| MigrationError::OutcomeUncertain)

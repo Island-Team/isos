@@ -336,8 +336,8 @@ pub fn prepare_run(paths: &Paths, name: &str, expected_revision: &str) -> Result
             revision: expected_revision.to_owned(),
             changes: Vec::new(),
         };
-        let prepared = crate::graph_migration::prepare(paths, name, &proposal)
-            .map_err(|diagnostic| anyhow::anyhow!(diagnostic.to_string()))?;
+        let prepared =
+            crate::graph_migration::prepare(paths, name, &proposal).map_err(anyhow::Error::new)?;
         verify_rendered_snapshot(paths, name, &graph, expected_revision, &prepared.files)?;
         verify_launch_inputs(paths, name)?;
         return Ok(());
@@ -835,6 +835,23 @@ mod tests {
                 .to_string()
                 .contains("generated_render_mismatch")
         );
+    }
+
+    #[test]
+    fn prepare_run_preserves_structured_graph_preflight_diagnostic() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path());
+        paths.prepare().unwrap();
+        let graph = json!({"version":"0.1.0","robot":{},"cores":{}});
+        let bytes = serde_json::to_vec_pretty(&graph).unwrap();
+        let graph_revision = revision(&bytes);
+        config::atomic_write(&paths.node_graph_path("default"), &bytes).unwrap();
+        let error = prepare_run(&paths, "default", &graph_revision).unwrap_err();
+        let diagnostic = error
+            .downcast_ref::<crate::graph_compat::Diagnostic>()
+            .expect("typed preparation diagnostic survives Run preflight");
+        assert_eq!(diagnostic.code, "owner_reader_unavailable");
+        assert_eq!(diagnostic.path, "/cores/eos");
     }
 
     #[test]
