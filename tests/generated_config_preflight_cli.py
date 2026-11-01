@@ -393,6 +393,42 @@ class GeneratedConfigReplay(unittest.TestCase):
         )
         self.assertEqual(self.case.graph_path.read_bytes(), graph_before)
 
+    def test_later_child_missing_secret_keeps_active_pids(self):
+        self.case.seed_egia_distribution()
+        executable = self.case.root / "egia-install/bin/egia"
+        executable.write_text("#!/bin/sh\nsleep 60\n")
+        self.case.apply()
+        self.case.start_server()
+        status, reply = self.case.control("run")
+        self.assertEqual(status, 200, reply)
+        status, reply = self.case.api("process-status")
+        self.assertEqual(status, 200, reply)
+        active = reply["data"]
+        pids = {process["id"]: process["pid"] for process in active["processes"]}
+        self.assertTrue(pids)
+        graph = json.loads(self.case.graph_path.read_text())
+        nodes = graph["cores"]["isos"]["layers"]["process"]["groups"]["component"]["nodes"]
+        nodes["egia"] = {
+            "id": "egia", "node_type": "isos.process.component@v0.1",
+            "label": "EGIA agent", "description": "Managed agent for secret preflight",
+            "capabilities": ["process"],
+            "settings": {"role": "egia", "args": [],
+                         "depends_on": ["cores/isos/layers/process/groups/component/nodes/eos"],
+                         "env_from": {"EGIA_API_KEY": "P04_EGIA_SECRET"}},
+        }
+        self.case.apply(graph)
+        status, rejected = self.case.control("restart")
+        self.assertEqual(status, 422, rejected)
+        first = rejected["data"]["diagnostics"][0]
+        self.assertEqual((first["code"], first["path"], first["stage"]),
+                         ("generated_missing_secret",
+                          "/cores/isos/layers/process/groups/component/nodes/egia/settings/env_from/EGIA_API_KEY",
+                          "spawn"))
+        status, reply = self.case.api("process-status")
+        self.assertEqual(status, 200, reply)
+        self.assertEqual({process["id"]: process["pid"] for process in reply["data"]["processes"]},
+                         pids)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
