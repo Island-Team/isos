@@ -503,12 +503,29 @@ impl ServiceManager {
         let mut child = command
             .spawn()
             .with_context(|| format!("spawn service {}", spec.id))?;
+        let pid = child.id();
         let source = format!("service-{}", spec.id);
         if let Some(stdout) = child.stdout.take() {
-            crate::log_store::capture(stdout, self.logs.clone(), source.clone(), "info");
+            crate::log_store::capture(
+                stdout,
+                self.logs.clone(),
+                source.clone(),
+                "stdout",
+                crate::manager::manager_session_id().into(),
+                pid,
+                None,
+            );
         }
         if let Some(stderr) = child.stderr.take() {
-            crate::log_store::capture(stderr, self.logs.clone(), source, "warn");
+            crate::log_store::capture(
+                stderr,
+                self.logs.clone(),
+                source,
+                "stderr",
+                crate::manager::manager_session_id().into(),
+                pid,
+                None,
+            );
         }
         Ok(child)
     }

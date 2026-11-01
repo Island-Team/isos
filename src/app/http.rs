@@ -128,29 +128,61 @@ fn record(app: &App, source: &str, message: &str) {
         let _ = logs.append(source, "info", message);
     }
 }
+
+fn record_graph_failure(app: &App, result: &ApiResult) {
+    let body = match result {
+        Ok(Json(body)) if body["data"]["valid"] == false => body,
+        Err((StatusCode::FORBIDDEN | StatusCode::UNAUTHORIZED, _)) => return,
+        Err((_, Json(body))) => body,
+        _ => return,
+    };
+    if let Ok(logs) = LogStore::new(&app.paths, &app.deployment) {
+        let diagnostic = &body["data"]["diagnostics"][0];
+        let mut fields = serde_json::Map::new();
+        if let Some(code) = diagnostic["code"].as_str().filter(|s| s.len() <= 256) {
+            fields.insert("diagnostic_code".into(), json!(code));
+        }
+        if let Some(path) = diagnostic["path"].as_str().filter(|s| s.len() <= 256) {
+            fields.insert("diagnostic_path".into(), json!(path));
+        }
+        let correlation = crate::manager::next_correlation_id();
+        let _ = logs.append_event_context(
+            "isos",
+            "error",
+            "deployment_preflight_failed",
+            "Deployment preflight failed before launch",
+            crate::log_store::LogContext {
+                run_id: Some(crate::manager::manager_session_id()),
+                correlation_id: Some(&correlation),
+                node_path: None,
+                fields: Value::Object(fields),
+            },
+        );
+    }
+}
 fn record_package(
     app: &App,
     level: &str,
     code: &str,
     id: &str,
     version: &str,
-    source_kind: &str,
+    _source_kind: &str,
     path: Option<&std::path::Path>,
 ) {
     if let Ok(logs) = LogStore::new(&app.paths, &app.deployment) {
         let receipt = path
-            .and_then(|path| fs::read(path.join("receipt.json")).ok())
-            .and_then(|bytes| serde_json::from_slice::<packages::Receipt>(&bytes).ok());
+            .and_then(|_| packages::verify(&app.paths, id, version).ok())
+            .map(|verified| verified.receipt);
         let correlation = crate::manager::next_correlation_id();
         let _ = logs.append_event_context("packages", level, code,
             if level == "error" { "Package verification or installation failed" } else if code == "package_verified" { "Verified package release recorded" } else { "Local package link recorded without a release manifest" },
-            crate::log_store::LogContext { run_id: Some(crate::manager::manager_session_id()), correlation_id: Some(&correlation),
+            crate::log_store::LogContext { run_id: Some(crate::manager::manager_session_id()), correlation_id: Some(&correlation), node_path: None,
             fields: json!({"package_id":id,"package_version":version,
                 "source_commit":receipt.as_ref().and_then(|receipt| receipt.source_commit.as_deref()),
                 "asset_sha256":receipt.as_ref().and_then(|receipt| receipt.asset_sha256.as_deref()),
                 "release_sha256":receipt.as_ref().and_then(|receipt| receipt.release_sha256.as_deref()),
                 "payload_sha256":receipt.as_ref().and_then(|receipt| receipt.payload_sha256.as_deref()),
-                "source_kind":source_kind}) });
+                "source_kind":receipt.as_ref().and_then(|receipt| receipt.source_kind.as_deref())}) });
     }
 }
 fn authorized(
@@ -503,6 +535,16 @@ async fn validate_node_graph(
     headers: HeaderMap,
     Json(edit): Json<NodeGraphEdit>,
 ) -> ApiResult {
+    let result = validate_node_graph_inner(State(app.clone()), headers, Json(edit)).await;
+    record_graph_failure(&app, &result);
+    result
+}
+
+async fn validate_node_graph_inner(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(edit): Json<NodeGraphEdit>,
+) -> ApiResult {
     authorized(&app, &headers)?;
     if edit.schema_version != 1 {
         return Err(err(StatusCode::BAD_REQUEST, "API schema_version must be 1"));
@@ -554,6 +596,16 @@ async fn validate_node_graph(
 }
 
 async fn apply_node_graph(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(edit): Json<NodeGraphEdit>,
+) -> ApiResult {
+    let result = apply_node_graph_inner(State(app.clone()), headers, Json(edit)).await;
+    record_graph_failure(&app, &result);
+    result
+}
+
+async fn apply_node_graph_inner(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
     Json(edit): Json<NodeGraphEdit>,
@@ -1374,6 +1426,49 @@ mod tests {
     use tower::ServiceExt;
 
     #[test]
+    fn graph_failure_event_keeps_structured_path_and_manager_session() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = App {
+            paths: Paths {
+                config: temp.path().join("config"),
+                data: temp.path().join("data"),
+                runtime: temp.path().join("run"),
+            },
+            deployment: "default".into(),
+        };
+        let result = Ok(Json(json!({"data":{"valid":false,"diagnostics":[
+            {"code":"unsupported_core","path":"/cores/evil"}
+        ]}})));
+        record_graph_failure(&app, &result);
+        let lines = LogStore::new(&app.paths, "default")
+            .unwrap()
+            .read("isos", None, 10)
+            .unwrap();
+        let event = &lines["lines"][0];
+        assert_eq!(event["event_code"], "deployment_preflight_failed");
+        assert_eq!(event["run_id"], crate::manager::manager_session_id());
+        assert_eq!(event["fields"]["diagnostic_code"], "unsupported_core");
+        assert_eq!(event["fields"]["diagnostic_path"], "/cores/evil");
+        record_graph_failure(
+            &app,
+            &Err(err(
+                StatusCode::FORBIDDEN,
+                "cross-site request requires Origin",
+            )),
+        );
+        assert_eq!(
+            LogStore::new(&app.paths, "default")
+                .unwrap()
+                .read("isos", None, 10)
+                .unwrap()["lines"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
     fn edge_diagnostic_names_the_wire_and_registered_data_types() {
         let graph = json!({"version":"1.0.0","cores":{"eos":{"layers":{"control":{"groups":{"manual":{"nodes":{"target":{"node_type":"target","inputs":{"status":{"node":"eos/control/manual/source","output":"out"}}},"source":{"node_type":"source"}}}}}}}}});
         let catalog = json!({"types":[
@@ -1989,7 +2084,7 @@ mod tests {
             "island/mujoco-sim"
         );
         assert_eq!(lines["lines"][0]["fields"]["package_version"], "1.0.0");
-        assert_eq!(lines["lines"][0]["fields"]["source_kind"], "local_link");
+        assert!(lines["lines"][0]["fields"]["source_kind"].is_null());
         assert_eq!(lines["lines"][1]["event_code"], "package_version_exists");
         assert_eq!(
             lines["lines"][1]["fields"]["package_id"],

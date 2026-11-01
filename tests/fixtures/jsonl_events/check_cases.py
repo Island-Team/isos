@@ -60,7 +60,7 @@ ROLE_CODES = {
                "bridge_stopping", "bridge_stopped"},
     "config": {"config_starting", "config_ready", "config_start_failed",
                "config_stopping", "config_stopped"},
-    "egia": set(),  # Closed until the reviewed owner P06 catalog is pinned.
+    "egia": set(json.loads((ROOT / "egia-role-policy.json").read_text())["codes"]),
 }
 
 
@@ -110,7 +110,7 @@ assert not valid_child({**raw, "node_path": "/cores/egia/layers/common/groups/so
 assert not valid_child({**raw, "event_code": "eos_unknown_ready"})
 assert not valid_child({**raw, "event_code": "events_suppressed"})
 assert valid_child({**raw, "event_code": "eos_events_suppressed", "fields": {"suppressed_count": 1}})
-assert not valid_child({**raw, "source": "egia", "core": "egia", "event_code": "egia_ready"}, role="egia")
+assert valid_child({**raw, "source": "egia", "core": "egia", "node_path": None, "event_code": "egia_ready", "message": "EGIA ready", "fields": {"generation": 3}}, role="egia")
 
 
 def normalize_legacy(request):

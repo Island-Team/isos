@@ -28,7 +28,7 @@ API 只绑定 `127.0.0.1`，不提供前端文件。IsosUI 通过地址和端口
 | `POST /api/isos/v1/packages/link` | `{id,version,path,manifest?}` | 链接本地包；`manifest` 是可选的 v4 发行 JSON 绝对路径。省略时若存在 `<path>/release.json`，IsOS 会读取它。 |
 | `GET /api/isos/v1/setup-status` | `{ready,issues,graph_revision,backends,process}` | Home 配置概况。 |
 | `POST /api/isos/v1/process-control` | `{schema_version:1,operation,revision?}` | `run`、`start`、`stop` 或 `restart`；可选修订防止操作过期视图。 |
-| `GET /api/isos/v1/process-status` | `{saved_revision,active_revision,state,last_error,package,processes}` | 固定包与直接子进程状态。 |
+| `GET /api/isos/v1/process-status` | `{saved_revision,active_revision,state,last_error,package,processes,run_id,log_ingest_rejected,log_ingest_rejected_by_reason,log_write_failed}` | 固定包、直接子进程及 P06 日志健康状态。 |
 | `GET /api/isos/v1/logs?source=all&cursor=...&limit=100&level=info` | `{lines:[{timestamp,level,source,event_code,message,pid}],next_cursor,rotated}` | 读取统一轮转 JSON 日志，并按 `level` 过滤。每次最多 200 行或 64 KiB；文件轮转时 `rotated` 为 true。 |
 | `GET /api/isos/v1/version` | `{api_schema_version,isos_version}` | 工作台兼容性检查。 |
 
@@ -90,7 +90,7 @@ Unix 套接字每行接收一个 JSON 请求：`{schema_version:1,op,deployment?
 
 `manager_shutdown` 停止所有图子进程和独立服务，然后结束 API、界面及管理器。`deployment_stop` 只影响指定部署。`services_list`、`services_validate`、`services_status`、`services_start`、`services_stop`、`services_restart` 和 `services_logs` 操作[独立服务定义](services_cn.md)；启动、停止、重启和日志请求需要 `service_id`，日志可带不透明的 `cursor` 及 1–200 的 `limit`。可执行文件摘要不同的 CLI 仍可请求关停，但不能启动或重启部署和服务。`isos status --json` 汇总部署状态、管理器身份和服务状态；`isos version check` 报告已配置核心、图和运行状态的就绪情况。
 
-日志 `source` 可为 `all`、`isos`、`services`、`service-gateway` 等服务来源、`packages`、`graph`、`ui`、`eos`、`egia`、`mujoco`、`bridge`、`config` 或通过校验的子进程 ID。`limit` 范围为 1–200，默认为 100；省略 `source` 时使用 `[logging].default_source`（默认 `all`）。每行包含 RFC 3339 UTC `timestamp`、`level`、`source`、`message`、`event_code` 和 `pid`；内部软件包事件还包含可为 null 的 `run_id`、`correlation_id` 和有界的 `fields`。HTTP 安装／链接成功事件记录 `fields.package_id`、`package_version`、`source_kind` 以及收据中可用的 `source_commit`／`asset_sha256`；没有发行清单的链接使用 `package_linked`，而非 `package_verified`。失败事件记录请求的精确包身份，不写入原始错误或本地路径。当前 MuJoCo 后端和可加载适配器的解析失败发出 `package_load_failed`，记录精确固定包及 `backend` 或 `adapter` 阶段，`run_id` 表示管理器会话，`correlation_id` 标识单次失败；图 sidecar 准入和无关的程序故障仍使用通用诊断。这些 ID 用于关联日志，不表示运行中的图修订。IsOS 记录自身诊断及选定的结构化子进程事件，不镜像普通标准输出或标准错误。即使当前文件已读完，`next_cursor` 仍为字符串，后续可用它继续轮询。日志目录权限为 `0700`、普通文件为 `0600`；达到 `[logging].max_bytes`（默认 256 KiB）后轮转，保留 `[logging].backups`（默认 2）份。日志源文件数量由 `[logging].max_sources` 限制（默认 32）；达到上限后，新来源只写入统一事件流，仍可按来源筛选。
+日志 `source` 可为 `all`、`isos`、`services`、`service-gateway` 等服务来源、`packages`、`graph`、`ui`、`eos`、`egia`、`mujoco`、`bridge`、`config` 或通过校验的子进程 ID。`limit` 范围为 1–200，默认为 100；省略 `source` 时使用 `[logging].default_source`（默认 `all`）。P06 新写入的每行包含 RFC 3339 UTC 毫秒 `timestamp`、`level`、`source`、`core`、可为 null 的 `node_path`、`event_code`、`run_id`、可为 null 的 `correlation_id`、`message`、有界的 `fields` 和观察到的 `pid`；旧日志行仍可读取。HTTP 安装／链接成功事件记录 `fields.package_id`、`package_version`、`source_kind` 以及收据中可用的 `source_commit`／`asset_sha256`；没有发行清单的链接使用 `package_linked`，而非 `package_verified`。失败事件记录请求的精确包身份，不写入原始错误或本地路径。当前 MuJoCo 后端和可加载适配器的解析失败发出 `package_load_failed`，记录精确固定包及 `backend` 或 `adapter` 阶段，`run_id` 表示管理器会话，`correlation_id` 标识单次失败；图 sidecar 准入和无关的程序故障仍使用通用诊断。这些 ID 用于关联日志，不表示运行中的图修订。IsOS 记录自身诊断及选定的结构化子进程事件，不镜像普通标准输出或标准错误。即使当前文件已读完，`next_cursor` 仍为字符串，后续可用它继续轮询。日志目录权限为 `0700`、普通文件为 `0600`；达到 `[logging].max_bytes`（默认 256 KiB）后轮转，保留 `[logging].backups`（默认 2）份。日志源文件数量由 `[logging].max_sources` 限制（默认 32）；达到上限后，新来源只写入统一事件流，仍可按来源筛选。
 
 `[logging].level` 按 `trace < debug < info < warn < error` 记录达到阈值的文件事件，默认为 `info`。HTTP 的 `level` 参数和 UI 选择器只过滤显示，不改变写入。终端状态和命令错误不受影响。`isos logs [source] --level warn` 读取同一日志库。
 
@@ -167,3 +167,5 @@ IsOS 在 `aether-profile setup --json` 或 `egia-config setup --json` 上发送 
 CLI 使用同一迁移引擎：`isos config migrate --preview --revision <saved-sha256>` 只输出建议修订、变更和诊断；`isos config migrate --revision <saved-sha256> --proposed-revision <preview-sha256>` 提交。它不接收图文件，也不从当前磁盘隐式推断预期修订。实现必须保持 HTTP 与 CLI 的错误等价。
 
 缺失图的 GET 与 Init 使用 G03 写入器生成 `0.1.0` 草稿；PUT 首次 Apply 必须显式使用 `revision:""`，后续 `0.1.0` 修改使用保存修订号。CLI 的新图／`0.1.0` 修改 Apply 使用显式 `--revision`。旧 `1.0.0` 图不因 Init 改写，结构相同的 Apply 保持无写入。新版本的 Run/Restart 从 `data/generated/<deployment>/<saved-revision>/` 选择经摘要校验的清单与 EOS 投影，并在启动前将每个已保存生成文件与精确已保存图的新归属方 render 比较；旧版平面 `generated/<deployment>/core-setup/launch-inputs.json` 仅用于 `1.0.0` 兼容。详情见[图契约](node-graph_cn.md#g03-写入器与快照选择)。
+
+P06 `GET /process-status` 的 `run_id` 为当前活动部署运行的 1–64 字节不透明 ASCII ID；无活动运行时为 `null`。`log_ingest_rejected` 与 `log_write_failed` 为管理器生命期内饱和的非负事件／写入次数；`log_ingest_rejected_by_reason` 是固定原因码到非负次数的有界对象。计数只表示日志健康，不表示 EOS 命令或实体停止结果。

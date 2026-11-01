@@ -64,8 +64,8 @@
     {
       "id": "egia_ready",
       "kind": "child",
-      "expected": "pending",
-      "assertion": "requires_reviewed_egia_owner_catalog"
+      "expected": "accept",
+      "assertion": "reviewed_egia_owner_catalog"
     },
     {
       "id": "child_source_spoof",

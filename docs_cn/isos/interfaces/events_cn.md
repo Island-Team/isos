@@ -2,7 +2,7 @@
 
 [English](../../../docs/isos/interfaces/events.md) · [配置与日志存储](configuration_cn.md) · [本地日志 API](local-api_cn.md) · [首次使用](../usage/get-started_cn.md) · [P06 任务](../../../../Island-eos/docs/island/implementation-todo.md)
 
-**目标设计——尚未实现。** IsOS 持有管理器会话、部署运行身份、私有分类日志、统一 `events.log` 与所选子进程事件接收。EOS 和 EGIA 持有各自事件的含义。IsosUI 读取 IsOS 事件流；不能仅凭事件推断实时健康。P06 增加共享的已脱敏 JSON Lines（JSONL）信封，P07 增加跨轮转的游标留存与首事件导航。
+**P06 已实现契约。** IsOS 持有管理器会话、部署运行身份、私有分类日志、统一 `events.log` 与所选子进程事件接收。EOS 和 EGIA 持有各自事件的含义。IsosUI 读取 IsOS 事件流；不能仅凭事件推断实时健康。P06 增加共享的已脱敏 JSON Lines（JSONL）信封，P07 增加跨轮转的游标留存与首事件导航。
 
 ## 生产者与收集器边界
 
@@ -24,25 +24,29 @@
 
 ### 角色策略与旧套接字
 
-IsOS 发行版在目标 `src/runtime/event_policy.rs` 中携带经过审核的版本化角色策略。此表是收集器对事件码、类型化字段、级别、节点归属和可抑制类别的允许清单；它与所选 EOS／EGIA 归属契约固定对应，并用相应发行夹具测试。子进程不能通过 JSON、capability 回复或图值自行扩展。初始 EOS 策略从已审核的 EOS P06 归属事件契约复制精确事件码：runtime 的 `eos_starting`、`eos_ready`、`eos_start_failed`、`eos_stopping`、`eos_stopped`、`eos_package_admitted`、`eos_package_provenance_unavailable`、`eos_backend_ready`、`eos_backend_lost`、`eos_stop_unconfirmed` 和仅 runtime 可发的 `eos_events_suppressed`；bridge 的 `bridge_starting`、`bridge_ready`、`bridge_start_failed`、`bridge_stopping`、`bridge_stopped`；config 的 `config_starting`、`config_ready`、`config_start_failed`、`config_stopping`、`config_stopped`。EOS 的 `node_path` 必须指向已准入 EOS 节点。EGIA 角色在已审核的 P06 归属目录固定到同一表前，对未列出的事件码保持关闭；仅有所选 EGIA 子进程和有效 `run_id` 不授予任意事件准入。只有 IsOS 构造 `source:isos`、`core:isos` 的 `events_suppressed`，字段限于有界的 `suppressed_source`、`suppressed_event_code` 和 `count`；子进程声称此码时被拒绝。角色策略还拒绝仅对另一所选进程有效的事件码／字段组合。
+IsOS 发行版在目标 `src/runtime/event_policy.rs` 中携带经过审核的版本化角色策略。此表是收集器对事件码、类型化字段、级别、节点归属和可抑制类别的允许清单；它与所选 EOS／EGIA 归属契约固定对应，并用相应发行夹具测试。子进程不能通过 JSON、capability 回复或图值自行扩展。初始 EOS 策略从已审核的 EOS P06 归属事件契约复制精确事件码：runtime 的 `eos_starting`、`eos_ready`、`eos_start_failed`、`eos_stopping`、`eos_stopped`、`eos_package_admitted`、`eos_package_provenance_unavailable`、`eos_backend_ready`、`eos_backend_lost`、`eos_stop_unconfirmed` 和仅 runtime 可发的 `eos_events_suppressed`；bridge 的 `bridge_starting`、`bridge_ready`、`bridge_start_failed`、`bridge_stopping`、`bridge_stopped`；config 的 `config_starting`、`config_ready`、`config_start_failed`、`config_stopping`、`config_stopped`。EOS 的 `node_path` 必须指向已准入 EOS 节点。EGIA 角色已按 `tests/fixtures/jsonl_events/egia-role-policy.json` 固定经审核的 16 个 P06 事件码，对未列出的事件码保持关闭；仅有所选 EGIA 子进程和有效 `run_id` 不授予任意事件准入。只有 IsOS 构造 `source:isos`、`core:isos` 的 `events_suppressed`，字段限于有界的 `suppressed_source`、`suppressed_event_code` 和 `count`；子进程声称此码时被拒绝。角色策略还拒绝仅对另一所选进程有效的事件码／字段组合。
 
 schema-1 管理套接字 `log_append` 只认证同 UID 本地 peer，无法证明其是所选 EOS、EGIA、bridge 或 config 进程。调用方传入的 `role`、`source`、`event_code`、`message` 不能建立归属或就绪。P06 保留历史请求形状，对语法有效且非保留来源的请求继续返回 `{"accepted":true}`，包括历史 `source:"eos"` 请求；但所有此类追加都规范化为 `source:legacy_external`、`core:isos`、固定 `event_code:legacy_external_event`、固定安全 `message:"Legacy external event received"`、调用方级别、管理器会话 `run_id`、新生成的请求关联和管理器 PID。不可信的请求来源、事件码与消息不会写入共享流。已有保留来源拒绝规则仍有效。`legacy_external_event` 不影响所选子进程就绪或部署健康。经过验证的所选子进程 stderr 管道是 P06 向权威 `eos`、`bridge`、`config` 或 `egia` 来源写记录的唯一途径。
 
 启动前的 IsOS 包失败使用管理器会话和请求关联。`null` 表示收据值不可用，不得猜测：
 
 ```json
-{"timestamp":"2026-11-01T10:00:00.000Z","level":"error","source":"packages","core":"isos","node_path":"/cores/eos/layers/process/groups/mujoco/nodes/sim","event_code":"package_load_failed","run_id":"m42-abc","correlation_id":"p3","message":"Verified package input changed; relink the exact release","fields":{"package_id":"island/mujoco-sim","package_version":"0.1.1","source_kind":"local_link","release_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","payload_sha256":null,"stage":"payload"},"pid":42}
+{"timestamp":"2026-11-01T10:00:00.000Z","level":"error","source":"packages","core":"isos","node_path":"/cores/eos/layers/process/groups/mujoco/nodes/sim","event_code":"package_load_failed","run_id":"m42-abc","correlation_id":"p3","message":"Deployment package load failed before launch","fields":{"package_id":"island/mujoco-sim","package_version":"0.1.1","source_kind":null,"release_sha256":null,"payload_sha256":null,"stage":"payload"},"pid":42}
 ```
 
 启动后，所选 EOS 子进程在 stderr 写入 `eos_ready` 事件。原始 JSONL 对象不含 `pid`；收集器保留经过校验的归属、节点、运行和关联字段，并写入观察到的子进程 PID。存储后的事件为：
 
 ```json
-{"timestamp":"2026-11-01T10:00:01.000Z","level":"info","source":"eos","core":"eos","node_path":null,"event_code":"eos_ready","run_id":"r7-cde","correlation_id":null,"message":"EOS runtime ready","fields":{"state":"ready"},"pid":4242}
+{"timestamp":"2026-11-01T10:00:01.000Z","level":"info","source":"eos","core":"eos","node_path":null,"event_code":"eos_ready","run_id":"r7-cde","correlation_id":null,"message":"EOS runtime ready","fields":{"state":"ready","node_count":1},"pid":4242}
 ```
 
 ## 运行身份与生命周期
 
 管理器启动时创建一个会话 ID。包安装／链接、草稿 Validate、Apply、版本检查及被拒绝的 Run/Restart 预检使用该 ID；可识别请求还分配新的 `correlation_id`。即使旧部署仍在运行，这些也是管理器事件。首次通过预检的 `deployment_start` 在图、包、读取器、生成版本和秘密全部通过后、首个子进程启动前分配新的部署 `run_id`；同一代际全部子进程共享。对已运行代际重复 Start 返回现有 ID，不重复启动／就绪摘要。Restart 预检失败不改变活动运行，失败事件归于管理器会话。已开始替换子进程的 Restart 使用新运行 ID；替换失败时该尝试有终结失败事件，若恢复旧规格，恢复过程使用另一个 ID。已准入部署运行内部的自动子进程重启保留原运行 ID，每次尝试使用新关联 ID。Stop 和终结结果使用活动运行 ID。IsOS status 才是当前就绪的权威，而非最新日志或 PID。
+
+自动重启子进程时，IsOS 发出 `child_restart_attempt`（`warn`），在归属方就绪后发出 `child_restart_ready`（`info`）；两者使用相同的新 `correlation_id`，部署 `run_id` 不变。唯一字段 `process_id` 是经过验证的 1–48 字节 ASCII 子进程 ID，用于标识重启的所选进程。这些管理器事件不包含原始命令或环境值。
+
+部署 API 操作返回启动前失败之前，IsOS 以管理器会话 ID 和新关联 ID 发出 `source:isos`、`error` 级别的 `deployment_preflight_failed`。固定消息为 `Deployment preflight failed before launch`；已知结构化诊断提供有界的 `diagnostic_code` 和 `diagnostic_path` 字段。`deployment_starting` 之后的失败属于该运行。
 
 IsOS 在首个子进程前记录一条 `deployment_starting`，在全部必需就绪检查后记录一条 `deployment_ready`，之后只记录状态变化，并为每次运行记录一条终结 `deployment_stopped` 或 `deployment_failed`。EOS 和 EGIA 各自在自身前提完成后记录一次启动／就绪摘要，随后记录变化和终结结果。监听端口、已启动 PID 或探针成功都不是归属就绪事件。启动前失败在 API／CLI 返回已脱敏错误前使用管理器会话 ID 记录；分配运行 ID 后的子进程失败使用该运行 ID。无法持久化的事件通过有界丢弃／错误计数可见；日志故障不能阻塞执行器停止或进程回收。
 

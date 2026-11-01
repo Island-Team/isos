@@ -1,0 +1,36 @@
+{
+  "schema": "egia-jsonl-role-policy-p06-v1",
+  "source": "egia",
+  "core": "egia",
+  "codes": {
+    "egia_starting": {"level": "info", "message": "EGIA starting", "node_path": "null", "fields": {}},
+    "egia_ready": {"level": "info", "message": "EGIA ready", "node_path": "null", "fields": {"generation": "positive_integer"}},
+    "egia_start_failed": {"level": "error", "message": "EGIA startup failed", "node_path": "null", "fields": {"reason_code": "start_reason"}},
+    "egia_stopping": {"level": "info", "message": "EGIA stopping", "node_path": "null", "fields": {}},
+    "egia_stopped": {"level_by_state": {"stopped": "info", "stop_unconfirmed": "error"}, "message": "EGIA stopped", "node_path": "null", "fields": {"state": "stopped_state"}},
+    "egia_discovery_lost": {"level": "warn", "message": "EOS discovery unavailable", "node_path": "null", "fields": {"reason_code": "discovery_reason"}},
+    "egia_discovery_restored": {"level": "info", "message": "EOS discovery restored", "node_path": "null", "fields": {"generation": "positive_integer"}},
+    "egia_mission_started": {"level": "info", "message": "Mission started", "node_path": "null_or_admitted_egia", "fields": {"mission_id": "opaque_id"}},
+    "egia_mission_terminal": {"level_by_outcome": {"succeeded": "info", "failed": "error", "cancelled": "info", "suspended": "warn", "unknown": "error"}, "message": "Mission settled", "node_path": "null_or_admitted_egia", "fields": {"mission_id": "opaque_id", "outcome": "mission_outcome"}},
+    "egia_safety_rejected": {"level": "warn", "message": "Safety gate rejected request", "node_path": "null_or_admitted_egia", "fields": {"reason_code": "safety_reason", "mission_id?": "opaque_id", "operation_id?": "opaque_id"}},
+    "egia_safety_latched": {"level": "error", "message": "Safety latch engaged", "node_path": "null_or_admitted_egia", "fields": {"reason_code": "latch_reason"}},
+    "egia_operation_submitted": {"level": "info", "message": "Operation submitted to EOS", "node_path": "null_or_admitted_egia", "fields": {"operation_id": "opaque_id", "mission_id?": "opaque_id"}},
+    "egia_operation_terminal": {"level_by_outcome": {"succeeded": "info", "failed": "error", "cancelled": "info", "rejected": "warn"}, "message": "EOS operation settled", "node_path": "null_or_admitted_egia", "fields": {"operation_id": "opaque_id", "outcome": "operation_outcome"}},
+    "egia_operation_unknown": {"level": "error", "message": "EOS operation outcome unknown", "node_path": "null_or_admitted_egia", "fields": {"operation_id": "opaque_id", "reason_code": "unknown_reason"}},
+    "egia_recovery_required": {"level": "error", "message": "Operator reconciliation required", "node_path": "null_or_admitted_egia", "fields": {"reason_code": "recovery_reason", "mission_id?": "opaque_id"}},
+    "egia_events_suppressed": {"level": "warn", "message": "Repeated EGIA diagnostics suppressed", "node_path": "null", "fields": {"suppressed_count": "positive_integer"}}
+  },
+  "types": {
+    "positive_integer": {"json": "integer", "min": 1, "max": 4294967295},
+    "opaque_id": {"json": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$"},
+    "start_reason": ["config_invalid", "eos_unavailable", "listener_unavailable", "model_unavailable", "internal"],
+    "stopped_state": ["stopped", "stop_unconfirmed"],
+    "discovery_reason": ["eos_unavailable", "stale_generation", "watch_lost"],
+    "mission_outcome": ["succeeded", "failed", "cancelled", "suspended", "unknown"],
+    "safety_reason": ["estop_latched", "policy_denied", "capability_missing", "stale_generation", "invalid_request"],
+    "latch_reason": ["audit_fault", "operator_estop", "eos_unknown"],
+    "operation_outcome": ["succeeded", "failed", "cancelled", "rejected"],
+    "unknown_reason": ["timeout", "disconnect", "receipt_missing"],
+    "recovery_reason": ["unknown_outcome", "checkpoint_incomplete", "rediscovery_required"]
+  }
+}
