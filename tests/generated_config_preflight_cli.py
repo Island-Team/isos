@@ -217,6 +217,31 @@ class GeneratedConfigReplay(unittest.TestCase):
         self.assert_failure("manifest_file_tamper")
         self.assertEqual(self.case.graph_path.read_bytes(), before)
 
+    def test_restart_tamper_keeps_active_children(self):
+        self.case.apply()
+        self.case.start_server()
+        status, reply = self.case.control("run")
+        self.assertEqual(status, 200, reply)
+        status, reply = self.case.api("process-status")
+        self.assertEqual(status, 200, reply)
+        active = reply["data"]
+        self.assertEqual(active["state"], "running")
+        pids = {process["id"]: process["pid"] for process in active["processes"]}
+        self.assertTrue(pids)
+        _, _, leaf = self.case.selected()
+        with (leaf / "eos/graph.json").open("ab") as file:
+            file.write(b"\n")
+        status, rejected = self.case.control("restart")
+        self.assertEqual(status, 422, rejected)
+        first = rejected["data"]["diagnostics"][0]
+        self.assertEqual((first["code"], first["path"], first["stage"]),
+                         ("generated_manifest_mismatch", "", "snapshot"))
+        status, reply = self.case.api("process-status")
+        self.assertEqual(status, 200, reply)
+        after = reply["data"]
+        self.assertEqual(after["active_revision"], active["active_revision"])
+        self.assertEqual({process["id"]: process["pid"] for process in after["processes"]}, pids)
+
     def test_missing_secret_has_exact_pointer_and_no_value_leak(self):
         graph = json.loads(self.case.graph_path.read_text())
         eos = graph["cores"]["isos"]["layers"]["process"]["groups"]["component"]["nodes"]["eos"]
