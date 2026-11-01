@@ -199,6 +199,7 @@ fn invoke_with_env(
     if let Some(environment) = environment {
         command.envs(environment);
     }
+    command.env_remove(crate::skill_selection::ENV);
     unsafe {
         command.pre_exec(|| {
             if libc::setsid() < 0 {
@@ -841,6 +842,23 @@ mod tests {
         assert!(invoke(&script, &json!({"schema_version":1})).is_err());
         fs::write(&script, "#!/bin/sh\ncat >/dev/null\nprintf '{\"schema_version\":1,\"ok\":true,\"diagnostics\":[],\"files\":[{\"path\":\"eos/graph.json\"}]}'\n").unwrap();
         assert!(invoke(&script, &json!({"schema_version":1})).is_err());
+    }
+
+    #[test]
+    fn setup_adapter_does_not_receive_skill_selection_handoff() {
+        let temp = tempfile::tempdir().unwrap();
+        let script = temp.path().join("adapter");
+        fs::write(&script, "#!/bin/sh\ncat >/dev/null\nif [ -n \"${EOS_SKILL_SELECTION_FILE+x}\" ]; then exit 77; fi\nprintf '{\"schema_version\":1,\"ok\":true,\"diagnostics\":[],\"files\":[]}'\n").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut environment = std::collections::BTreeMap::new();
+        environment.insert(
+            crate::skill_selection::ENV.to_string(),
+            "/tmp/forgery".to_string(),
+        );
+        assert_eq!(
+            invoke_with_env(&script, &json!({"schema_version":1}), Some(&environment)).unwrap()["ok"],
+            true
+        );
     }
 
     #[test]

@@ -331,23 +331,7 @@ fn selected_file(
     }
     let name = CString::new(*pieces.last().unwrap())
         .map_err(|_| diagnostic("skill_library_unsafe", format!("{path}/library")))?;
-    let fd = unsafe {
-        libc::openat(
-            directory.as_raw_fd(),
-            name.as_ptr(),
-            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-        )
-    };
-    if fd < 0 {
-        return Err(diagnostic(
-            "skill_library_unsafe",
-            format!("{path}/library"),
-        ));
-    }
-    let mut opened = unsafe { File::from_raw_fd(fd) };
-    let actual = opened
-        .metadata()
-        .map_err(|_| diagnostic("skill_library_changed", format!("{path}/library")))?;
+    let (mut opened, actual) = open_selected(&directory, &name, path)?;
     if (before.dev(), before.ino(), before.len()) != (actual.dev(), actual.ino(), actual.len()) {
         return Err(diagnostic(
             "skill_library_changed",
@@ -386,16 +370,47 @@ fn selected_file(
     Ok(hex::encode(hash.finalize()))
 }
 
+fn open_selected(
+    directory: &File,
+    name: &CString,
+    path: &str,
+) -> std::result::Result<(File, fs::Metadata), Diagnostic> {
+    let fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+        )
+    };
+    if fd < 0 {
+        return Err(diagnostic(
+            "skill_library_unsafe",
+            format!("{path}/library"),
+        ));
+    }
+    let opened = unsafe { File::from_raw_fd(fd) };
+    let actual = opened
+        .metadata()
+        .map_err(|_| diagnostic("skill_library_changed", format!("{path}/library")))?;
+    if !actual.file_type().is_file() || !(1..=MAX_LIBRARY_BYTES).contains(&actual.len()) {
+        return Err(diagnostic(
+            "skill_library_unsafe",
+            format!("{path}/library"),
+        ));
+    }
+    Ok((opened, actual))
+}
+
 fn digest_file(path: &Path) -> std::result::Result<String, Diagnostic> {
     let file = OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)
         .map_err(|_| diagnostic("skill_library_changed", String::new()))?;
     let metadata = file
         .metadata()
         .map_err(|_| diagnostic("skill_library_changed", String::new()))?;
-    if metadata.len() > 65_536 {
+    if !metadata.file_type().is_file() || metadata.len() > 65_536 {
         return Err(diagnostic("skill_library_changed", String::new()));
     }
     let mut bytes = Vec::new();
@@ -491,19 +506,71 @@ pub fn compare_selected(
     let path = root.join(RELATIVE_FILE);
     match expected {
         Some(bytes) => {
-            let actual = fs::read(&path).map_err(|_| crate::generated_v2::snapshot_mismatch())?;
+            let actual = read_selected_bytes(root, bytes.len())?;
             if actual != bytes {
                 return Err(crate::generated_v2::snapshot_mismatch());
             }
             Ok(Some(path))
         }
         None => {
-            if path.exists() {
-                return Err(crate::generated_v2::snapshot_mismatch());
+            match fs::symlink_metadata(&path) {
+                Ok(_) => return Err(crate::generated_v2::snapshot_mismatch()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return Err(crate::generated_v2::snapshot_mismatch()),
             }
             Ok(None)
         }
     }
+}
+
+fn read_selected_bytes(
+    root: &Path,
+    expected_len: usize,
+) -> std::result::Result<Vec<u8>, crate::generated_v2::Diagnostic> {
+    let mismatch = crate::generated_v2::snapshot_mismatch;
+    if expected_len == 0 || expected_len > 65_536 {
+        return Err(mismatch());
+    }
+    let directory = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(root)
+        .map_err(|_| mismatch())?;
+    let isos = CString::new("isos").unwrap();
+    let fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            isos.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_DIRECTORY,
+        )
+    };
+    if fd < 0 {
+        return Err(mismatch());
+    }
+    let directory = unsafe { File::from_raw_fd(fd) };
+    let selection = CString::new("skill-selection.json").unwrap();
+    let fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            selection.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+        )
+    };
+    if fd < 0 {
+        return Err(mismatch());
+    }
+    let mut file = unsafe { File::from_raw_fd(fd) };
+    let metadata = file.metadata().map_err(|_| mismatch())?;
+    if !metadata.file_type().is_file() || metadata.len() != expected_len as u64 {
+        return Err(mismatch());
+    }
+    let mut actual = vec![0; expected_len];
+    file.read_exact(&mut actual).map_err(|_| mismatch())?;
+    let mut extra = [0_u8; 1];
+    if file.read(&mut extra).map_err(|_| mismatch())? != 0 {
+        return Err(mismatch());
+    }
+    Ok(actual)
 }
 
 pub fn apply_env(specs: &mut [crate::process::ProcessSpec], selected: Option<&Path>) {
@@ -525,10 +592,29 @@ pub fn verify_child_handoff(
     deployment: &str,
     spec: &crate::process::ProcessSpec,
 ) -> Result<()> {
-    let Some(expected) = spec.settings.env.get(ENV) else {
-        return Ok(());
+    let graph_path = paths.node_graph_path(deployment);
+    let saved = match crate::graph_compat::read(&graph_path) {
+        Ok(saved) => saved,
+        Err(_error)
+            if !graph_path.exists()
+                && spec.settings.skill_libraries.is_empty()
+                && !spec.settings.env.contains_key(ENV) =>
+        {
+            return Ok(());
+        }
+        Err(error) => return Err(error),
     };
-    let saved = crate::graph_compat::read(&paths.node_graph_path(deployment))?;
+    let has_selection = !entries(&saved.value)?.is_empty();
+    let expected = spec.settings.env.get(ENV);
+    if !has_selection {
+        ensure!(
+            expected.is_none(),
+            "unexpected EOS skill handoff; Apply again"
+        );
+        return Ok(());
+    }
+    let expected = expected
+        .ok_or_else(|| anyhow::anyhow!("selected EOS skill handoff is missing; Apply again"))?;
     let root =
         crate::generated_v2::selected_v2_root(paths, deployment, &saved.value, &saved.revision)?;
     let selected = compare_selected(paths, &saved.value, &saved.revision, &root)?;
@@ -547,7 +633,15 @@ pub fn scrub_inherited(command: &mut std::process::Command) {
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::os::unix::fs::{PermissionsExt, symlink};
+    use std::os::unix::{
+        ffi::OsStrExt,
+        fs::{PermissionsExt, symlink},
+    };
+
+    fn fifo(path: &Path) {
+        let name = CString::new(path.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    }
 
     fn graph(list: Value) -> Value {
         json!({"version":"0.1.0","robot":{},"cores":{"isos":{"layers":{"process":{"groups":{"component":{"nodes":{
@@ -716,6 +810,42 @@ mod tests {
     }
 
     #[test]
+    fn replaced_library_fifo_is_rejected_without_blocking() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = File::open(temp.path()).unwrap();
+        fifo(&temp.path().join("swapped.skill.so"));
+        let name = CString::new("swapped.skill.so").unwrap();
+        let started = std::time::Instant::now();
+        let error = open_selected(&directory, &name, "/selection/0").unwrap_err();
+        assert_eq!(error.code, "skill_library_unsafe");
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn selected_manifest_replacement_never_follows_symlink_or_blocks_on_fifo() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("isos");
+        fs::create_dir(&directory).unwrap();
+        let selected = directory.join("skill-selection.json");
+        fs::write(&selected, b"abc").unwrap();
+        assert_eq!(read_selected_bytes(temp.path(), 3).unwrap(), b"abc");
+        fs::remove_file(&selected).unwrap();
+        symlink(temp.path().join("outside.json"), &selected).unwrap();
+        assert_eq!(
+            read_selected_bytes(temp.path(), 3).unwrap_err().code,
+            "generated_manifest_mismatch"
+        );
+        fs::remove_file(&selected).unwrap();
+        fifo(&selected);
+        let started = std::time::Instant::now();
+        assert_eq!(
+            read_selected_bytes(temp.path(), 3).unwrap_err().code,
+            "generated_manifest_mismatch"
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[test]
     fn private_v2_generation_lists_selection_and_rejects_mutation() {
         let (_temp, paths, _source) = fixture();
         let value = graph(json!([pin("lib/island/skills/example.skill.so")]));
@@ -761,6 +891,14 @@ mod tests {
         }];
         apply_env(&mut specs, Some(&root.join(RELATIVE_FILE)));
         verify_child_handoff(&paths, "test", &specs[0]).unwrap();
+        specs[0].settings.env.remove(ENV);
+        assert!(
+            verify_child_handoff(&paths, "test", &specs[0])
+                .unwrap_err()
+                .to_string()
+                .contains("handoff is missing")
+        );
+        apply_env(&mut specs, Some(&root.join(RELATIVE_FILE)));
         fs::write(root.join(RELATIVE_FILE), b"{}").unwrap();
         assert!(verify_child_handoff(&paths, "test", &specs[0]).is_err());
         assert_eq!(

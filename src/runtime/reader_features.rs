@@ -364,6 +364,7 @@ fn probe(
     if let Some(environment) = environment {
         command.envs(environment);
     }
+    command.env_remove(crate::skill_selection::ENV);
     // Keep a helper's descendants inside the same deadline as the selected probe.
     unsafe {
         command.pre_exec(|| {
@@ -1019,5 +1020,19 @@ mod tests {
         let error = probe(&binary, "aether-runtime", "eos", false, None).unwrap_err();
         assert_eq!(error.code, "reader_identity_invalid");
         assert!(started.elapsed() < Duration::from_secs(8));
+    }
+
+    #[test]
+    fn capabilities_probe_does_not_receive_skill_selection_handoff() {
+        let root = tempfile::tempdir().unwrap();
+        let binary = root.path().join("aether-runtime");
+        fs::write(&binary, "#!/bin/sh\nif [ -n \"${EOS_SKILL_SELECTION_FILE+x}\" ]; then exit 77; fi\nprintf '%s\\n' '{\"binary\":\"aether-runtime\",\"product_version\":\"x\",\"features\":[]}'\n").unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut environment = BTreeMap::new();
+        environment.insert(
+            crate::skill_selection::ENV.to_string(),
+            "/tmp/forgery".to_string(),
+        );
+        probe(&binary, "aether-runtime", "eos", false, Some(&environment)).unwrap();
     }
 }
