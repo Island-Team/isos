@@ -2,7 +2,7 @@
 
 [English](../../../docs/isos/design/skill-selection.md) · [所有者契约](../interfaces/skill-selection_cn.md) · [生成配置](../interfaces/configuration_cn.md) · [软件包验证](../interfaces/package-verification_cn.md)
 
-**实现候选，仍待独立复核与跨所有者重放。** R04 扩展已实现的 P01/P04/P05 与 R03 边界。图在 EOS component 上选择有界的精确原生库；IsOS 不解释 ABI 描述符，也不执行技能代码。EOS host ABI 与 worker 契约负责这些行为。这里不新增图技能节点、步骤执行器、ActionList 或第二条执行器路径。
+**IsOS 选择切片已通过独立审查；R04 最终合并版本的门槛仍待完成。** R04 扩展已实现的 P01/P04/P05 与 R03 边界。图在 EOS component 上选择有界的精确原生库；IsOS 不解释 ABI 描述符，也不执行技能代码。EOS host ABI 与 worker 契约负责这些行为。这里不新增图技能节点、步骤执行器、ActionList 或第二条执行器路径。
 
 Apply 首先验证保存的 `0.1.0` 图与精确 EOS component 位置；按拒绝未知字段的结构解析最多 16 个 `skill_libraries` 项，在精确数组索引 JSON Pointer 上拒绝重复元组、错误 pin 和不安全相对路径。旧图读取器不投影此设置。然后将每项加入 P01 图 pin 集合；每个精确包重新验证一次，要求 `kind:"skill"`，以 nofollow 检查库路径分量、普通文件、1–64 MiB 上限及 SHA-256。选中库、收据、发布元数据和每个普通 payload 文件均须由有效 UID 拥有且 group/other 不可写（`mode & 0o022 == 0`），与 EOS worker 前检查一致。仅使用已验证句柄，不扫描 store 或递归搜索 `*.skill.so` 来选择库。同包可显式选择多库。
 
@@ -23,6 +23,12 @@ IsOS 实现候选（2026-11-02）：`cargo fmt --all -- --check`、`cargo clippy
 独立审查修复（2026-11-02）：`cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test --no-fail-fast`、`cargo build --all-targets`、`cargo test skill_selection -- --nocapture`、`python3 tests/fixtures/skill_selection/check_cases.py` 与 `git diff --check` 均通过。完整输出位于忽略的 `logs/test/20261102-r04-isos-review-fix/`（204 个单元测试、七个 CLI 指南测试、一个移除命令测试、九个边检查测试；12 个专项 skill-selection 单元测试及一个 CLI 测试；20 个冻结用例）。回归测试覆盖 FIFO 替换时不阻塞、无符号链接且有界的选择文件读取、丢失 EOS 交付、setup/capabilities 辅助进程环境隔离、旧版 HTTP Validate 优先返回字段指针，以及 EOS 64 KiB 选择文件限制。跨所有者资格验证仍待完成。
 
 跨所有者所有权检查对齐（2026-11-02）：`cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test --no-fail-fast`、`cargo build --all-targets`、`cargo test skill_selection -- --nocapture`、`cargo test writable_selected_skill_rejects_restart_before_old_process_stops -- --nocapture`、`python3 tests/fixtures/skill_selection/check_cases.py` 与 `git diff --check` 均通过。完整输出位于忽略的 `logs/test/20261102-r04-isos-owner-mode/`（207 个单元测试、七个 CLI 指南测试、一个移除命令测试、九个边检查测试；14 个专项 skill-selection 单元测试及一个 CLI 测试；20 个冻结用例）。测试拒绝选中库与无关 payload 文件的 `0775` 模式、拒绝 group 可写的 P01 收据和发布元数据，并证明失败的 Restart 保留旧 PID 与 run ID。跨所有者资格验证仍待完成。
+
+## 验收状态（2026-11-02）
+
+IsOS 选择所有者版本 `df481774d80e8988cb8e17170fa071dfbf267672` 已通过独立审查。干净 home 重放将该精确版本与 IsOS 事件版本 `7414f04b3e824ed29eb70cd799a9a2be4e94a546`、候选预检版本 `6e2bb328c61585e271e2f7c51f253c535e03bcc7` 和已审查的 EOS foundation、service、私有预检版本组合。P01 链接的原生 C guest 使候选 Restart 在停止旧子进程前返回 HTTP 422 `skill_catalog_preflight_rejected`，旧的类型化 SkillService 仍可使用，run ID、revision、三个 PID 与 grant 均不变。JSONL 轮转后仍可查到管理器会话故障与旧的就绪锚点。完整输入、命令与输出见 EOS 忽略目录 `logs/test/20261102-r04-oversize-cross-owner/qualification.md`。
+
+另一组干净 home TOCTOU 重放在私有 `ok:true` 之后修改链接库字节：旧进程停止前，Restart 返回 `package_changed` 且保留旧运行；旧进程停止后，候选启动失败，恢复原字节后旧 revision 在新运行中恢复。IsOS 交接之后的自动 EOS 重启遇到修改字节时，在就绪前被 EOS 新一轮准入拒绝。精确 hook、命令、结果与局限见 EOS 忽略目录 `logs/test/20261102-r04-toctou-final-heads/qualification.md`。组合后的 IsOS tree 通过 `cargo fmt --all -- --check`、严格 Clippy、`cargo test --no-fail-fast`（220 个单元、七个 CLI、一个移除命令和九个边检查测试）、`cargo build --all-targets`，以及 20 个选择、18 个预检和 31 个事件/10 个游标 fixture 检查；命令与完整输出见 EOS 忽略目录 `logs/test/20261102-r04-sequential-review/qualification.md`。这些均为临时组合；每次前置 squash 后仍须更新并独立审查依赖 PR，在最终合并版本上重放后才能关闭 R04。
 
 ## 精确诊断路径
 
