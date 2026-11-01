@@ -1144,6 +1144,7 @@ pub struct PackagePin {
 /// Collect only canonical, complete package pins declared by graph nodes.
 pub fn collect_pins(graph: &serde_json::Value) -> Result<Vec<PackagePin>> {
     let mut pins = BTreeMap::new();
+    let mut target_mujoco_process_pins = BTreeMap::new();
     let Some(cores) = graph.get("cores").and_then(serde_json::Value::as_object) else {
         return Ok(Vec::new());
     };
@@ -1186,6 +1187,15 @@ pub fn collect_pins(graph: &serde_json::Value) -> Result<Vec<PackagePin>> {
                                 })?;
                             validate_identity(id, version)
                                 .with_context(|| format!("invalid package pin at {path}"))?;
+                            if graph["version"] == "0.1.0"
+                                && node["node_type"] == "eos.process.mujoco@v0.1"
+                                && path == format!("{base}/package")
+                                && id == "island/mujoco-sim"
+                            {
+                                target_mujoco_process_pins
+                                    .entry((id.to_owned(), version.to_owned()))
+                                    .or_insert_with(|| path.clone());
+                            }
                             pins.entry((id.to_owned(), version.to_owned()))
                                 .or_insert(path);
                         }
@@ -1208,6 +1218,7 @@ pub fn collect_pins(graph: &serde_json::Value) -> Result<Vec<PackagePin>> {
             }
         }
     }
+    pins.extend(target_mujoco_process_pins);
     Ok(pins
         .into_iter()
         .map(|((id, version), path)| PackagePin { id, version, path })
@@ -1257,6 +1268,34 @@ mod pin_tests {
         assert_eq!(
             node_package_pins(&node),
             vec![("vendor/devices".into(), "2.0.0".into())]
+        );
+    }
+
+    #[test]
+    fn target_mujoco_process_pin_owns_duplicate_diagnostic_path() {
+        let adapter = serde_json::json!({
+            "node_type":"eos.hardware.base@v0.1",
+            "adapter":{"package":{"id":"island/mujoco-sim","version":"0.1.1"}}
+        });
+        let process = serde_json::json!({
+            "node_type":"eos.process.mujoco@v0.1",
+            "package":{"id":"island/mujoco-sim","version":"0.1.1"}
+        });
+        let mut graph = serde_json::json!({"version":"0.1.0","cores":{"eos":{"layers":{}}}});
+        graph["cores"]["eos"]["layers"]["hardware"] =
+            serde_json::json!({"groups":{"base":{"nodes":{"drive":adapter}}}});
+        graph["cores"]["eos"]["layers"]["process"] =
+            serde_json::json!({"groups":{"mujoco":{"nodes":{"simulator":process}}}});
+        let pins = collect_pins(&graph).unwrap();
+        assert_eq!(pins.len(), 1);
+        assert_eq!(
+            pins[0].path,
+            "/cores/eos/layers/process/groups/mujoco/nodes/simulator/package"
+        );
+        graph["version"] = serde_json::json!("1.0.0");
+        assert_eq!(
+            collect_pins(&graph).unwrap()[0].path,
+            "/cores/eos/layers/hardware/groups/base/nodes/drive/adapter/package"
         );
     }
 }

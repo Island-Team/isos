@@ -492,15 +492,15 @@ fn process_error(
     let path = if issue.code.starts_with("mujoco_scene_") {
         format!("{base}/settings/scene")
     } else if issue.code == "mujoco_device_invalid" {
+        let canonical_backend = format!("eos/process/mujoco/{key}");
         issue
             .kind
             .and_then(|kind| {
                 all.iter()
                     .find(|(_, group, _, node)| {
                         group == kind
-                            && node["adapter"]["settings"]["backend"]
-                                .as_str()
-                                .is_some_and(|backend| backend.ends_with(key))
+                            && node["adapter"]["settings"]["backend"].as_str()
+                                == Some(canonical_backend.as_str())
                     })
                     .map(|(path, _, _, _)| format!("{path}/adapter/settings/device_id"))
             })
@@ -763,6 +763,39 @@ mod tests {
             .unwrap()
             .code,
             "mujoco_scene_profile_mismatch"
+        );
+    }
+
+    #[test]
+    fn device_descriptor_error_uses_exact_backend_reference() {
+        let other = json!({"adapter":{"settings":{"backend":"eos/process/mujoco/othersim"}}});
+        let selected = json!({"adapter":{"settings":{"backend":"eos/process/mujoco/sim"}}});
+        let nodes = vec![
+            (
+                "/cores/eos/layers/hardware/groups/base/nodes/other".to_owned(),
+                "base".to_owned(),
+                "other".to_owned(),
+                &other,
+            ),
+            (
+                "/cores/eos/layers/hardware/groups/base/nodes/drive".to_owned(),
+                "base".to_owned(),
+                "drive".to_owned(),
+                &selected,
+            ),
+        ];
+        let error = process_error(
+            Issue::device("mujoco_device_invalid", "base"),
+            "island/mujoco-sim",
+            "0.1.1",
+            "/cores/eos/layers/process/groups/mujoco/nodes/sim",
+            &nodes,
+            "sim",
+        );
+        let failure = error.downcast_ref::<PackageFailure>().unwrap();
+        assert_eq!(
+            failure.path,
+            "/cores/eos/layers/hardware/groups/base/nodes/drive/adapter/settings/device_id"
         );
     }
 }

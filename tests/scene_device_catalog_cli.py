@@ -31,7 +31,6 @@ UI_DIST = Path(os.environ.get("ISOSUI_DIST_DIR", ROOT.parent / "IsosUI/dist/loca
 PIN = {"id": "island/mujoco-sim", "version": "0.1.1"}
 SIMULATOR = "/cores/eos/layers/process/groups/mujoco/nodes/simulator"
 DEVICE = "/cores/eos/layers/hardware/groups/manipulator/nodes/arm/adapter/settings/device_id"
-FIRST_PIN = "/cores/eos/layers/hardware/groups/base/nodes/drive/adapter/package"
 
 
 def digest(data):
@@ -348,9 +347,9 @@ class SceneDeviceCatalogReplay(unittest.TestCase):
 
         scene_file = self.case.bundle / "assets/scene.xml"
         scene_file.write_bytes(scene_file.read_bytes() + b"\n")
-        self.assert_diagnostic(graph, "package_changed", FIRST_PIN, "payload")
+        self.assert_diagnostic(graph, "package_changed", SIMULATOR + "/package", "payload")
         self.assert_apply_rejected_without_change(graph, "package_changed",
-                                                  FIRST_PIN, "payload")
+                                                  SIMULATOR + "/package", "payload")
 
     def test_missing_real_library_blocks_before_graph_publication(self):
         initial, graph = self.case.init_link_preview()
