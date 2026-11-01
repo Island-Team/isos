@@ -2,7 +2,7 @@
 
 [中文](../../../docs_cn/isos/interfaces/local-api_cn.md)
 
-**Implementation status:** The route table and first compatibility-reader slice describe implemented behavior. The setting-options and supported-version identity sections remain target contracts. The `/api/isos/v1` path and schema-1 envelope are compatibility identities, not a product `1.0.0` declaration.
+**Implementation status:** The route table and first compatibility-reader slice describe implemented behavior. The [P03 setting-options contract](node-options.md) and supported-version identity remain target contracts. The `/api/isos/v1` path and schema-1 envelope are compatibility identities, not a product `1.0.0` declaration.
 
 `isos init --mode dev|product` creates configuration and a starter graph when absent. If the graph was previously applied, it validates the saved v1 graph and refreshes generated core configuration and executable digests from the configured binary directories; it never edits the graph or starts processes. An incompatible saved graph or core stops the refresh with guidance, leaving the graph untouched. `isos serve` starts the IsOS API on `127.0.0.1:16000` by default (`ISOS_HTTP_PORT` selects another loopback port), serves the configured prebuilt IsosUI bundle on `127.0.0.1:16001` (`ISOSUI_PORT` selects another port), and opens an owner-only Unix manager socket below `$XDG_RUNTIME_DIR/isos/` (or `ISOS_HOME/run/`). `isos serve --ui-live` supervises Webpack only in dev mode. The runtime directory is mode `0700`, and the manager socket is mode `0600`. The HTTP response envelope is `{schema_version:1,ok,data,error}`. The manager's one-line Unix envelope remains schema 1 internally.
 
@@ -19,8 +19,8 @@ The API binds only to `127.0.0.1` and serves no frontend files. IsosUI calls it 
 | `GET /api/isos/v1/core-setup/{role}/catalog` | Setup reply with `catalog` | Query the configured `eos` or `egia` adapter without starting its runtime. |
 | `POST /api/isos/v1/core-setup/{role}/validate` | `{schema_version:1,graph,revision?}` → setup reply | Validate an editor draft with a core's own rules, without saving it. |
 | `POST /api/isos/v1/core-setup/{role}/render` | `{schema_version:1,graph,revision?}` → setup reply | Preview generated core configuration; the API does not write the preview. |
-| `GET /api/isos/v1/node-options` | `{adapter_families,primitive_bindings,targets}` | Selector options for the saved graph. |
-| `POST /api/isos/v1/node-options` | `{schema_version:1,graph}` → `{adapter_families,primitive_bindings,targets}` | Selector options for an unapplied draft. |
+| `GET /api/isos/v1/node-options` | `{adapter_families,primitive_bindings,targets,setting_options}` | Options for the saved graph; P03 adds setting groups. |
+| `POST /api/isos/v1/node-options` | `{schema_version:1,graph}` → `{adapter_families,primitive_bindings,targets,setting_options}` | Options for an unapplied draft; no write. |
 | `GET /api/isos/v1/core-readiness` | `{cores,graph,isos,isosui}` | Inspect configured core paths, compatibility, whether each core is enabled in the saved graph, graph configuration, configured endpoint, and running state. The endpoint describes configuration, not an active listener. |
 | `GET /api/isos/v1/node-sets` | `{sets:[{package,id,parameters,nodes}]}` | Installed package node sets. |
 | `POST /api/isos/v1/node-sets/preview` | `{package:{id,version},set_id,graph,values:{name:string}}` → `{graph,added_paths}` | Compose a set into a draft without saving it; invalid composition returns 422. |
@@ -132,47 +132,7 @@ Build EOS, EGIA, and IsosUI in their owning repositories and configure their pat
 
 ## Release target: setting options — not implemented
 
-The existing `GET` and `POST /api/isos/v1/node-options` envelopes remain. Add `setting_options` to `data` without removing `adapter_families`, `primitive_bindings`, or `targets`. `GET` resolves the saved graph; `POST` resolves the supplied draft without saving. IsOS derives descriptors from the registered type's `Setting.selector` and resolves package options only from an exact verified `{id,version}` receipt. It returns IDs and availability, never executable or asset paths. Recompute after a package pin, node type, or dependency setting changes. No selector response is executable authority; Apply and Run verify the package again.
-
-| Field | JSON type / unit | Purpose and owner | Default and validation | Compatibility |
-| --- | --- | --- | --- | --- |
-| `setting_options` | array / — | IsOS option groups, one per registered selector in the draft | Empty array when no selectors; sorted by node path and setting | Additive response field |
-| `setting_options[].node` | string / canonical four-part path | Identifies instance | Required existing node | Stable path; no opaque index |
-| `setting_options[].setting` | string / setting key | Identifies registered setting | Required in its node type | Stable key |
-| `setting_options[].selected` | string or null / stable option ID | Echoes draft value for a single-value selector | Null if unset; invalid current value is still echoed | Never silently replace selection |
-| `setting_options[].options` | array / — | Candidate choices | Empty when provider has no choices; IDs unique within group | New options are additive |
-| `options[].value` | string / stable ID | Value stored in graph settings | Required nonblank; for package assets the ID is descriptor-scoped | Must not be an absolute path |
-| `options[].label` | string / — | Human display name | Required nonblank | Can change without graph migration |
-| `options[].description` | string / — | Explains resource and effect | Required nonblank | Can improve without changing ID |
-| `options[].available` | boolean / — | Whether this draft may Apply with that value | Required; false when receipt, asset, codec, or target is unavailable | Never inferred from label |
-| `options[].reason` | string or null / — | Operator action when unavailable | Required nonblank if unavailable, null otherwise | Additive diagnostics text |
-
-Example successful `POST` response body (target):
-
-```json
-{
-  "schema_version": 1,
-  "ok": true,
-  "data": {
-    "adapter_families": [],
-    "primitive_bindings": [],
-    "targets": [],
-    "setting_options": [{
-      "node": "eos/process/mujoco/sim",
-      "setting": "scene",
-      "selected": "warehouse",
-      "options": [{"value": "warehouse", "label": "Warehouse", "description": "Warehouse simulation scene", "available": true, "reason": null}]
-    }]
-  },
-  "error": null
-}
-```
-
-If `selected` is missing from the verified catalog, append one unavailable option with that value, a readable label, and a reason; the editor keeps it visible and Apply rejects it. A malformed request retains the schema-1 error envelope and returns HTTP 400. A valid draft with an unknown type, invalid selector descriptor, missing package pin, or incompatible asset returns HTTP 422 and field-specific diagnostics through graph validation; an unavailable option response itself remains HTTP 200 so the editor can repair the draft. A stale revision on `PUT /node-graph` returns HTTP 409 without changing saved bytes. For example:
-
-```json
-{"schema_version":1,"ok":false,"data":null,"error":"selected scene warehouse is unavailable for eos/process/mujoco/sim.settings.scene"}
-```
+The [P03 owner contract](node-options.md) defines the additive `setting_options` groups, nested EOS adapter selectors, exact-pin resolution, stable availability reasons, and Apply-time recheck. Its [frozen fixtures](../../../tests/fixtures/node_options/README.md) replace the earlier illustrative `warehouse` response; that ID is not in the verified MuJoCo `0.1.1` catalog. The existing three response collections remain. A selector response never authorizes Apply.
 
 ## Supported-version identity
 

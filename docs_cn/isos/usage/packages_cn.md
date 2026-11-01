@@ -24,7 +24,11 @@ isos run
 
 `0.1.0` 图须使用 `backend-v2.json` 含 `catalog_version:"0.1.0"` 的包，包含带 profile／SHA-256 的 `pick-place`、`navigation` 两个场景及完整相机／底盘／机械臂设备目录。完全不含 P02 字段的历史描述文件只供旧图使用，不能提供新预设。链接或安装精确已验证的 `island/mujoco-sim@0.1.1` 发行版，将 `MUJOCO_ROOT` 指向匹配的 MuJoCo 3.16.0 环境，再用场景 ID、匹配的 `camera_device`、`base_device`、`manipulator_device` 及仅所有者可访问的 `socket` 预览 `sim-hardware`。起始图已有 Dispatcher；预设加入 EOS 通用硬件、原语绑定和包贡献的进程节点，不加入 Vision 节点。见[IsOS 目录契约](../interfaces/mujoco-catalog_cn.md)与[固定负例](../../../tests/fixtures/scene_catalog/README.md)。
 
-预览仅改变草稿。Validate 和 Apply 在发布新保存修订前复查精确收据、场景 profile／XML 摘要及引用资源、设备类别与场景适用性和主机库。Run 和 Restart 在替换子进程前重复检查。修改场景须按修订 Apply 后 Restart。场景／设备／库缺失或已链接资源变化，均不得修改保存字节或活动子进程。P03 随后通过通用 node-options 界面展示这些已验证 ID；P02 检查不依赖该 UI。
+预览仅改变草稿。Validate 和 Apply 在发布新保存修订前复查精确收据、场景 profile／XML 摘要及引用资源、设备类别与场景适用性和主机库。Run 和 Restart 在替换子进程前重复检查。修改场景须按修订 Apply 后 Restart。场景／设备／库缺失或已链接资源变化，均不得修改保存字节或活动子进程。[P03 节点选项](../interfaces/node-options_cn.md)通过通用 API 展示这些已验证 ID；P02 检查不依赖该 UI。
+
+### P03 选择流程（目标）
+
+预览 `sim-hardware` 后，把该**草稿**以 `{"schema_version":1,"graph":<草稿>}` 发送到 `POST /api/isos/v1/node-options`。从 `data.setting_options` 读取 `eos/process/mujoco/simulator` 的 `scene` 设置，以及每个通用相机／底盘／机械臂节点的 `adapter.settings.device_id`、`adapter.settings.simulator_node`。值为稳定 ID；名称与说明只供展示。选择一个可用场景和各类别对该场景适用的设备，同时写入每个适配器的两个设备字段。修改场景、软件包固定版本、backend 引用或节点类型后重新获取选项。不可用的已保存 ID 仍显示 `reason_code` 和修复提示；应选择已验证选项或重新链接精确发行版本。随后对最新保存图修订执行 Validate 和 Apply。修订过期返回 409；已链接字节变化、错误固定版本、运行库缺失或所选 ID 不再适用时返回精确 422 诊断，不改变保存字节和活动子进程。精确路径见[响应与负例夹具](../../../tests/fixtures/node_options/README.md)。
 
 ## P01 首次使用验收
 

@@ -35,7 +35,9 @@ Run 重新读取已保存字节、包收据、选定资源、配置的核心程�
 
 ## 选择器与连线算法
 
-对每个注册的 `Setting.selector`，根据 `package`、`registry` 或 `graph` 提供者从**草稿**图求选项。包提供者只读取已验证的精确版本。结果按节点路径和设置键分组，包含稳定 ID、标签、说明、可用性与原因。不可用的已选值保持可见，供操作员修复；Apply 重新解析所有选择。IsosUI 的可搜索控件可类似模型权重选择器，但保存稳定 ID，而不是文件路径。
+对每个注册的 `Setting.selector`，根据 `package`、`registry` 或 `graph` 提供者从**草稿**图求选项。包提供者只读取已验证的精确固定版本。结果按 `(node_path,setting)` 分组并确定性排序，包含稳定 ID、标签、说明、可用性与长度受限的原因。不可用的已选值保持可见，供操作员修复。EOS 通用 `mujoco-v2` 适配器增加两个由 IsOS 定义的嵌套设备选择器，但软件包不得重定义通用硬件类型。从同一草稿的引用进程读取场景，只返回相应类别、场景及精确固定版本的设备。UI 同时修改 `device_id` 与 `simulator_node`；Apply 在图锁内重新解析当前精确草稿并检查双字段。选项响应不具备发布授权。[P03 契约与夹具](../interfaces/node-options_cn.md)固定响应字段和诊断。IsosUI 可搜索控件保存稳定 ID，而非文件路径。
+
+P03 设计证据（2026-11-01）：`python3` 解析两份冻结 JSON 夹具，检查有序且唯一的分组／选项键、精确诊断字段、不写入不变量及本地文档链接。基于 P02 的 `/home/ashex/.cargo/bin/cargo fmt --all -- --check`、`/home/ashex/.cargo/bin/cargo clippy --all-targets -- -D warnings`、`/home/ashex/.cargo/bin/cargo test` 与 `git diff --check` 均通过（108 个单元测试、5 个 CLI 指南测试、1 个已移除命令测试、9 个连线准入测试）。完整本地输出在忽略的 `logs/test/20261101-p03-node-options-design/`。这些只是契约证据；P03 实现仍需专门的单元、HTTP 与全新 home 回放测试，再接受审查。
 
 IsOS 校验边的来源、目的类型、`priority` 和 `frequency_hz`。**当前实现：**编辑器校验 API 对比注册端口的精确数据类型，并在 Apply 前返回定位到连线的 `edge_type_mismatch` 诊断；数据类型 schema 载明字段单位。其他校验失败仍使用 EOS 校验器的通用诊断。目标中的实际路由由 EOS 管理：每边单调时钟 token bucket 限流；加权公平服务和有界队列防止高优先级流饿死其他流；溢出计数并限速记录。`expected_rate_hz` 是生产者元数据，不会暗中变成边上限。仅设计连线可在 IsosUI 展示，但不得声称有运行时调度。优先级不可绕过调度器安全准入或执行器停止。
 

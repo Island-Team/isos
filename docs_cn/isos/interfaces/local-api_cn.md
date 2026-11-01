@@ -19,8 +19,8 @@ API 只绑定 `127.0.0.1`，不提供前端文件。IsosUI 通过地址和端口
 | `GET /api/isos/v1/core-setup/{role}/catalog` | 含 `catalog` 的配置响应 | 查询已配置的 `eos` 或 `egia` 适配器，不启动核心运行时。 |
 | `POST /api/isos/v1/core-setup/{role}/validate` | `{schema_version:1,graph,revision?}` → 配置响应 | 按核心规则校验编辑草稿，不保存。 |
 | `POST /api/isos/v1/core-setup/{role}/render` | `{schema_version:1,graph,revision?}` → 配置响应 | 预览生成的核心配置；API 不写入预览。 |
-| `GET /api/isos/v1/node-options` | `{adapter_families,primitive_bindings,targets}` | 已保存图的适配器、原语绑定与目标选项。 |
-| `POST /api/isos/v1/node-options` | `{schema_version:1,graph}` → `{adapter_families,primitive_bindings,targets}` | 未应用草稿的选择器选项。 |
+| `GET /api/isos/v1/node-options` | `{adapter_families,primitive_bindings,targets,setting_options}` | 已保存图的适配器、原语绑定与目标选项。 |
+| `POST /api/isos/v1/node-options` | `{schema_version:1,graph}` → `{adapter_families,primitive_bindings,targets,setting_options}` | 未应用草稿的选择器选项。 |
 | `GET /api/isos/v1/core-readiness` | `{cores,graph,isos,isosui}` | 检查已配置核心路径、兼容性、核心是否在已保存节点图中启用、图配置、已配置端点与运行状态。端点表示配置，不代表正在监听。 |
 | `GET /api/isos/v1/node-sets` | `{sets:[{package,id,parameters,nodes}]}` | 已安装软件包提供的节点集合。 |
 | `POST /api/isos/v1/node-sets/preview` | `{package:{id,version},set_id,graph,values:{name:string}}` → `{graph,added_paths}` | 将集合合成到草稿，不保存；无效合成返回 422。 |
@@ -132,32 +132,7 @@ IsOS 在 `aether-profile setup --json` 或 `egia-config setup --json` 上发送 
 
 ## 发行目标：设置选项——尚未实现
 
-保留现有 `GET` 与 `POST /api/isos/v1/node-options` 封装；在 `data` 中增加 `setting_options`，不删除 `adapter_families`、`primitive_bindings` 或 `targets`。`GET` 解析已保存图；`POST` 解析草稿而不保存。IsOS 从注册类型的 `Setting.selector` 取得描述，只从精确且已验证的 `{id,version}` 收据解析包选项。只返回 ID 和可用性，不返回可执行文件或资源路径。包版本、类型或依赖设置变化后重新计算；Apply 与 Run 再次验证包。
-
-| 字段 | JSON 类型／单位 | 用途与所有者 | 默认值与校验 | 兼容 |
-| --- | --- | --- | --- | --- |
-| `setting_options` | 数组／— | IsOS 选项组，每个草稿注册选择器一组 | 无选择器时空数组；按节点路径和设置排序 | 响应新增字段 |
-| `setting_options[].node` | 字符串／四段规范路径 | 实例身份 | 必需且节点存在 | 路径稳定，不用索引 |
-| `setting_options[].setting` | 字符串／设置键 | 注册设置身份 | 必需且属于该类型 | 键稳定 |
-| `setting_options[].selected` | 字符串或 null／稳定选项 ID | 回显单选草稿值 | 未设置为 null；无效当前值仍回显 | 不暗中替换 |
-| `setting_options[].options` | 数组／— | 候选项 | 无候选时空数组；组内 ID 唯一 | 可增加选项 |
-| `options[].value` | 字符串／稳定 ID | 图设置中存的值 | 必需非空；包资源 ID 在描述文件内有作用域 | 不得为绝对路径 |
-| `options[].label` | 字符串／— | 人类显示名 | 必需非空 | 改显示名不迁移图 |
-| `options[].description` | 字符串／— | 说明资源和效果 | 必需非空 | 改进文字不改变 ID |
-| `options[].available` | 布尔值／— | 草稿能否用该值 Apply | 必需；收据、资源、codec 或目标不可用时为 false | 不从标签推断 |
-| `options[].reason` | 字符串或 null／— | 不可用时的操作提示 | 不可用时必需非空，否则 null | 诊断文字可扩展 |
-
-目标 `POST` 成功响应：
-
-```json
-{"schema_version":1,"ok":true,"data":{"adapter_families":[],"primitive_bindings":[],"targets":[],"setting_options":[{"node":"eos/process/mujoco/sim","setting":"scene","selected":"warehouse","options":[{"value":"warehouse","label":"Warehouse","description":"Warehouse simulation scene","available":true,"reason":null}]}]},"error":null}
-```
-
-若 `selected` 不在已验证目录，响应需附加一个同值、不可用、带可读标签和原因的选项，编辑器继续显示，Apply 拒绝。请求格式错误返回 HTTP 400 和 schema-1 错误封装。有效草稿中未知类型、非法选择器、缺少包固定版本或资源不兼容，在图校验中返回 HTTP 422 及字段诊断；选项响应本身仍可返回 200 供编辑器修复。`PUT /node-graph` 修订过期返回 409，不修改已保存字节。例如：
-
-```json
-{"schema_version":1,"ok":false,"data":null,"error":"selected scene warehouse is unavailable for eos/process/mujoco/sim.settings.scene"}
-```
+[P03 归属方契约](node-options_cn.md)定义新增 `setting_options` 分组、EOS 适配器嵌套选择器、精确固定版本解析、稳定的不可用原因及 Apply 前复查。[冻结夹具](../../../tests/fixtures/node_options/README.md)取代先前仅作说明的 `warehouse` 响应；该 ID 不在已验证的 MuJoCo `0.1.1` 目录中。原有三个响应集合保留。选择器响应不能授权 Apply。
 
 ## 支持版本身份
 
