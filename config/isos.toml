@@ -9,6 +9,8 @@ ui_port = 16001
 # Prebuilt artifacts from each owning repository; build there before running IsOS.
 aether_bin_dir = "../Island-eos/target/debug"
 egia_bin_dir = "../Island-egia/bin"
+egia_defaults_dir = "../Island-egia/etc/egia"
+egia_factory_defaults_dir = "../Island-egia/share/defaults/egia"
 ui_dist = "../IsosUI/dist/local"
 
 [deployment]

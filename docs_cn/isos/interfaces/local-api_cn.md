@@ -110,6 +110,8 @@ IsOS 默认读取其源码目录中的 [config/isos.toml](../../../config/isos.t
 | `paths.ui_dist` | 路径字符串 | 含清单的预构建 IsosUI `dist/local` 目录；相对路径以 IsOS 源码目录为基准 | `ISOSUI_DIST_DIR` |
 | `paths.aether_bin_dir` | 路径字符串 | 一套预构建 Aether Rust 程序的目录；相对路径以 IsOS 源码目录为基准 | `ISOS_AETHER_BIN_DIR` |
 | `paths.egia_bin_dir` | 路径字符串 | 包含 `egia-config` 与 `egia` 的 EGIA 启动程序目录；相对路径以 IsOS 源码目录为基准 | `ISOS_EGIA_BIN_DIR` |
+| `paths.egia_defaults_dir`（P04 已实现） | 路径字符串 | 完整的已选已安装 EGIA `etc/egia` 目录，启用 EGIA 时必需；相对路径以 IsOS 源码目录为基准，内容经校验后复制到选中的生成版本 | `ISOS_EGIA_DEFAULTS_DIR` |
+| `paths.egia_factory_defaults_dir`（P04 已实现） | 路径字符串 | EGIA 已选已安装的 `share/defaults/egia` 目录，启用 EGIA 时必需，并与启动程序实际使用的回退目录核对；相对路径以 IsOS 源码目录为基准 | `ISOS_EGIA_FACTORY_DEFAULTS_DIR` |
 | `paths.mujoco_root` | 路径字符串 | 可选 MuJoCo 运行根目录；相对路径以 IsOS 源码目录为基准 | `MUJOCO_ROOT` |
 | `deployment.name` | slug 字符串 | 默认图与日志命名空间；需通过部署名校验 | `ISOS_DEPLOYMENT` |
 | `logging.max_bytes` | 整数，字节 | 轮转阈值 65,536–100,000,000；默认 262,144 | `ISOS_LOG_MAX_BYTES` |

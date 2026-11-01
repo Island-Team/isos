@@ -16,6 +16,8 @@ mod edge_admission;
 mod entry;
 #[path = "app/foreground.rs"]
 mod foreground;
+#[path = "runtime/generated_v2.rs"]
+mod generated_v2;
 #[path = "runtime/graph_compat.rs"]
 mod graph_compat;
 #[path = "runtime/graph_migration.rs"]

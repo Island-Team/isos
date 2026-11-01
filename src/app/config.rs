@@ -42,6 +42,8 @@ struct RuntimePaths {
     ui_dist: Option<PathBuf>,
     aether_bin_dir: Option<PathBuf>,
     egia_bin_dir: Option<PathBuf>,
+    egia_defaults_dir: Option<PathBuf>,
+    egia_factory_defaults_dir: Option<PathBuf>,
     mujoco_root: Option<PathBuf>,
 }
 
@@ -78,6 +80,11 @@ fn config_values(source: &str, repo_root: &Path) -> Result<BTreeMap<&'static str
         (config.paths.ui_dist, "ISOSUI_DIST_DIR"),
         (config.paths.aether_bin_dir, "ISOS_AETHER_BIN_DIR"),
         (config.paths.egia_bin_dir, "ISOS_EGIA_BIN_DIR"),
+        (config.paths.egia_defaults_dir, "ISOS_EGIA_DEFAULTS_DIR"),
+        (
+            config.paths.egia_factory_defaults_dir,
+            "ISOS_EGIA_FACTORY_DEFAULTS_DIR",
+        ),
         (config.paths.mujoco_root, "MUJOCO_ROOT"),
     ] {
         if let Some(path) = path {

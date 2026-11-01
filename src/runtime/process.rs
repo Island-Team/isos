@@ -130,6 +130,8 @@ pub struct ProcessSettings {
     #[serde(default)]
     pub env: BTreeMap<String, String>,
     #[serde(default)]
+    pub env_from: BTreeMap<String, String>,
+    #[serde(default)]
     pub ready_tcp: Option<String>,
     #[serde(default)]
     pub ready_unix: Option<PathBuf>,
@@ -243,6 +245,20 @@ impl ProcessSpec {
                 self.id
             );
         }
+        ensure!(
+            s.env_from.len() <= 32,
+            "{}: too many env_from entries",
+            self.id
+        );
+        for (target, source) in &s.env_from {
+            ensure!(
+                crate::generated_v2::valid_env(target)
+                    && crate::generated_v2::valid_env(source)
+                    && !s.env.contains_key(target),
+                "{}: invalid or duplicate env_from target",
+                self.id
+            );
+        }
         Ok(())
     }
 }
@@ -299,6 +315,35 @@ pub fn use_generated_eos_profile(specs: &mut [ProcessSpec], path: &Path) -> Resu
             "{id} has invalid --profile arguments"
         );
         spec.settings.command[index + 1] = path.to_string_lossy().into_owned();
+    }
+    Ok(())
+}
+
+pub fn use_generated_egia_config(specs: &mut [ProcessSpec], root: &Path) -> Result<()> {
+    let Some(spec) = specs.iter_mut().find(|spec| spec.id == "egia") else {
+        return Ok(());
+    };
+    ensure!(
+        root.is_absolute() && root.is_dir(),
+        "selected EGIA configuration is missing"
+    );
+    ensure!(
+        !spec.settings.command.iter().any(|arg| arg == "--etc")
+            && !spec.settings.env.contains_key("EGIA_ETC"),
+        "EGIA configuration must use the selected generated root"
+    );
+    let path = root.to_string_lossy().into_owned();
+    spec.settings.command.extend(["--etc".into(), path.clone()]);
+    spec.settings.env.insert("EGIA_ETC".into(), path);
+    for flag in ["--managed", "--no-tui"] {
+        if !spec.settings.command.iter().any(|arg| arg == flag) {
+            spec.settings.command.push(flag.into());
+        }
+    }
+    if !spec.settings.command.iter().any(|arg| arg == "--mode") {
+        spec.settings
+            .command
+            .extend(["--mode".into(), "isos".into()]);
     }
     Ok(())
 }
@@ -529,6 +574,11 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
                         let mut settings: ProcessSettings =
                             serde_json::from_value(node.settings)
                                 .with_context(|| format!("{path}: invalid process settings"))?;
+                        ensure!(
+                            node.node_type == "isos.process.component@v0.1"
+                                || settings.env_from.is_empty(),
+                            "{path}: env_from requires the @v0.1 component type"
+                        );
                         let binary = match key.as_str() {
                             "eos" => "aether-runtime",
                             "bridge" => "aether-http-bridge",
@@ -937,6 +987,12 @@ fn catalog_with_sidecars(sidecars: Vec<PathBuf>) -> Result<Value> {
         component["description"] = Value::String(
             "IsOS-owned role-selected child with bounded arguments and readiness".into(),
         );
+        if let Some(settings) = component["settings"].as_array_mut() {
+            settings.push(serde_json::json!({
+                "name":"env_from","data_type":"string_table","required":false,
+                "description":"Child environment targets and manager environment source names"
+            }));
+        }
         types.push(component);
     }
     let builtin: BTreeSet<_> = types
@@ -1064,13 +1120,22 @@ impl Supervisor {
         })
     }
 
-    fn spawn(&self, spec: &ProcessSpec) -> Result<Child> {
+    fn spawn(
+        &self,
+        spec: &ProcessSpec,
+        secrets: &BTreeMap<String, std::ffi::OsString>,
+        secret_sources: &BTreeSet<String>,
+    ) -> Result<Child> {
         let mut command = Command::new(&spec.settings.command[0]);
         command.args(&spec.settings.command[1..]);
         if spec.id == "eos" && spec.package.is_some() {
             command.arg("--log-dir").arg(self.logs.root());
         }
         command.envs(&spec.settings.env);
+        for source in secret_sources {
+            command.env_remove(source);
+        }
+        command.envs(secrets);
         if let Some(cwd) = &spec.settings.cwd {
             command.current_dir(cwd);
         }
@@ -1165,7 +1230,33 @@ impl Supervisor {
         }
     }
 
+    #[cfg(test)]
     pub fn start(&mut self, specs: &[ProcessSpec]) -> Result<Vec<String>> {
+        let plan = crate::generated_v2::secret_plan(specs)?;
+        self.start_with_secrets(specs, &plan)
+    }
+
+    pub fn start_with_secrets(
+        &mut self,
+        specs: &[ProcessSpec],
+        secrets: &crate::generated_v2::SecretPlan,
+    ) -> Result<Vec<String>> {
+        let secret_sources: BTreeSet<String> = self
+            .running
+            .values()
+            .map(|running| &running.spec)
+            .chain(specs.iter())
+            .flat_map(|spec| spec.settings.env_from.values().cloned())
+            .collect();
+        for spec in specs {
+            ensure!(
+                spec.settings.env_from.keys().all(|target| secrets
+                    .get(&spec.id)
+                    .is_some_and(|child| child.contains_key(target))),
+                "{}: child secret plan is incomplete",
+                spec.id
+            );
+        }
         let mut added = Vec::new();
         for spec in specs {
             if self.running.contains_key(&spec.id) {
@@ -1179,7 +1270,12 @@ impl Supervisor {
                     spec.id
                 );
             }
-            let mut child = match self.spawn(spec) {
+            let empty = BTreeMap::new();
+            let mut child = match self.spawn(
+                spec,
+                secrets.get(&spec.id).unwrap_or(&empty),
+                &secret_sources,
+            ) {
                 Ok(child) => child,
                 Err(error) => {
                     self.rollback(&added);
@@ -1273,7 +1369,23 @@ impl Supervisor {
             };
             if restart && process.restarts < process.spec.settings.max_restarts {
                 thread::sleep(Duration::from_millis(100 * (1 << process.restarts.min(5))));
-                let mut child = match self.spawn(&process.spec) {
+                let restart_specs: Vec<_> = std::iter::once(process.spec.clone())
+                    .chain(dependent_specs.iter().cloned())
+                    .collect();
+                let plan = crate::generated_v2::secret_plan(&restart_specs)?;
+                let secret_sources: BTreeSet<String> = self
+                    .running
+                    .values()
+                    .map(|running| &running.spec)
+                    .chain(restart_specs.iter())
+                    .flat_map(|spec| spec.settings.env_from.values().cloned())
+                    .collect();
+                let empty = BTreeMap::new();
+                let mut child = match self.spawn(
+                    &process.spec,
+                    plan.get(&process.spec.id).unwrap_or(&empty),
+                    &secret_sources,
+                ) {
                     Ok(child) => child,
                     Err(error) => {
                         self.order.retain(|candidate| candidate != &id);
@@ -1288,7 +1400,7 @@ impl Supervisor {
                 process.child = child;
                 process.restarts += 1;
                 self.running.insert(id, process);
-                self.start(&dependent_specs)?;
+                self.start_with_secrets(&dependent_specs, &plan)?;
             } else {
                 self.order.retain(|candidate| candidate != &id);
             }
@@ -1343,6 +1455,18 @@ mod tests {
     use super::*;
     use std::os::unix::net::UnixListener;
     use std::sync::mpsc;
+
+    fn wait_for_file(path: &Path, expected_lines: usize) -> String {
+        for _ in 0..200 {
+            if let Ok(bytes) = fs::read_to_string(path)
+                && bytes.lines().count() >= expected_lines
+            {
+                return bytes;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        panic!("child did not write the expected record");
+    }
 
     #[test]
     fn backend_resolution_failure_carries_exact_package_identity() {
@@ -1589,5 +1713,116 @@ command = ["/bin/sleep", "1"]
         supervisor.start(&specs).unwrap();
         thread::sleep(Duration::from_millis(140));
         assert!(supervisor.status().unwrap().is_empty());
+    }
+
+    #[test]
+    fn env_from_value_reaches_only_its_named_child() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        let source = "ISOS_P04_ISOLATION_SOURCE_9A6D1";
+        unsafe { std::env::set_var(source, "private-value") };
+        let eos_file = temp.path().join("eos.txt");
+        let egia_file = temp.path().join("egia.txt");
+        let script = temp.path().join("record.sh");
+        fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nprintf '%s|%s\\n' \"${{{source}-unset}}\" \"${{EGIA_API_KEY-unset}}\" > \"$1\"\nsleep 30\n"
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        let make = |id: &str, output: &Path, secret: bool| {
+            ProcessSpec {
+            id: id.into(),
+            path: format!("isos/process/component/{id}"),
+            settings: serde_json::from_value(serde_json::json!({
+                "command": [script, output],
+                "env_from": if secret { serde_json::json!({"EGIA_API_KEY":source}) } else { serde_json::json!({}) },
+            }))
+            .unwrap(),
+            package: None,
+            fingerprint: None,
+        }
+        };
+        let specs = [
+            make("eos", &eos_file, false),
+            make("egia", &egia_file, true),
+        ];
+        let mut supervisor = Supervisor::new(&paths, "test").unwrap();
+        assert_eq!(supervisor.start(&specs).unwrap(), ["eos", "egia"]);
+        assert_eq!(wait_for_file(&eos_file, 1), "unset|unset\n");
+        assert_eq!(wait_for_file(&egia_file, 1), "unset|private-value\n");
+        supervisor.stop();
+        unsafe { std::env::remove_var(source) };
+    }
+
+    #[test]
+    fn dependent_auto_restart_uses_its_secret_plan_without_inheriting_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        let source = "ISOS_P04_RESTART_SOURCE_36B11";
+        unsafe { std::env::set_var(source, "restart-value") };
+        let record = temp.path().join("dependent.txt");
+        let script = temp.path().join("dependent.sh");
+        fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nprintf '%s|%s\\n' \"${{{source}-unset}}\" \"${{EGIA_API_KEY-unset}}\" >> \"$1\"\nsleep 30\n"
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        let provider = ProcessSpec {
+            id: "eos".into(),
+            path: "isos/process/component/eos".into(),
+            settings: serde_json::from_value(serde_json::json!({
+                "command": ["/bin/sh", "-c", "sleep 0.35; exit 1"],
+                "restart": "always",
+                "max_restarts": 1
+            }))
+            .unwrap(),
+            package: None,
+            fingerprint: None,
+        };
+        let dependent = ProcessSpec {
+            id: "egia".into(),
+            path: "isos/process/component/egia".into(),
+            settings: serde_json::from_value(serde_json::json!({
+                "command": [script, record],
+                "depends_on": ["cores/isos/layers/process/groups/component/nodes/eos"],
+                "env_from": {"EGIA_API_KEY": source}
+            }))
+            .unwrap(),
+            package: None,
+            fingerprint: None,
+        };
+        let mut supervisor = Supervisor::new(&paths, "test").unwrap();
+        supervisor.start(&[provider, dependent]).unwrap();
+        thread::sleep(Duration::from_millis(420));
+        let status = supervisor.status().unwrap();
+        assert_eq!(status.len(), 2);
+        assert_eq!(
+            status
+                .iter()
+                .find(|item| item.id == "eos")
+                .unwrap()
+                .restarts,
+            1
+        );
+        assert_eq!(
+            wait_for_file(&record, 2),
+            "unset|restart-value\nunset|restart-value\n"
+        );
+        supervisor.stop();
+        unsafe { std::env::remove_var(source) };
     }
 }
