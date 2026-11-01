@@ -146,6 +146,11 @@ fn log_prelaunch_failure(
             })
             .or_else(|| {
                 cause
+                    .downcast_ref::<crate::skill_selection::Diagnostic>()
+                    .map(|d| (d.code, d.path.as_str()))
+            })
+            .or_else(|| {
+                cause
                     .downcast_ref::<crate::control_grants::Diagnostic>()
                     .map(|d| (d.code, d.path.as_str()))
             })
@@ -215,6 +220,12 @@ fn preflight_packages(
     revision: &str,
 ) -> Result<Vec<process::ProcessSpec>> {
     let graph: Value = serde_json::from_str(source)?;
+    crate::skill_selection::check_reserved(&graph)?;
+    let selected_libraries = crate::skill_selection::entries(&graph)?;
+    if !selected_libraries.is_empty() {
+        crate::packages::verify_graph_packages(paths, &graph)?;
+        crate::skill_selection::render(paths, &graph, revision)?;
+    }
     let selected = if graph["version"] == "0.1.0" {
         Some(crate::generated_v2::selected_v2_root(
             paths, name, &graph, revision,
@@ -230,6 +241,9 @@ fn preflight_packages(
         let generated = selected.join("eos/graph.json");
         process::use_generated_eos_profile(&mut specs, &generated)?;
         process::use_generated_egia_config(&mut specs, &selected.join("egia"))?;
+        let skill_file =
+            crate::skill_selection::compare_selected(paths, &graph, revision, &selected)?;
+        crate::skill_selection::apply_env(&mut specs, skill_file.as_deref());
     }
     let catalog = process::catalog_for_graph(paths, &graph)?;
     reader_features::check(paths, &graph, &specs, &catalog)?;
@@ -262,6 +276,11 @@ fn verify_selected_before_reader(
 ) -> Result<()> {
     let saved = graph_compat::parse(source.as_bytes())?;
     if saved.value["version"] == "0.1.0" {
+        crate::skill_selection::check_reserved(&saved.value)?;
+        if !crate::skill_selection::entries(&saved.value)?.is_empty() {
+            crate::packages::verify_graph_packages(paths, &saved.value)?;
+            crate::skill_selection::render(paths, &saved.value, revision)?;
+        }
         crate::generated_v2::selected_v2_root(paths, name, &saved.value, revision)?;
     }
     Ok(())
@@ -857,6 +876,11 @@ pub(crate) fn handle_client(
                         .or_else(|| {
                             cause
                                 .downcast_ref::<crate::generated_v2::Diagnostic>()
+                                .map(|diagnostic| json!({"diagnostics":[diagnostic]}))
+                        })
+                        .or_else(|| {
+                            cause
+                                .downcast_ref::<crate::skill_selection::Diagnostic>()
                                 .map(|diagnostic| json!({"diagnostics":[diagnostic]}))
                         })
                         .or_else(|| {

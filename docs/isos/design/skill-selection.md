@@ -2,7 +2,7 @@
 
 [中文](../../../docs_cn/isos/design/skill-selection_cn.md) · [Owner contract](../interfaces/skill-selection.md) · [Generated configuration](../interfaces/configuration.md) · [Package verifier](../interfaces/package-verification.md)
 
-**Design only.** R04 extends the implemented P01/P04/P05 and R03 boundaries. The graph selects a bounded list of exact native libraries on the EOS component; IsOS does not interpret ABI descriptors or execute skill code. EOS's host ABI and worker contract own that work. There is no new graph skill node, sequence runner, ActionList or second actuator path.
+**Implementation candidate pending independent review and cross-owner replay.** R04 extends the implemented P01/P04/P05 and R03 boundaries. The graph selects a bounded list of exact native libraries on the EOS component; IsOS does not interpret ABI descriptors or execute skill code. EOS's host ABI and worker contract own that work. There is no new graph skill node, sequence runner, ActionList or second actuator path.
 
 ## Apply algorithm
 
@@ -24,3 +24,5 @@ EOS validates the selected manifest and library content again before its skill c
 Use [machine cases](../../../tests/fixtures/skill_selection/README.md) as the unit/stubbed-integration table. Unit tests cover pointer precision, pin collection, sort/dedup, canonical bytes, P01 changed link, P04 generation and recipient env. A stubbed integration runs two process generations: reject a tampered library and an older EOS feature probe before stopping generation one; accept a verified selection and confirm only EOS sees the file. The EOS owner replay covers wrong revision, invalid ABI/descriptor, undeclared capability and worker cleanup. Commands and complete output belong under `logs/test/<run-id>/`; record final commands and results here after implementation.
 
 Design fixture check (2026-11-02): `python3 tests/fixtures/skill_selection/check_cases.py` passed 20 case IDs and the selection schema; `git diff --check` passed. A changed-document relative-link scan found no missing targets. The complete local output is in ignored `logs/test/20261102-r04-isos-design/`. This checks the contract shape only; implementation and cross-owner replay remain open.
+
+IsOS implementation candidate (2026-11-02): `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `cargo build`, `cargo test skill_selection -- --nocapture`, and `python3 tests/fixtures/skill_selection/check_cases.py` pass. Complete output is under ignored `logs/test/20261102-r04-isos-impl/`. Focused tests cover exact graph pointers, duplicate and unsafe paths, verified P01 pins, linked payload mutation, incompatible release kind, private V2 generation inventory and mutation rejection, and EOS-only child environment delivery. The 20-case fixture check validates the frozen table and schema. EOS-owned I17–I20 and the cross-owner two-generation replay still require integrated evidence before R04 closes.

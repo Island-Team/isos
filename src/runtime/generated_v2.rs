@@ -74,6 +74,9 @@ fn mismatch() -> Diagnostic {
         "Apply the saved graph again to restore its generated configuration",
     )
 }
+pub fn snapshot_mismatch() -> Diagnostic {
+    mismatch()
+}
 fn revision_mismatch() -> Diagnostic {
     failure(
         "generated_revision_mismatch",
@@ -867,7 +870,22 @@ fn inventory(
     revision: &str,
     owner_files: &[(PathBuf, Vec<u8>)],
 ) -> Result<(Manifest, Files), Diagnostic> {
-    let (files, roots, defaults) = effective_files(graph, owner_files)?;
+    let (mut files, roots, defaults) = effective_files(graph, owner_files)?;
+    if let Some(selection) =
+        crate::skill_selection::render(paths, graph, revision).map_err(|_| unsafe_path("render"))?
+    {
+        if files
+            .iter()
+            .any(|(path, _)| path == Path::new(crate::skill_selection::RELATIVE_FILE))
+        {
+            return Err(unsafe_path("render"));
+        }
+        files.push((
+            PathBuf::from(crate::skill_selection::RELATIVE_FILE),
+            selection,
+        ));
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+    }
     let mut entries = Vec::new();
     for (path, bytes) in &files {
         entries.push(FileEntry {
@@ -1109,6 +1127,7 @@ pub fn publish(
                 )
             })?;
     }
+    crate::skill_selection::compare_selected(paths, graph, revision, &root)?;
     let mut selection = read_selection(&generated)?.unwrap_or(Selection {
         schema_version: 2,
         entries: BTreeMap::new(),
@@ -1267,6 +1286,7 @@ pub fn selected(
             }
             check_launch_inputs(paths, graph, &manifest.launch_inputs, "snapshot")?;
             verify_leaf(&root, &manifest)?;
+            crate::skill_selection::compare_selected(paths, graph, revision, &root)?;
             let mut stored_inputs: Vec<LaunchInput> = serde_json::from_slice(&inspect_regular(
                 &root.join("core-setup/launch-inputs.json"),
                 "snapshot",

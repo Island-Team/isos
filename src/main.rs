@@ -58,6 +58,8 @@ mod readiness;
 mod release;
 #[path = "domain/services.rs"]
 mod services;
+#[path = "runtime/skill_selection.rs"]
+mod skill_selection;
 #[path = "domain/starter.rs"]
 mod starter;
 

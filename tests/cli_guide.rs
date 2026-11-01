@@ -34,6 +34,39 @@ fn unmapped_legacy_cli_validate_and_apply_fail_at_exact_pointer_without_write() 
 }
 
 #[test]
+fn skill_selection_cli_validate_rejects_exact_field_before_reader_launch() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let path = temp.path().join("selection.json");
+    let mut graph = serde_json::json!({"version":"0.1.0","robot":{},"cores":{"isos":{"layers":{"process":{"groups":{"component":{"nodes":{
+        "eos":{"id":"eos","node_type":"isos.process.component@v0.1","settings":{"role":"eos","skill_libraries":[
+            {"package":{"id":"test/skill","version":"0.1.0"},"library":"x.skill.so"},
+            {"package":{"id":"test/skill","version":"0.1.0"},"library":"x.skill.so"}
+        ]}}
+    }}}}}}}});
+    std::fs::write(&path, serde_json::to_vec(&graph).unwrap()).unwrap();
+    let output = isos(&home, &["config", "validate", path.to_str().unwrap()]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("skill_selection_invalid"), "{stderr}");
+    assert!(
+        stderr.contains(
+            "/cores/isos/layers/process/groups/component/nodes/eos/settings/skill_libraries/1"
+        ),
+        "{stderr}"
+    );
+    graph["cores"]["isos"]["layers"]["process"]["groups"]["component"]["nodes"]["eos"]["settings"]
+        ["skill_libraries"] = serde_json::json!([{"package":{"id":"test/skill","version":"0.1.0"},"library":"../escape.skill.so"}]);
+    std::fs::write(&path, serde_json::to_vec(&graph).unwrap()).unwrap();
+    let output = isos(&home, &["config", "validate", path.to_str().unwrap()]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("skill_library_unsafe"), "{stderr}");
+    assert!(stderr.contains("/cores/isos/layers/process/groups/component/nodes/eos/settings/skill_libraries/0/library"), "{stderr}");
+    assert!(!home.join("config/deployments/default.nodes.json").exists());
+}
+
+#[test]
 fn failed_cli_apply_is_the_manager_scope_anchor_but_validate_is_not() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("home");

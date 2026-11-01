@@ -753,6 +753,15 @@ fn check_inner(
                     None,
                     "managed-control-grants",
                 )?;
+                if !spec.settings.skill_libraries.is_empty() {
+                    feature(
+                        &claims,
+                        graph,
+                        &format!("{pointer}/node_type"),
+                        None,
+                        "host-skill-abi-v2",
+                    )?;
+                }
             }
         }
         if id == "bridge" {

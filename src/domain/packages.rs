@@ -1145,6 +1145,7 @@ pub struct PackagePin {
 pub fn collect_pins(graph: &serde_json::Value) -> Result<Vec<PackagePin>> {
     let mut pins = BTreeMap::new();
     let mut target_mujoco_process_pins = BTreeMap::new();
+    let mut target_skill_pins = BTreeMap::new();
     let Some(cores) = graph.get("cores").and_then(serde_json::Value::as_object) else {
         return Ok(Vec::new());
     };
@@ -1162,7 +1163,11 @@ pub fn collect_pins(graph: &serde_json::Value) -> Result<Vec<PackagePin>> {
                 };
                 for (node_id, node) in nodes {
                     let base = format!(
-                        "/cores/{core_id}/layers/{layer_id}/groups/{group_id}/nodes/{node_id}"
+                        "/cores/{}/layers/{}/groups/{}/nodes/{}",
+                        crate::graph_compat::pointer_segment(core_id),
+                        crate::graph_compat::pointer_segment(layer_id),
+                        crate::graph_compat::pointer_segment(group_id),
+                        crate::graph_compat::pointer_segment(node_id)
                     );
                     for (path, package) in [
                         (format!("{base}/package"), node.get("package")),
@@ -1201,6 +1206,23 @@ pub fn collect_pins(graph: &serde_json::Value) -> Result<Vec<PackagePin>> {
                         }
                     }
                     let settings = &node["settings"];
+                    if let Some(libraries) = settings["skill_libraries"].as_array() {
+                        for (index, entry) in libraries.iter().enumerate() {
+                            let path = format!("{base}/settings/skill_libraries/{index}/package");
+                            let package = &entry["package"];
+                            let id = package["id"].as_str().ok_or_else(|| {
+                                anyhow::anyhow!("incomplete package pin at {path}")
+                            })?;
+                            let version = package["version"].as_str().ok_or_else(|| {
+                                anyhow::anyhow!("incomplete package pin at {path}")
+                            })?;
+                            validate_identity(id, version)
+                                .with_context(|| format!("invalid package pin at {path}"))?;
+                            target_skill_pins
+                                .entry((id.to_owned(), version.to_owned()))
+                                .or_insert(path);
+                        }
+                    }
                     if !settings["package"].is_null() || !settings["version"].is_null() {
                         let path = format!("{base}/settings/package");
                         let id = settings["package"]
@@ -1219,6 +1241,7 @@ pub fn collect_pins(graph: &serde_json::Value) -> Result<Vec<PackagePin>> {
         }
     }
     pins.extend(target_mujoco_process_pins);
+    pins.extend(target_skill_pins);
     Ok(pins
         .into_iter()
         .map(|((id, version), path)| PackagePin { id, version, path })

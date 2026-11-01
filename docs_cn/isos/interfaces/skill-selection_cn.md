@@ -2,7 +2,7 @@
 
 [English](../../../docs/isos/interfaces/skill-selection.md) · [设计](../design/skill-selection_cn.md) · [首次使用](../usage/get-started_cn.md#r04-原生技能选择目标) · [固定用例](../../../tests/fixtures/skill_selection/README_cn.md)
 
-**R04 所有者契约：设计阶段，尚未实现。** IsOS 拥有已保存图、P01 精确软件包 pin、P04 选中 generation 与 EOS 子进程启动输入。EOS 拥有 ABI v2 描述符准入、受限 worker、能力 Broker、Dispatcher 与 SkillService。安装软件包本身不启用技能。这里仅选择原生库，不定义图中的技能步骤、WorkflowService 或新的执行器通道。[EOS host ABI 契约](https://github.com/Island-Team/Island-eos/blob/refactor%28v2%29/runtime-main/docs_cn/eos/interfaces/skills/native/host-abi_cn.md)定义 guest 执行。
+**R04 所有者契约：IsOS 实现候选，仍待独立复核与跨所有者验收。** IsOS 拥有已保存图、P01 精确软件包 pin、P04 选中 generation 与 EOS 子进程启动输入。EOS 拥有 ABI v2 描述符准入、受限 worker、能力 Broker、Dispatcher 与 SkillService。安装软件包本身不启用技能。这里仅选择原生库，不定义图中的技能步骤、WorkflowService 或新的执行器通道。[EOS host ABI 契约](https://github.com/Island-Team/Island-eos/blob/refactor%28v2%29/runtime-main/docs_cn/eos/interfaces/skills/native/host-abi_cn.md)定义 guest 执行。
 
 ## 图中的选择
 

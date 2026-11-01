@@ -2,7 +2,7 @@
 
 [English](../../../docs/isos/design/skill-selection.md) · [所有者契约](../interfaces/skill-selection_cn.md) · [生成配置](../interfaces/configuration_cn.md) · [软件包验证](../interfaces/package-verification_cn.md)
 
-**设计阶段。** R04 扩展已实现的 P01/P04/P05 与 R03 边界。图在 EOS component 上选择有界的精确原生库；IsOS 不解释 ABI 描述符，也不执行技能代码。EOS host ABI 与 worker 契约负责这些行为。这里不新增图技能节点、步骤执行器、ActionList 或第二条执行器路径。
+**实现候选，仍待独立复核与跨所有者重放。** R04 扩展已实现的 P01/P04/P05 与 R03 边界。图在 EOS component 上选择有界的精确原生库；IsOS 不解释 ABI 描述符，也不执行技能代码。EOS host ABI 与 worker 契约负责这些行为。这里不新增图技能节点、步骤执行器、ActionList 或第二条执行器路径。
 
 Apply 首先验证保存的 `0.1.0` 图与精确 EOS component 位置；按拒绝未知字段的结构解析最多 16 个 `skill_libraries` 项，在精确数组索引 JSON Pointer 上拒绝重复元组、错误 pin 和不安全相对路径。旧图读取器不投影此设置。然后将每项加入 P01 图 pin 集合；每个精确包重新验证一次，要求 `kind:"skill"`，以 nofollow 检查库路径分量、普通文件、1–64 MiB 上限及 SHA-256。仅使用已验证句柄，不扫描 store 或递归搜索 `*.skill.so`。同包可显式选择多库。
 
@@ -17,6 +17,8 @@ EOS 在目录变成可用前再次检查选中 manifest 与库内容。链接 pa
 验证使用[机器用例](../../../tests/fixtures/skill_selection/README_cn.md)。单元测试检查指针、pin 收集、排序与去重、规范字节、P01 链接变化、P04 generation 和子进程环境。stub 集成测试启动两代进程：篡改库和旧 EOS feature 在停止第一代前拒绝；有效选择只到达 EOS。EOS owner replay 检查错误 revision、ABI/描述符、未声明能力和 worker 回收。完整命令与输出放入 `logs/test/<run-id>/`；实现后在此记录结果。
 
 设计用例检查（2026-11-02）：`python3 tests/fixtures/skill_selection/check_cases.py` 通过 20 个用例 ID 与选择文件结构；`git diff --check` 通过。变更文档的相对链接扫描未发现缺失目标。完整本地输出在忽略的 `logs/test/20261102-r04-isos-design/`。这只检查契约结构；实现与跨所有者重放仍未完成。
+
+IsOS 实现候选（2026-11-02）：`cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test`、`cargo build`、`cargo test skill_selection -- --nocapture` 与 `python3 tests/fixtures/skill_selection/check_cases.py` 均通过。完整输出位于忽略的 `logs/test/20261102-r04-isos-impl/`。专项测试覆盖精确图指针、重复与不安全路径、已验证 P01 pin、链接 payload 修改、不兼容发布类型、私有 V2 generation 清单及篡改拒绝，以及只向 EOS 子进程交付环境变量。20 用例检查仅验证冻结表格与 schema；EOS 拥有的 I17–I20 和跨所有者双代运行重放仍需集成证据，才能关闭 R04。
 
 ## 精确诊断路径
 

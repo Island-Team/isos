@@ -2,7 +2,7 @@
 
 [中文](../../../docs_cn/isos/interfaces/skill-selection_cn.md) · [Design](../design/skill-selection.md) · [First use](../usage/get-started.md#r04-native-skill-selection-target) · [Frozen cases](../../../tests/fixtures/skill_selection/README.md)
 
-**R04 owner contract — design, not yet implemented.** IsOS owns the saved graph, exact P01 package pins, selected P04 generation and EOS child launch inputs. EOS owns ABI v2 descriptor admission, the confined worker, capability Broker, Dispatcher and SkillService. A package installation alone does not activate a skill. This selection supplies libraries, never a graph-authored skill sequence, WorkflowService or an actuator route. The [EOS host ABI contract](https://github.com/Island-Team/Island-eos/blob/refactor%28v2%29/runtime-main/docs/eos/interfaces/skills/native/host-abi.md) owns guest execution.
+**R04 owner contract — IsOS implementation candidate, pending independent review and cross-owner qualification.** IsOS owns the saved graph, exact P01 package pins, selected P04 generation and EOS child launch inputs. EOS owns ABI v2 descriptor admission, the confined worker, capability Broker, Dispatcher and SkillService. A package installation alone does not activate a skill. This selection supplies libraries, never a graph-authored skill sequence, WorkflowService or an actuator route. The [EOS host ABI contract](https://github.com/Island-Team/Island-eos/blob/refactor%28v2%29/runtime-main/docs/eos/interfaces/skills/native/host-abi.md) owns guest execution.
 
 ## Saved graph input
 

@@ -80,6 +80,16 @@ fn package_err(error: &anyhow::Error, id: &str, version: &str) -> (StatusCode, J
     )
 }
 fn admission_err(error: &anyhow::Error) -> (StatusCode, Json<Value>) {
+    if let Some(diagnostic) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<crate::skill_selection::Diagnostic>())
+    {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"schema_version":1,"ok":false,
+            "data":{"diagnostics":[diagnostic]},"error":"skill selection rejected"})),
+        );
+    }
     if let Some(failure) = error
         .chain()
         .find_map(|cause| cause.downcast_ref::<packages::PackageFailure>())
@@ -93,6 +103,12 @@ fn admission_err(error: &anyhow::Error) -> (StatusCode, Json<Value>) {
     err(StatusCode::UNPROCESSABLE_ENTITY, error)
 }
 fn admission_diagnostic(error: &anyhow::Error) -> Value {
+    if let Some(diagnostic) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<crate::skill_selection::Diagnostic>())
+    {
+        return json!(diagnostic);
+    }
     error
         .chain()
         .find_map(|cause| cause.downcast_ref::<graph_compat::Diagnostic>())
@@ -460,7 +476,7 @@ fn migration_error(error: graph_migration::MigrationError) -> (StatusCode, Json<
         graph_migration::MigrationError::Diagnostic(diagnostic) => (
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(json!({"schema_version":1,"ok":false,
-                "data":{"diagnostics":[diagnostic]},"error":"migration rejected"})),
+                "data":{"diagnostics":[graph_migration::public_diagnostic(&diagnostic)]},"error":"migration rejected"})),
         ),
         graph_migration::MigrationError::Generated(diagnostic) => {
             let status = if diagnostic.code == "generated_commit_uncertain" {
@@ -575,7 +591,9 @@ async fn validate_node_graph_inner(
         };
         return match graph_migration::prepare(&app.paths, &app.deployment, &proposal) {
             Ok(prepared) => ok(json!({"valid":true,"diagnostics":[],"edges":prepared.edges})),
-            Err(diagnostic) => ok(json!({"valid":false,"diagnostics":[diagnostic]})),
+            Err(diagnostic) => ok(
+                json!({"valid":false,"diagnostics":[graph_migration::public_diagnostic(&diagnostic)]}),
+            ),
         };
     }
     if let Err(error) = packages::verify_graph_packages(&app.paths, &edit.graph) {
