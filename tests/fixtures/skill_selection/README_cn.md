@@ -10,6 +10,6 @@
 
 ## 候选目录预检目标
 
-[`preflight_cases.json`](preflight_cases.json) 固定 18 个 IsOS 所有者用例，对齐已独立批准的 [EOS 私有预检设计](https://github.com/Island-Team/Island-eos/blob/cf48e439c88d7938f5d5e9cf839b066883359d36/docs_cn/eos/interfaces/skills/native/host-abi_cn.md)。成功和拒绝对象是合成的封闭单行协议示例；用例只是未来单元、stub 或跨仓重放要求，不表示实现已通过。每次故障注入都从仍在服务的旧运行开始，记录 PID 集合、run ID、活动修订、R03 grant 和 run scope。只有确认候选 grant 撤销与探测进程回收，才能认定干净拒绝。候选 run scope 尚未发布，首条预检故障须按 manager-session correlation ID 查询。全局硬期限为 90 秒。探测成功后仍须停止前重检字节/grant，并由 EOS 在实际启动时独立准入。R05/R06 实体停止次序是独立门槛。
+[`preflight_cases.json`](preflight_cases.json) 固定 18 个 IsOS 所有者用例，对齐已独立批准的 [EOS 私有预检设计](https://github.com/Island-Team/Island-eos/blob/cf48e439c88d7938f5d5e9cf839b066883359d36/docs_cn/eos/interfaces/skills/native/host-abi_cn.md)。R04-IPF07 用已链接且 P01 有效的发布检查更早的 IsOS 选中 pin 图门槛；它不调用 EOS 探测。成功和拒绝对象是合成的封闭单行协议示例；用例只是未来单元、stub 或跨仓重放要求，不表示实现已通过。每次故障注入都从仍在服务的旧运行开始，记录 PID 集合、run ID、活动修订、R03 grant 和 run scope。只有确认候选 grant 撤销与探测进程回收，才能认定干净拒绝。候选 run scope 尚未发布，首条预检故障须按 manager-session correlation ID 查询。全局硬期限为 90 秒。探测成功后仍须停止前重检字节/grant，并由 EOS 在实际启动时独立准入。R05/R06 实体停止次序是独立门槛。
 
 运行 `python3 tests/fixtures/skill_selection/preflight_cases.py` 检查用例 ID 与严格的结果示例；脚本不会运行 EOS，也不证明事务已实现。后续集成命令、完整输出、精确 IsOS/EOS 提交及实际子进程 PID 存放在忽略的 `logs/test/<run-id>/`。

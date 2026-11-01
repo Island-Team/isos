@@ -127,7 +127,7 @@ impl Inputs {
             revision: "c".repeat(64),
             libraries: vec![skill_selection::SelectedLibrary {
                 package_id: "test/verified".into(),
-                package_version: "1".into(),
+                package_version: "0.1.0".into(),
                 package_root: String::new(),
                 payload_root: String::new(),
                 receipt_sha256: String::new(),

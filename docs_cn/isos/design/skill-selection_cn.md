@@ -29,7 +29,9 @@ EOS 在目录变成可用前再次检查选中 manifest 与库内容。链接 pa
 3. 探测失败或随后停止前重检失败时，以新增的可返回错误并证明目录删除的显式 API 撤销候选 grant。`Supervisor::stop()`/Drop 只打印错误，不能作为证明。确认探测进程组清理；任一清理无法确认时优先报告 `skill_catalog_preflight_cleanup_unconfirmed`。在 `managers.remove(name)` 前返回，保留旧 PID、run ID、修订、grant 和 run scope；无需恢复 run。候选目录修复前禁止下一次替换。
 4. `ok:true` 后立即重新哈希保存图、选中 generation 完整清单、程序字节及 P01 包/库输入，验证候选 grant 与进程规格。这是最后的停止前门槛，候选 grant 继续用于启动。然后执行现有旧子进程停止、run scope 发布与候选启动顺序。新 EOS 用新暂存字节独立重复选中文件、grant、包、ABI 与纯目录就绪准入；不缓存探测结果。旧子进程停止后失败才走现有恢复路径。同一 run 的 EOS 自动重启重复启动准入，无须替换预检。
 
-跨所有者选中 pin 用例包括 P01 有效版本 `1`：EOS 在旧子进程停止前以 `selection/selection_invalid` 拒绝；IsOS 报固定 `skill_catalog_preflight_rejected`、撤销候选 grant，并在安全 manager 事件中保留精确的已验证 pin。事件收集器不得重新套用 EOS 的较严格版本语法。
+P01 拒绝发布版本 `1`，因此它不能用于验证选中 pin 的跨所有者边界。P01 可以验证版本超过 EOS 64 字节选中 pin 上限的发布；IsOS 现在于精确的图 `/package` 指针以 `skill_selection_invalid` 拒绝该选择，发生在 Apply 发布及候选 grant/探测分配之前。IsOS 在此图检查中实施 EOS 的 96 字节包 ID 与 64 字节版本上限。封闭的 EOS `selection/selection_invalid` 响应仍是错误交接的协议解析用例，不能证明普通 P01 有效的选中发布会产生这一探测响应。合成探测测试绕过包链接和验证，只有使用真实包的测试证明所有者门槛。
+
+选中 pin 审计证据（2026-11-02）：`cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test --no-fail-fast`、两个技能选择用例脚本与 `git diff --check` 均通过。完整测试包含 216 个 Rust 单元测试、七个 CLI 指南测试、一个移除命令测试和九个 edge 测试。新增的真实包单元测试链接并验证 P01 有效的超长 pin，然后检查精确图拒绝。完整输出在忽略的 `logs/test/20261102-r04-ipf07-pin-audit/`。
 
 探测可在旧子进程停止前拒绝无效 ABI、不支持的 callback、缺失静态 primitive binding、重复身份与超大目录；不能证明实时 adapter 健康、Dispatcher 状态、R05 实体 release fence 或 R06 actuator 停止与模拟器回收。探测绝不调用 guest handler；有效 handler 后续发出的未声明调用由 EOS Broker 在 Dispatcher release 前拒绝，维持唯一执行器准入路径。
 

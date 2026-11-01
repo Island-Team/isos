@@ -11,8 +11,8 @@
 | 字段 | 类型 / 单位 | 用途与校验 |
 | --- | --- | --- |
 | `settings.skill_libraries` | 数组 / 条目 | 可选，最多 16 项，仅限 EOS `@v0.1` component。生成文件按 `(package.id,package.version,library)` 排序；重复元组失败。保存图的字节和数组顺序仅在显式 Apply 时更新。 |
-| `package.id` | 字符串 / 软件包 ID | 必填，规范小写 `namespace/name`，P01 精确验证。所选技能另限最多 96 ASCII 字节，与 EOS 生命周期事件限制一致。 |
-| `package.version` | 字符串 / 发布版本 | 必填，P01 接受的精确版本，不使用 latest 或范围。所选技能的目标预停止门禁另限最多 64 ASCII 字节、数字开头、至少三个非空点分段，只允许 ASCII 字母、数字、`.`、`-`、`+`。当前 P01／EOS 选择语法仍允许 `0..1` 这类空段；R04 事件准入只在此 pin 与所选精确配对时接纳。保留包括大写字母在内的原始 build metadata。 |
+| `package.id` | 字符串 / 软件包 ID | 必填，规范 `namespace/name`；选中技能最多 96 个 ASCII 字节，P01 精确验证。 |
+| `package.version` | 字符串 / 发布版本 | 必填，P01 接受的精确版本；选中技能最多 64 个 ASCII 字节且至少三个点分段，不使用 latest 或范围。 |
 | `library` | 字符串 / POSIX 相对路径 | 必填 UTF-8，1–256 字节；分量不得为空、`.` 或 `..`，不得有反斜杠或 NUL，后缀为 `.skill.so`。目标必须是 1–64 MiB 的非符号链接普通文件；不扫描目录或递归发现。 |
 
 P01 图 pin 收集器把每个选中 `package` 计入，并使用精确 `/cores/isos/layers/process/groups/component/nodes/<id>/settings/skill_libraries/<index>/package` 指针。IsOS 对每项重新取得 P01 `VerifiedPackage`，要求发布 `kind:"skill"`，检查 payload 根、文件身份与 SHA-256；变更的链接 payload 失败。只有明列的库被选中。EOS 随后检查所有库中重复的技能身份。旧 `1.0.0` 图和 `eos.control.skill@v1.0` 不因此获得执行行为。
@@ -55,7 +55,7 @@ stdout 至多 16 KiB；stderr 仅限收集至 16 KiB 后丢弃。IsOS 只接受*
 | `abi` | `abi_library_invalid`, `abi_descriptor_invalid`, `abi_schema_invalid`, `abi_capability_unowned` |
 | `catalog` | `catalog_duplicate_identity`, `catalog_capacity`, `catalog_broker_unavailable`, `catalog_binding_unavailable`, `catalog_list_oversize` |
 
-IsOS 对包含包树读取、暂存和库检查的整次探测设置**硬 90 秒墙钟期限**。到期后终止探测进程组，再单独进行有界回收；迟到的成功不得覆盖超时。信号退出也按超时处理。IsOS `valid_pin` 可接受 P01 有效的选中发布版本 `1`，而 EOS `valid_selected_pin` 至少要求三个点分段。EOS 返回 `selection/selection_invalid`；IsOS 在停止旧子进程前映射为 `skill_catalog_preflight_rejected`，并以已检查的结果撤销候选 grant。IsOS 事件收集器在安全字段中保留经过 P01 验证的精确 pin，不得再以 EOS 的较严格解析器过滤该事件。有效非零 `ok:false` 对应 `skill_catalog_preflight_rejected`；缺失、多行、超大、无效、不匹配的输出或退出码与 `ok` 矛盾对应 `skill_catalog_preflight_invalid_output`；期限或信号对应 `skill_catalog_preflight_timeout`；无法确认探测进程或候选 grant 清理对应优先的 `skill_catalog_preflight_cleanup_unconfirmed`。四个固定 IsOS schema-1 诊断使用 `stage:"preflight"`、空 `path`，归入 `deployment_preflight_failed`。日志只可包含安全的 revision、generation、候选 run/correlation ID、有效的 EOS stage/code 与 IsOS code；不得包含探测输出、stderr、私有路径、原始 schema、bearer grant 或库字节。候选 run scope 尚未发布，首个故障属于 **manager-session** 游标；`isos logs all --current` 可能仍指向旧运行。
+IsOS 对包含包树读取、暂存和库检查的整次探测设置**硬 90 秒墙钟期限**。到期后终止探测进程组，再单独进行有界回收；迟到的成功不得覆盖超时。信号退出也按超时处理。P01 在包链接或安装时拒绝发布版本 `1`。P01 有效的 65 字节版本可链接，但 IsOS 在 Apply 发布或候选 grant/探测分配之前，于选中图的 `/package` 指针以 `skill_selection_invalid` 拒绝；同一门槛拒绝超过 96 字节的选中包 ID。该检查与 EOS 选中 pin 上限一致，维护事件安全 pin 边界。有效非零 `ok:false` 对应 `skill_catalog_preflight_rejected`；缺失、多行、超大、无效、不匹配的输出或退出码与 `ok` 矛盾对应 `skill_catalog_preflight_invalid_output`；期限或信号对应 `skill_catalog_preflight_timeout`；无法确认探测进程或候选 grant 清理对应优先的 `skill_catalog_preflight_cleanup_unconfirmed`。四个固定 IsOS schema-1 诊断使用 `stage:"preflight"`、空 `path`，归入 `deployment_preflight_failed`。日志只可包含安全的 revision、generation、候选 run/correlation ID、有效的 EOS stage/code 与 IsOS code；不得包含探测输出、stderr、私有路径、原始 schema、bearer grant 或库字节。候选 run scope 尚未发布，首个故障属于 **manager-session** 游标；`isos logs all --current` 可能仍指向旧运行。
 
 任一探测失败或后续停止前重检失败，IsOS 都须通过返回 `Result` 的显式路径撤销候选 bundle，并确认探测进程组已清理。当前 `Supervisor::stop()` 与 Drop 只打印撤销错误，不能证明清理。撤销失败报 `skill_catalog_preflight_cleanup_unconfirmed`，旧 PID、run ID、活动修订、grant 与 run scope 均保持不变，下一次替换前需要操作员修复。拒绝候选不启动恢复运行。`ok:true` 后，IsOS 在停止旧子进程和启动候选前，立即重检保存图修订、选中 generation 完整清单、精确程序字节、候选 grant 与 P01 收据/发布/payload/库字节。探测结果不能作为启动授权。新 EOS 进程在 ready 前以新暂存字节重复受监管准入、ABI 检查和共享静态就绪校验；同一运行中 EOS 自动重启也重复启动准入。旧进程停止后才发现变化时，走现有恢复路径并报告候选启动失败。
 

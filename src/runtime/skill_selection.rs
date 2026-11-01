@@ -131,6 +131,9 @@ fn valid_library(path: &str) -> bool {
 }
 
 fn valid_pin(pin: &Pin) -> bool {
+    if pin.id.len() > 96 || pin.version.len() > 64 || pin.version.split('.').count() < 3 {
+        return false;
+    }
     let Some((namespace, name)) = pin.id.split_once('/') else {
         return false;
     };
@@ -850,6 +853,45 @@ pub(crate) mod tests {
         assert_eq!(
             entries(&value).unwrap_err().path,
             "/cores/isos/layers/process/groups/component/nodes/bridge/settings/skill_libraries"
+        );
+    }
+
+    #[test]
+    fn selected_pin_limits_reject_p01_valid_release_before_eos_probe() {
+        let (_temp, paths, source) = fixture();
+        let version = format!("0.1.{}", "a".repeat(61));
+        assert_eq!(version.len(), 65);
+        let manifest = source.join("release.json");
+        let mut release: Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+        release["version"] = json!("1");
+        fs::write(&manifest, serde_json::to_vec(&release).unwrap()).unwrap();
+        assert!(packages::link_with_manifest(&paths, "test/verified", "1", &source, None).is_err());
+        release["version"] = json!(version);
+        fs::write(&manifest, serde_json::to_vec(&release).unwrap()).unwrap();
+        packages::link_with_manifest(&paths, "test/verified", &version, &source, None).unwrap();
+        packages::verify(&paths, "test/verified", &version).unwrap();
+
+        let mut item = pin("lib/island/skills/example.skill.so");
+        item["package"]["version"] = json!(version);
+        let error = entries(&graph(json!([item]))).unwrap_err();
+        assert_eq!(error.code, "skill_selection_invalid");
+        assert_eq!(
+            error.path,
+            "/cores/isos/layers/process/groups/component/nodes/eos/settings/skill_libraries/0/package"
+        );
+
+        let long_id = format!("{}/verified", "a".repeat(88));
+        assert_eq!(long_id.len(), 97);
+        release["id"] = json!(long_id);
+        release["version"] = json!("0.1.1");
+        fs::write(&manifest, serde_json::to_vec(&release).unwrap()).unwrap();
+        packages::link_with_manifest(&paths, &long_id, "0.1.1", &source, None).unwrap();
+        packages::verify(&paths, &long_id, "0.1.1").unwrap();
+        let mut item = pin("lib/island/skills/example.skill.so");
+        item["package"]["id"] = json!(long_id);
+        assert_eq!(
+            entries(&graph(json!([item]))).unwrap_err().code,
+            "skill_selection_invalid"
         );
     }
 

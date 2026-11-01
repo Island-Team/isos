@@ -1403,7 +1403,7 @@ mod restart_tests {
             .unwrap();
         assert_eq!(diagnostic.code, "skill_catalog_preflight_rejected");
         assert_eq!(diagnostic.eos_code, Some("selection_invalid"));
-        assert_eq!(diagnostic.meta.package_version.as_deref(), Some("1"));
+        assert_eq!(diagnostic.meta.package_version.as_deref(), Some("0.1.0"));
         assert!(!candidate_grants.exists());
         assert!(old_grants.exists());
         assert_eq!(

@@ -74,11 +74,9 @@
     },
     {
       "id": "R04-IPF07",
-      "mutation": "P01-valid selected release version 1 has fewer than three dot segments",
-      "expected": "selection_invalid_rejection_before_old_pid_stop_checked_candidate_retirement_and_exact_pin_in_safe_manager_event",
-      "isos_code": "skill_catalog_preflight_rejected",
-      "eos_stage": "selection",
-      "eos_code": "selection_invalid"
+      "mutation": "P01-valid selected release version exceeds EOS's 64-byte selected-pin limit",
+      "expected": "skill_selection_invalid_at_exact_graph_package_pointer_before_apply_or_candidate_probe",
+      "isos_code": "skill_selection_invalid"
     },
     {
       "id": "R04-IPF08",

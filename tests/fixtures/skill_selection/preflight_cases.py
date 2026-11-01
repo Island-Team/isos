@@ -32,8 +32,9 @@ rejection = data["rejection_result"]
 assert rejection == {"schema_version": 1, "ok": False, "stage": "abi", "code": "abi_descriptor_invalid"}
 cases = data["cases"]
 assert [case["id"] for case in cases] == [f"R04-IPF{i:02}" for i in range(1, 19)]
-allowed = {None, "skill_catalog_preflight_rejected", "skill_catalog_preflight_invalid_output", "skill_catalog_preflight_timeout", "skill_catalog_preflight_cleanup_unconfirmed"}
+allowed = {None, "skill_selection_invalid", "skill_catalog_preflight_rejected", "skill_catalog_preflight_invalid_output", "skill_catalog_preflight_timeout", "skill_catalog_preflight_cleanup_unconfirmed"}
 assert all({"id", "mutation", "expected", "isos_code"} <= set(case) and case["isos_code"] in allowed for case in cases)
+assert cases[6]["isos_code"] == "skill_selection_invalid" and "eos_stage" not in cases[6] and "eos_code" not in cases[6]
 closed = {
     "input": {"preflight_arguments_invalid", "preflight_grants_invalid", "preflight_profile_invalid"},
     "selection": {"selection_invalid", "selection_revision_mismatch", "selection_manifest_invalid", "selection_digest_mismatch", "selection_handoff_incomplete"},
