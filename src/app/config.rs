@@ -51,6 +51,73 @@ struct RuntimePaths {
 #[serde(deny_unknown_fields)]
 struct DeploymentConfig {
     name: Option<String>,
+    stop_timeout_ms: Option<u64>,
+    eos_stop_grace_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct StopBudget {
+    pub timeout_ms: u64,
+    pub eos_grace_ms: u64,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct StopBudgetDiagnostic {
+    pub code: &'static str,
+    pub stage: &'static str,
+    pub path: &'static str,
+}
+
+impl std::fmt::Display for StopBudgetDiagnostic {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}: {}", self.code, self.path)
+    }
+}
+
+impl std::error::Error for StopBudgetDiagnostic {}
+
+impl StopBudget {
+    fn from_deployment(config: &DeploymentConfig) -> Result<Self> {
+        let timeout_ms = config.stop_timeout_ms.unwrap_or(30_000);
+        ensure!(
+            (5_000..=120_000).contains(&timeout_ms),
+            StopBudgetDiagnostic {
+                code: "stop_budget_invalid",
+                stage: "config",
+                path: "/deployment/stop_timeout_ms"
+            }
+        );
+        let eos_grace_ms = config.eos_stop_grace_ms.unwrap_or(20_000);
+        ensure!(
+            (1_000..=timeout_ms - 3_000).contains(&eos_grace_ms),
+            StopBudgetDiagnostic {
+                code: "stop_budget_invalid",
+                stage: "config",
+                path: "/deployment/eos_stop_grace_ms"
+            }
+        );
+        Ok(Self {
+            timeout_ms,
+            eos_grace_ms,
+        })
+    }
+}
+
+pub fn stop_budget() -> Result<StopBudget> {
+    let path = runtime_config_path(
+        Path::new(env!("CARGO_MANIFEST_DIR")),
+        std::env::var_os("ISOS_CONFIG").as_deref(),
+    )?;
+    match fs::read_to_string(path) {
+        Ok(source) => {
+            let config: RuntimeConfig = toml::from_str(&source)?;
+            StopBudget::from_deployment(&config.deployment)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            StopBudget::from_deployment(&DeploymentConfig::default())
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -65,6 +132,7 @@ struct LoggingConfig {
 
 fn config_values(source: &str, repo_root: &Path) -> Result<BTreeMap<&'static str, String>> {
     let config: RuntimeConfig = toml::from_str(source)?;
+    StopBudget::from_deployment(&config.deployment)?;
     let mut values = BTreeMap::new();
     for (port, key) in [
         (config.server.http_port, "ISOS_HTTP_PORT"),
@@ -310,6 +378,21 @@ mod tests {
         assert!(config_values("[logging]\nlevel='verbose'\n", root).is_err());
         assert!(config_values("[logging]\ndefault_source='../bad'\n", root).is_err());
         assert!(config_values("[logging]\nmax_sources=9\n", root).is_err());
+        let defaults = StopBudget::from_deployment(&DeploymentConfig::default()).unwrap();
+        assert_eq!(
+            (defaults.timeout_ms, defaults.eos_grace_ms),
+            (30_000, 20_000)
+        );
+        let error = config_values("[deployment]\nstop_timeout_ms=4999\n", root).unwrap_err();
+        let diagnostic = error.downcast_ref::<StopBudgetDiagnostic>().unwrap();
+        assert_eq!(diagnostic.path, "/deployment/stop_timeout_ms");
+        let error = config_values(
+            "[deployment]\nstop_timeout_ms=5000\neos_stop_grace_ms=3000\n",
+            root,
+        )
+        .unwrap_err();
+        let diagnostic = error.downcast_ref::<StopBudgetDiagnostic>().unwrap();
+        assert_eq!(diagnostic.path, "/deployment/eos_stop_grace_ms");
         assert_eq!(
             runtime_config_path(root, None).unwrap(),
             root.join("config/isos.toml")

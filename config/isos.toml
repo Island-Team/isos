@@ -15,6 +15,10 @@ ui_dist = "../IsosUI/dist/local"
 
 [deployment]
 name = "default"
+# Monotonic stop budget in milliseconds (5000..120000).
+stop_timeout_ms = 30000
+# EOS grace in milliseconds (1000..stop_timeout_ms-3000).
+eos_stop_grace_ms = 20000
 
 [logging]
 default_source = "all"

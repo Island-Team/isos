@@ -327,14 +327,18 @@ pub(crate) fn wait_for_interrupt(paths: &config::Paths, name: &str) -> Result<()
     println!("Deployment is running; press Ctrl+C to stop it.");
     loop {
         if INTERRUPTED.load(Ordering::SeqCst) {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&manager_call(paths, name, "deployment_stop")?)?
-            );
+            let result = manager_call(paths, name, "deployment_stop")?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+            if result["terminal"]["outcome"] == "unknown" {
+                anyhow::bail!("dependent stop unconfirmed");
+            }
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(200));
         let status = manager_call(paths, name, "deployment_status")?;
+        if status["terminal"]["outcome"] == "unknown" {
+            anyhow::bail!("dependent stop unconfirmed");
+        }
         if status["state"] == "stopped" {
             return Ok(());
         }
