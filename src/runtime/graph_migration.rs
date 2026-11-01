@@ -110,6 +110,28 @@ fn generated_error(error: anyhow::Error) -> MigrationError {
     MigrationError::Filesystem(error)
 }
 
+#[cfg(test)]
+static FAIL_GRAPH_PARENT_SYNC_FOR: std::sync::OnceLock<
+    std::sync::Mutex<Option<std::path::PathBuf>>,
+> = std::sync::OnceLock::new();
+
+fn sync_graph_parent(path: &std::path::Path) -> Result<(), MigrationError> {
+    #[cfg(test)]
+    {
+        let mut pending = FAIL_GRAPH_PARENT_SYNC_FOR
+            .get_or_init(|| std::sync::Mutex::new(None))
+            .lock()
+            .unwrap();
+        if pending.as_deref() == Some(path) {
+            *pending = None;
+            return Err(MigrationError::OutcomeUncertain);
+        }
+    }
+    fs::File::open(path.parent().unwrap())
+        .and_then(|file| file.sync_all())
+        .map_err(|_| MigrationError::OutcomeUncertain)
+}
+
 fn generated_prepare_error(error: anyhow::Error) -> Diagnostic {
     if let Some(generated) = error.downcast_ref::<crate::generated_v2::Diagnostic>() {
         let mut result = diagnostic(&generated.path, generated.code, generated.message);
@@ -622,9 +644,7 @@ pub fn commit(
     )
     .map_err(generated_error)?;
     config::atomic_write(&path, &proposal.bytes).map_err(MigrationError::Filesystem)?;
-    fs::File::open(path.parent().unwrap())
-        .and_then(|file| file.sync_all())
-        .map_err(|_| MigrationError::OutcomeUncertain)?;
+    sync_graph_parent(&path)?;
     Ok(proposal)
 }
 
@@ -713,15 +733,38 @@ pub fn apply_new(
     )
     .map_err(generated_error)?;
     config::atomic_write(&path, &proposal.bytes).map_err(MigrationError::Filesystem)?;
-    fs::File::open(path.parent().unwrap())
-        .and_then(|file| file.sync_all())
-        .map_err(|_| MigrationError::OutcomeUncertain)?;
+    sync_graph_parent(&path)?;
     Ok((proposal, prepared.specs))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn graph_parent_sync_failure_reports_uncertain_after_visible_rename() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("default.nodes.json");
+        let old = b"{\"version\":\"0.1.0\",\"robot\":{\"id\":\"old\"},\"cores\":{}}";
+        let new = b"{\"version\":\"0.1.0\",\"robot\":{\"id\":\"new\"},\"cores\":{}}";
+        config::atomic_write(&path, old).unwrap();
+        config::atomic_write(&path, new).unwrap();
+        *FAIL_GRAPH_PARENT_SYNC_FOR
+            .get_or_init(|| std::sync::Mutex::new(None))
+            .lock()
+            .unwrap() = Some(path.clone());
+        assert!(matches!(
+            sync_graph_parent(&path),
+            Err(MigrationError::OutcomeUncertain)
+        ));
+        let observed = fs::read(&path).unwrap();
+        assert!(observed == old || observed == new);
+        assert_eq!(observed, new);
+        assert_eq!(
+            graph_compat::revision(&observed),
+            graph_compat::revision(new)
+        );
+    }
 
     #[test]
     fn edge_diagnostic_keeps_structured_cli_and_http_context() {

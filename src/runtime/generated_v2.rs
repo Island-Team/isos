@@ -679,6 +679,32 @@ fn generation(manifest: &Manifest) -> Result<String> {
     Ok(digest(&serde_json::to_vec(&value)?))
 }
 
+#[cfg(test)]
+static FAIL_PARENT_SYNC_FOR: std::sync::OnceLock<std::sync::Mutex<Option<PathBuf>>> =
+    std::sync::OnceLock::new();
+
+#[cfg(test)]
+fn fail_parent_sync_once(path: &Path) {
+    *FAIL_PARENT_SYNC_FOR
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .unwrap() = Some(path.to_path_buf());
+}
+
+#[cfg(test)]
+fn injected_parent_sync_failure(path: &Path) -> bool {
+    let mut pending = FAIL_PARENT_SYNC_FOR
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .unwrap();
+    if pending.as_deref() == Some(path) {
+        *pending = None;
+        true
+    } else {
+        false
+    }
+}
+
 fn publish_file_replace(path: &Path, bytes: &[u8]) -> Result<(), Diagnostic> {
     let parent = path.parent().ok_or_else(|| unsafe_path("publish"))?;
     private_dir(parent)?;
@@ -690,6 +716,10 @@ fn publish_file_replace(path: &Path, bytes: &[u8]) -> Result<(), Diagnostic> {
     let _ = fs::remove_file(&temporary);
     write_private(&temporary, bytes)?;
     fs::rename(&temporary, path).map_err(|_| unsafe_path("publish"))?;
+    #[cfg(test)]
+    if injected_parent_sync_failure(path) {
+        return Err(commit_uncertain());
+    }
     fs::File::open(parent)
         .and_then(|file| file.sync_all())
         .map_err(|_| {
@@ -1274,5 +1304,52 @@ mod tests {
             (error.code, error.stage),
             ("generated_unsafe_path", "defaults")
         );
+    }
+
+    #[test]
+    fn selection_parent_sync_failure_leaves_only_complete_old_or_new_generation() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path());
+        let graph = graph();
+        let revision = applied(&paths, &graph);
+        let old = publish(&paths, "test", &graph, &revision, &files(b"old")).unwrap();
+        let old_bytes = fs::read(old.join("eos/graph.json")).unwrap();
+        fail_parent_sync_once(&paths.generated("test").join("selection.json"));
+        let error = publish(&paths, "test", &graph, &revision, &files(b"new")).unwrap_err();
+        assert_eq!(
+            (error.code, error.stage),
+            ("generated_commit_uncertain", "publish")
+        );
+        assert_eq!(fs::read(old.join("eos/graph.json")).unwrap(), old_bytes);
+        let observed = selected(&paths, "test", &graph, &revision, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(fs::read(observed.join("eos/graph.json")).unwrap(), b"new");
+        assert!(marker_present(&marker_path(&paths.generated("test"), &revision)).unwrap());
+    }
+
+    #[test]
+    fn initial_marker_parent_sync_failure_recovers_selected_complete_leaf() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path());
+        let graph = graph();
+        let revision = applied(&paths, &graph);
+        let marker = marker_path(&paths.generated("test"), &revision);
+        fail_parent_sync_once(&marker);
+        let error = publish(&paths, "test", &graph, &revision, &files(b"profile")).unwrap_err();
+        assert_eq!(
+            (error.code, error.stage),
+            ("generated_commit_uncertain", "publish")
+        );
+        let root = selected(&paths, "test", &graph, &revision, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(fs::read(root.join("eos/graph.json")).unwrap(), b"profile");
+        fs::remove_file(&marker).unwrap();
+        assert_eq!(
+            selected(&paths, "test", &graph, &revision, None).unwrap(),
+            Some(root)
+        );
+        assert!(marker_present(&marker).unwrap());
     }
 }
