@@ -905,6 +905,11 @@ pub fn selected(
     revision: &str,
     owner_files: Option<&[(PathBuf, Vec<u8>)]>,
 ) -> Result<Option<PathBuf>, Diagnostic> {
+    let saved =
+        graph_compat::read(&paths.node_graph_path(name)).map_err(|_| revision_mismatch())?;
+    if saved.revision != revision || saved.value != *graph {
+        return Err(revision_mismatch());
+    }
     let generated = paths.generated(name);
     let marker = marker_path(&generated, revision);
     let marked = marker_present(&marker)?;
@@ -1253,6 +1258,34 @@ mod tests {
         assert_eq!(
             selected(&paths, "test", &graph, &revision, None).unwrap(),
             Some(root)
+        );
+    }
+
+    #[test]
+    fn changed_graph_publication_keeps_old_entry_until_graph_rename() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path());
+        let old_graph = graph();
+        let old_revision = applied(&paths, &old_graph);
+        let old_leaf = publish(&paths, "test", &old_graph, &old_revision, &files(b"old")).unwrap();
+        let mut new_graph = graph();
+        new_graph["robot"] = json!({"id":"future"});
+        let new_bytes = serde_json::to_vec_pretty(&new_graph).unwrap();
+        let new_revision = graph_compat::revision(&new_bytes);
+        let new_leaf = publish(&paths, "test", &new_graph, &new_revision, &files(b"new")).unwrap();
+        assert_eq!(
+            selected(&paths, "test", &old_graph, &old_revision, None).unwrap(),
+            Some(old_leaf)
+        );
+        let error = selected(&paths, "test", &new_graph, &new_revision, None).unwrap_err();
+        assert_eq!(
+            (error.code, error.stage),
+            ("generated_revision_mismatch", "graph")
+        );
+        crate::config::atomic_write(&paths.node_graph_path("test"), &new_bytes).unwrap();
+        assert_eq!(
+            selected(&paths, "test", &new_graph, &new_revision, None).unwrap(),
+            Some(new_leaf)
         );
     }
 
