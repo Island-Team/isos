@@ -4,7 +4,7 @@ use crate::{
     config::{self, Paths},
     core_setup, edge_admission,
     graph_compat::{self, Diagnostic, SavedGraph},
-    lock, packages, preflight, process,
+    lock, mujoco_catalog, packages, preflight, process,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -494,6 +494,8 @@ pub fn prepare(paths: &Paths, name: &str, proposal: &Proposal) -> Result<Prepare
     }
     packages::verify_graph_packages(paths, &proposal.graph)
         .map_err(|error| package_diagnostic(&error))?;
+    mujoco_catalog::validate_graph(paths, &proposal.graph)
+        .map_err(|error| package_or_owner_diagnostic(&error, "/cores/eos"))?;
     if proposal.graph.pointer("/cores/eos").is_none() {
         return Err(diagnostic(
             "/cores/eos",

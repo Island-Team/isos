@@ -35,7 +35,17 @@ Run 重新读取已保存字节、包收据、选定资源、配置的核心程�
 
 ## 选择器与连线算法
 
-对每个注册的 `Setting.selector`，根据 `package`、`registry` 或 `graph` 提供者从**草稿**图求选项。包提供者只读取已验证的精确版本。结果按节点路径和设置键分组，包含稳定 ID、标签、说明、可用性与原因。不可用的已选值保持可见，供操作员修复；Apply 重新解析所有选择。IsosUI 的可搜索控件可类似模型权重选择器，但保存稳定 ID，而不是文件路径。
+对每个注册的 `Setting.selector`，根据 `package`、`registry` 或 `graph` 提供者从**草稿**图求选项。包提供者只读取已验证的精确固定版本。结果按 `(node_path,setting)` 分组并确定性排序，包含稳定 ID、标签、说明、可用性与长度受限的原因。不可用的已选值保持可见，供操作员修复。EOS 通用 `mujoco-v2` 适配器增加两个由 IsOS 定义的嵌套设备选择器，但软件包不得重定义通用硬件类型。从同一草稿的引用进程读取场景，只返回相应类别、场景及精确固定版本的设备。UI 同时修改 `device_id` 与 `simulator_node`；Apply 在图锁内重新解析当前精确草稿并检查双字段。选项响应不具备发布授权。[P03 契约与夹具](../interfaces/node-options_cn.md)固定响应字段和诊断。IsosUI 可搜索控件保存稳定 ID，而非文件路径。
+
+P03 设计证据（2026-11-01）：`python3` 解析三份冻结 JSON 夹具，检查有序且唯一的分组／选项键、精确诊断字段、不写入不变量及本地文档链接。基于 P02 的 `/home/ashex/.cargo/bin/cargo fmt --all -- --check`、`/home/ashex/.cargo/bin/cargo clippy --all-targets -- -D warnings`、`/home/ashex/.cargo/bin/cargo test` 与 `git diff --check` 均通过（108 个单元测试、5 个 CLI 指南测试、1 个已移除命令测试、9 个连线准入测试）。完整本地输出在忽略的 `logs/test/20261101-p03-node-options-design/`。
+
+P03 实现证据（2026-11-01）：`/home/ashex/.cargo/bin/cargo fmt -- --check`、`/home/ashex/.cargo/bin/cargo clippy --all-targets -- -D warnings`、`/home/ashex/.cargo/bin/cargo test`、`/home/ashex/.cargo/bin/cargo build` 与 `python3 tests/node_options_cli.py` 均通过。Cargo 执行 109 个单元测试、5 个 CLI 指南测试、1 个已移除命令测试及 9 个连线准入测试。真实软件包的全新 home 回放运行 7 个 API 用例，覆盖 7 个精确选项组、包括缺失图及已 Apply 旧图字节的 GET 修订关联、精确固定版本缺失、负载变化、主机库缺失、随场景变化的设备适用性、不可用的已保存 ID、格式错误 ID、未知图版本／类型、过期 Apply，以及拒绝时保存图与状态不变。完整输出保存在忽略的 `logs/test/20261101-p03-node-options/`。
+
+在 P04 生成配置合并后，P03 基于 IsOS `e5c1824` 完成 rebase，重复运行相同的格式、Clippy、测试、构建与真实软件包 7 用例回放：130 个单元测试、5 个 CLI 指南测试、1 个已移除命令测试、9 个连线准入测试及 7 个全新 home API 用例均通过。定向测试还覆盖显式 null 所选 ID 的拒绝，以及已链接场景遭篡改后的运行中 Restart；后者保持活动修订与子进程 PID 不变。完整输出保存在忽略的 `logs/test/20261101-p03-node-options-post-p04/`。
+
+独立实现审查发现全局已安装 sidecar 目录可能让无关的已验证 MuJoCo 发行版干扰草稿的精确固定版本。现在选项读取器只加载草稿进程固定版本的已验证 sidecar；该版本不可用时，仅用 EOS 内置目录，使已保存选择仍可修复。Apply 时 P02 准入先于更宽的归属方目录检查。P01 已验证的 `0.1.2` 包与 EOS 已编译的 `0.1.1` 适配器保持独立：未改动的 `0.1.1` 图仍能解析并 Apply，而适配器草稿固定到 `0.1.2` 时，在设备指针返回 `mujoco_device_unavailable`。注入未编译 EOS 目录后，选项标记为 `adapter_unavailable`，Apply 在 `/adapter/type` 拒绝。两项定向变体测试通过，并检查拒绝时已保存及活动状态不变。审查修复后，`/home/ashex/.cargo/bin/cargo fmt --all -- --check`、`/home/ashex/.cargo/bin/cargo clippy --all-targets -- -D warnings`、`/home/ashex/.cargo/bin/cargo test`、`/home/ashex/.cargo/bin/cargo build` 与 `python3 tests/node_options_cli.py` 均通过；Cargo 运行 130 个单元测试、5 个 CLI 指南测试、1 个已移除命令测试与 9 个连线准入测试，真实 MuJoCo 回放 10/10 用例通过，耗时 340.918 秒。最终图版本预检修改后再次通过相同 Rust 门禁和定向 `python3 tests/node_options_cli.py NodeOptionsReplay.test_unknown_graph_identity_and_stale_revision` 回放（1/1）。完整输出在忽略的 `logs/test/20261101-p03-review-fixes/`。
+
+最终审查发现旧图选项读取器仍使用全部已安装 sidecar。安全的 `1.0.0` 检查现用 EOS 内置目录生成三个历史集合。`python3 tests/node_options_cli.py NodeOptionsReplay.test_get_missing_graph_and_applied_legacy_revision NodeOptionsReplay.test_two_installed_releases_leave_safe_legacy_get_read_only` 回放 2/2 通过，检查精确保存字节修订、只读状态、链接第二个已验证发行版后三个集合不变，以及保存／活动状态不变。测试辅助函数提取后，目标版本的双发行版回放也通过 1/1。已应用标记夹具改为实际的 `data/generated` 目录。格式和 Clippy 通过；首次 `cargo test` 出现一个无关的上传 mock 失败，立即重跑通过 130 个单元测试、5 个 CLI 指南测试、1 个已移除命令测试及 9 个连线准入测试。构建与 Python 编译通过。完整输出在忽略的 `logs/test/20261101-p03-legacy-review/`。
 
 IsOS 校验边的来源、目的类型、`priority` 和 `frequency_hz`。**当前实现：**编辑器校验 API 对比注册端口的精确数据类型，并在 Apply 前返回定位到连线的 `edge_type_mismatch` 诊断；数据类型 schema 载明字段单位。其他校验失败仍使用 EOS 校验器的通用诊断。目标中的实际路由由 EOS 管理：每边单调时钟 token bucket 限流；加权公平服务和有界队列防止高优先级流饿死其他流；溢出计数并限速记录。`expected_rate_hz` 是生产者元数据，不会暗中变成边上限。仅设计连线可在 IsosUI 展示，但不得声称有运行时调度。优先级不可绕过调度器安全准入或执行器停止。
 

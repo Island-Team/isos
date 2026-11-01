@@ -58,4 +58,4 @@ MuJoCo P02 包描述文件使用精确的 `catalog_version:"0.1.0"` 判别字段
 | `path` | 相对包路径或 null／— | 文件资源字节 | 场景／文件须是安全普通路径；逻辑设备为 null | 不存入图，不发给 UI |
 | `sha256` | 64 位十六进制或 null／摘要 | 发现资源变化 | 新文件资源必需；旧 MuJoCo 描述使用已验证包指纹 | Apply／Run 复查 |
 
-注册设置 `Setting.selector={provider:"package",resource:"scene",package_from:"node.package"}` 时，IsOS 通过 [node-options](local-api_cn.md#发行目标设置选项尚未实现)返回包内稳定场景 ID。若发行缺失、未验证、变化或与 EOS 已编译适配器不兼容，选项仍可见但附不可用原因，Apply 失败。包元数据与有类型硬件负载分离；EOS 内部适配器注册表判断 `mujoco-v2` 能否连接。新的 `@v0.1` 进程类型由 MuJoCo 包贡献；通用相机／底盘／机械臂类型仍归 EOS。
+注册设置 `Setting.selector={provider:"package",resource:"scene",package_from:"node.package"}` 时，IsOS 通过 [node-options](node-options_cn.md)返回包内稳定场景 ID。若发行缺失、未验证、变化或与 EOS 已编译适配器不兼容，选项仍可见但附不可用原因，Apply 失败。包元数据与有类型硬件负载分离；EOS 内部适配器注册表判断 `mujoco-v2` 能否连接。新的 `@v0.1` 进程类型由 MuJoCo 包贡献；通用相机／底盘／机械臂类型仍归 EOS。

@@ -882,6 +882,48 @@ pub fn catalog() -> Result<Value> {
     catalog_with_sidecars(packages::node_type_sidecars(&Paths::discover()?)?)
 }
 
+/// Built-in EOS registry without installed package contributions. Option
+/// projection resolves package selectors from the draft's exact verified pin.
+pub fn catalog_base() -> Result<Value> {
+    catalog_with_sidecars(Vec::new())
+}
+
+/// Resolve only the exact MuJoCo process pin used by an editable draft. A
+/// missing or changed pin is omitted so node-options can show a repair row.
+/// Installed releases outside this graph cannot contribute selector metadata.
+pub fn catalog_for_option_graph(paths: &Paths, graph: &Value) -> Result<Value> {
+    if graph["version"] != "0.1.0" {
+        // Historical graphs expose only the three read-only collections from
+        // EOS's built-in registry. Unrelated installed releases cannot change
+        // those collections or make inspection fail on duplicate type IDs.
+        return catalog_base();
+    }
+    let mut sidecar = None;
+    if let Some(nodes) = graph
+        .pointer("/cores/eos/layers/process/groups/mujoco/nodes")
+        .and_then(Value::as_object)
+    {
+        for node in nodes.values() {
+            if node["node_type"] != "eos.process.mujoco@v0.1" {
+                continue;
+            }
+            if let (Some(id), Some(version)) = (
+                node["package"]["id"].as_str(),
+                node["package"]["version"].as_str(),
+            ) && let Ok(verified) = packages::verify(paths, id, version)
+                && let Some(selected) = verified.sidecar
+            {
+                sidecar = Some(selected);
+                break;
+            }
+        }
+    }
+    match sidecar {
+        Some(sidecar) => catalog_with_sidecars(vec![sidecar]),
+        None => catalog_base(),
+    }
+}
+
 pub fn catalog_for_graph(paths: &Paths, graph: &Value) -> Result<Value> {
     catalog_with_sidecars(packages::node_type_sidecars_for_graph(paths, graph)?)
 }
