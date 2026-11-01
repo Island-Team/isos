@@ -65,3 +65,7 @@ P04 失败使用已有 schema-1 本地 API 封装：准入失败用 HTTP `422`�
 ## 共享 JSONL 事件
 
 [P06 共享事件契约](events_cn.md)持有精确信封、管理器会话与部署运行 ID、包来源、子进程接收、脱敏及高频抑制。IsOS 保留私有轮转分类文件和统一 `events.log`；[本地日志 API](local-api_cn.md)保留现有游标与过滤接口。实时就绪以 status 为准。
+
+## R04 生成技能选择目标
+
+非空 EOS component `settings.skill_libraries` 列表使 IsOS 在 P04 leaf 中生成 `isos/skill-selection.json`，并在 `manifest.json.files` 列出其 SHA-256。仅选中的 EOS 子进程通过 `EOS_SKILL_SELECTION_FILE` 接收绝对路径。保存图 revision、精确包 pin、库摘要与 generation 均须在停止旧子进程前重新验证；详见[选择契约](skill-selection_cn.md)。

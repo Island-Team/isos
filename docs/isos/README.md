@@ -6,4 +6,6 @@ The saved `.nodes.json` graph is the only deployment path. An optional user unit
 
 The R03 [managed control-grant contract](interfaces/control-grants.md) and [launch design](design/control-grants.md) record the qualified IsOS issuance and EOS handoff after merged owner PRs and a clean-home replay. The broader I4 lifecycle gate and R05/R06 physical simulator qualification remain open.
 
+R04's [verified native-skill selection contract](interfaces/skill-selection.md) and [transaction design](design/skill-selection.md) define the planned exact package/library handoff to the EOS worker; current IsOS binaries do not admit this selection yet.
+
 [中文](../../docs_cn/isos/README_cn.md)

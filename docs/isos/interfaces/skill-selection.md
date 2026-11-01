@@ -1,0 +1,58 @@
+# R04 verified host-skill selection
+
+[中文](../../../docs_cn/isos/interfaces/skill-selection_cn.md) · [Design](../design/skill-selection.md) · [First use](../usage/get-started.md#r04-native-skill-selection-target) · [Frozen cases](../../../tests/fixtures/skill_selection/README.md)
+
+**R04 owner contract — design, not yet implemented.** IsOS owns the saved graph, exact P01 package pins, selected P04 generation and EOS child launch inputs. EOS owns ABI v2 descriptor admission, the confined worker, capability Broker, Dispatcher and SkillService. A package installation alone does not activate a skill. This selection supplies libraries, never a graph-authored skill sequence, WorkflowService or an actuator route. The [EOS host ABI contract](https://github.com/Island-Team/Island-eos/blob/refactor%28v2%29/runtime-main/docs/eos/interfaces/skills/native/host-abi.md) owns guest execution.
+
+## Saved graph input
+
+Only the selected `isos.process.component@v0.1` node at `isos/process/component/eos`, with `settings.role:"eos"` and resolved executable `aether-runtime`, may have optional `settings.skill_libraries`. The `bridge`, `config` and any other EOS-role component fail at their `/settings/skill_libraries` pointer even though their role is also `eos`. G06's `@v0.1` component setting catalog advertises the field; this owner check enforces the narrower runtime-node predicate. Absence or `[]` means no external host catalog and no `EOS_SKILL_SELECTION_FILE`. Every nonempty entry is exactly `{ "package": { "id": "namespace/name", "version": "x.y.z" }, "library": "lib/island/skills/example.skill.so" }`; unknown keys fail. `package` is the exact P01 release pin, and `library` is a package-relative POSIX path to one native ABI v2 shared library, not a glob, directory, command or URL. The graph cannot name a host executable, worker argument, skill handler, callback, step or privileged capability. The EOS process node retains its usual role, arguments and dependency rules.
+
+| Field | Type / unit | Purpose and validation |
+| --- | --- | --- |
+| `settings.skill_libraries` | array / entries | Optional, at most 16 entries; only on the EOS `@v0.1` component. Each entry has exactly `package` and `library`. Sort by `(package.id,package.version,library)` in the generated selection, reject repeated tuples, and preserve saved graph bytes and array order until explicit Apply. |
+| `package.id` | string / package ID | Required canonical `namespace/name`; P01 verifies exactly this installed or linked schema-2 release. |
+| `package.version` | string / release version | Required exact version accepted by P01; no latest/range resolution. |
+| `library` | string / relative POSIX path | Required UTF-8, 1–256 bytes, components neither empty, `.` nor `..`, no backslash or NUL, suffix `.skill.so`. The resolved target must be a non-symlink regular file of 1–64 MiB; no symlink component, directory scan or recursive discovery. |
+
+The P01 graph pin collector includes every selected `package` at its exact `/cores/isos/layers/process/groups/component/nodes/<id>/settings/skill_libraries/<index>/package` pointer. For each entry IsOS obtains a fresh P01 `VerifiedPackage`, requires release `kind:"skill"`, checks the canonical payload root, selected file identity and SHA-256, and rejects duplicate library paths or changed linked payload. A verified package can contain other files, but only the explicit list is selected. The same package may contribute more than one explicitly listed library; EOS later rejects duplicate skill identities across all libraries. Legacy `1.0.0` graphs and old `eos.control.skill@v1.0` nodes do not acquire this field or execution behavior.
+
+The G06 catalog describes this field truthfully on `isos.process.component@v0.1` with additive `data_type:"object_array"`, `min_items:0`, `max_items:16` and an `items_schema` JSON Schema object. The item schema has `type:"object"`, `additionalProperties:false`, required `package` and `library`; `package` is another no-extra object requiring string `id` and `version`; `library` is a nonempty string of at most 256 characters. The EOS registry accepts only its bounded local schema subset (`type`, `properties`, `required`, `additionalProperties`, `minLength`, `maxLength`, `pattern`), at most 8 KiB and depth 3, with no `$ref` or unknown keyword. IsOS then applies the stricter byte/path, exact owner-node and P01 checks above. Existing setting metadata serialization remains unchanged when these new fields are absent. The `@v1.1` catalog and legacy graph remain unchanged; downstream U01 forms receive an object-array descriptor rather than a misleading string setting. The IsOS `ProcessSettings` parser and G06 aggregate-catalog adapter must both be extended; merely documenting the field does not admit it.
+
+IsOS owns and publishes the `@v0.1` component descriptor with both its existing `env_from` setting and `skill_libraries`, using EOS's additive generic `SettingType::ObjectArray` support. The historical EOS `@v1.1` catalog descriptor remains a compatibility input, not the owner of the new IsOS type. IsOS's older-EOS fallback clone may supply `env_from` for skill-free graphs but must not synthesize `skill_libraries` or admit a nonempty selection. P05's exact `host-skill-abi-v2` claim gates the selected runtime binary.
+
+## Selected generation and EOS handoff
+
+For a nonempty list, Apply adds one IsOS-authored `isos/skill-selection.json` to the immutable P04 `v2/<active_revision>/<generation>/` leaf. Its exact SHA-256 appears once in schema-2 `manifest.json.files`; its selected packages appear in `manifest.json.packages`. The file is private `0600` beneath `0700` parents. Its compact sorted JSON fields are exactly:
+
+```json
+{
+  "schema_version": 1,
+  "active_revision": "<64 lowercase hex SHA-256 of saved graph bytes>",
+  "libraries": [{
+    "package_id": "example/native-skill",
+    "package_version": "0.1.0",
+    "package_root": "/absolute/isos/data/packages/example/native-skill/0.1.0",
+    "payload_root": "/absolute/verified/payload/root",
+    "receipt_sha256": "<64 lowercase hex SHA-256 of P01 receipt bytes>",
+    "release_sha256": "<64 lowercase hex SHA-256 of verifier-owned release snapshot>",
+    "payload_sha256": "<64 lowercase hex P01 tree digest>",
+    "library": "lib/island/skills/example.skill.so",
+    "library_sha256": "<64 lowercase hex SHA-256 of library bytes>"
+  }]
+}
+```
+
+`package_root` is the absolute private P01 metadata store; `payload_root` is the P01 verified payload root, which may be a linked source. Neither graph authors nor browser callers supply either path. The receipt, release, payload and selected library digests bind each exact pin and file; P04's manifest binds the selection file to the saved graph, installed inputs and selected EOS binary. `active_revision` equals the saved-byte revision and the manifest `revision`, not the EOS projection digest. The selection file omits `generation`, because P04 computes generation from final file hashes; the leaf path and manifest supply it without a circular hash. IsOS writes no selection file for an empty list and rejects a stale unexpected selection file in a selected generation.
+
+The selected EOS `aether-runtime --capabilities` must advertise exact `host-skill-abi-v2` when the list is nonempty. An older binary fails P05 `reader_feature_unsupported` at the EOS component `/node_type` before Apply publication, Run/Restart replacement or guest code. After the existing R03 managed-grant preflight, IsOS injects only `EOS_SKILL_SELECTION_FILE=<absolute selected isos/skill-selection.json>` into the selected EOS child. It removes inherited or authored values of this reserved variable from every other child, and rejects an authored conflicting EOS value or owner-reserved skill-selection argument before stopping the active run. The selection file is data, not a bearer grant; R03 role grants remain independent.
+
+Run and Restart verify the saved bytes, V2 selection and required marker, complete manifest/file inventory, all pinned P01 receipts, fresh library digests and selected EOS feature before stopping any active child. A missing, changed, unlisted, unsafe or wrong-revision selection fails pre-stop and leaves current PIDs, run ID, active revision and grants intact. No G03 or legacy-flat fallback admits a skill selection. Re-Apply of the same saved revision after a package or binary change selects a new immutable generation; only explicit Restart activates it. A manager or child restart rechecks the selected generation; an automatic same-run EOS child restart uses the same selected file and R03 run identity. Stop retires the R03 grant bundle after child reap; no skill worker may outlive its EOS parent.
+
+EOS independently verifies the selected manifest/file/revision, digest and path identities before any confined query. For linked packages EOS opens the exact nofollow file, checks and hashes the opened bytes, copies those bytes to its own private read-only staging file, and loads only that copy inside the worker. It never `dlopen`s a caller pathname in the supervisor. Its worker validates ABI sizes, descriptors and declarations before a handler invocation. IsOS's pre-stop P01 check and EOS's before-worker check are both required; neither substitutes for the other.
+
+## Diagnostics and evidence
+
+P01 package tamper retains its existing `package_changed`, `package_unsafe_path` or `package_missing_file` diagnostic at the selected entry `/package`, before R04 semantics. P04 snapshot or generation damage retains `generated_manifest_mismatch` at `stage:"snapshot"`; P05 missing host feature retains `reader_feature_unsupported`. R04-specific semantic failures use the schema-1 API diagnostic shape `{code,path,message,stage}` with a sanitized repair action and the exact escaped JSON Pointer: `skill_selection_invalid` (`graph`) for wrong owner, count, shape or duplicate; `skill_package_incompatible` (`package`) for a verified non-skill release; `skill_library_unsafe` (`package`) for invalid path/type/symlink/size; and `skill_library_changed` (`package`) for a selected file digest mismatch. Direct CLI calls exit nonzero. Events include safe code, pin, revision, run/correlation ID when present, but never raw package paths, library bytes, bearer grants, worker stderr or loaded code. A pre-start error uses the manager-session first-failure cursor; after admitted start the run cursor finds EOS ready or rejection.
+
+The [frozen cases](../../../tests/fixtures/skill_selection/README.md) require a mock verified skill release and EOS stub for unit and cross-owner tests. Qualification covers explicit selection, empty host, duplicate/path/symlink/changed-link/missing-feature and wrong-generation failures, unchanged active child on pre-stop rejection, per-child env isolation, EOS invalid ABI/undeclared capability refusal and bounded worker reap. Save full output under `logs/test/<run-id>/` and record commands/results in the [design](../design/skill-selection.md). These cases establish the fail-closed admission seam; sandbox containment needs its own worker tests.
