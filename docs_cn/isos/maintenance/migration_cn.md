@@ -14,4 +14,4 @@ IsOS 只运行位于 `deployments/<name>.nodes.json` 的[保存节点图](../int
 
 ## 已保存图 `1.0.0` → `0.1.0` 迁移
 
-显式操作接受安全且**已保存的 `.nodes.json`** 图，不导入旧 `<name>.json` 组件文件。先读取 `GET /api/isos/v1/node-graph`，记录原始保存字节的修订号。运行 `isos config migrate --preview --revision <saved-sha256>`，检查完整建议图、精确类型替换、未改变的软件包 pin 和诊断。阻塞的预览不能提交。归属方 reader 和软件包 receipt 兼容后，运行 `isos config migrate --revision <saved-sha256> --proposed-revision <preview-sha256>`。任一修订已变时重新加载并预览。最终原子提交前，原始字节保持不变；迁移不会启动或重启进程。使用 `isos status --json` 检查新的保存修订号和旧的运行中修订号，确认就绪后再显式 Restart。参见[图迁移契约](../interfaces/node-graph_cn.md#g03-显式图迁移目标设计尚未实现)和 [API](../interfaces/local-api_cn.md#g03-迁移路由目标设计尚未实现)。
+显式操作接受安全且**已保存的 `.nodes.json`** 图，不导入旧 `<name>.json` 组件文件。先读取 `GET /api/isos/v1/node-graph`，记录原始保存字节的修订号。运行 `isos config migrate --preview --revision <saved-sha256>`，检查完整建议图、精确类型替换、未改变的软件包 pin 和诊断。阻塞的预览不能提交。归属方 reader 和软件包 receipt 兼容后，运行 `isos config migrate --revision <saved-sha256> --proposed-revision <preview-sha256>`。任一修订已变时重新加载并预览。最终原子提交前，原始字节保持不变；迁移不会启动或重启进程。使用 `isos status --json` 检查新的保存修订号和旧的运行中修订号，确认就绪后再显式 Restart。参见[图迁移契约](../interfaces/node-graph_cn.md#g03-显式图迁移)和 [API](../interfaces/local-api_cn.md#g03-迁移路由)。

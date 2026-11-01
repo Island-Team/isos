@@ -36,9 +36,9 @@ API 只绑定 `127.0.0.1`，不提供前端文件。IsosUI 通过地址和端口
 
 ### 首个兼容读取切片——已实现
 
-`GET /node-graph` 保留 schema-1 封装，返回 `data:{revision,graph,read_only,diagnostics}`。对于已应用的 `1.0.0` 图，迁移功能尚不可用时为 `read_only:true`，且 `revision` 是精确已保存字节的 SHA-256，因此即使图结构相同，空白或键顺序不同也会得到不同修订号。此切片中，无图或初始图尚无 `core-setup/launch-inputs.json` 快照时，仍返回 `read_only:false` 的可编辑 `1.0.0` 草稿；首次安全 Apply 使用现有规范 JSON 序列化，并返回实际写入字节的 SHA-256。写入器改用 `0.1.0` 要等 EOS 读取器就绪。对于句法正确但未知的版本，如 `2.0.0`，返回原始图对象、原始字节修订号、`read_only:true`，以及 `diagnostics:[{"path":"/version","code":"unsupported_graph_version","message":"supported graph versions: 1.0.0, 0.1.0"}]`。文件 JSON 无效或超限时返回 HTTP 422，不返回图对象。GET 不会规范化或改写已保存字节。
+`GET /node-graph` 保留 schema-1 封装，返回 `data:{revision,graph,read_only,diagnostics}`。修订号是精确已保存字节的 SHA-256。安全且已应用的 `1.0.0` 图在显式迁移前为只读；未应用的旧初始图仍可编辑。缺失图返回可编辑的 `0.1.0` 草稿，`revision:""`；Init 仅在文件不存在时创建并保存相同的新版本初始图。对于句法正确但未知的版本（如 `2.0.0`），返回原始图、原始字节修订号、`read_only:true` 及 `/version` 的 `unsupported_graph_version` 诊断。无效或超限文件返回 HTTP 422。GET 不改写已保存字节。
 
-`POST /node-graph/validate`、PUT Apply、CLI Apply、核心 setup、Run 和 Restart 只准入精确支持版本及已注册类型 ID。解析 `0.1.0` 文档仅允许查看；在 EOS 与 EGIA 声明兼容读取集合之前，不允许通过旧适配器 Apply 或启动。未知版本使用相同的 `/version` 错误码；未知类型使用 `/cores/<core>/layers/<layer>/groups/<group>/nodes/<id>/node_type` 和 `unsupported_node_type`；不安全进程使用其精确节点或 `settings/command` 路径和 `unsafe_process_node`。校验在 `data.diagnostics` 中返回这些错误；Apply 返回 HTTP 422，`data.diagnostics` 中包含同样的诊断，`error` 包含可读说明。安全且已保存的旧图在修订匹配、提交的 JSON 结构相同时返回原修订号，不写文件，即使提交文本格式不同。已应用的旧图有改动时返回 HTTP 422，在 `/version` 给出 `migration_required`；未应用的初始图可使用现有写入器首次提交改动；修订过期仍为 HTTP 409。此切片不保存 `0.1.0` 图。后续显式预览／迁移操作须在图锁内比较已保存修订号，只在软件包及核心 setup 校验完成后发布，且运行中修订号在 Restart 前不变。
+`POST /node-graph/validate`、PUT Apply、CLI Apply、核心 setup、Run 和 Restart 只准入精确支持版本及注册位置上的批准类型身份。未知版本在 `/version` 失败；未知或仅旧版类型在其 `/node_type` 失败；不安全进程在精确节点或 `settings/command` 失败。`0.1.0` Apply 要求显式期望修订号、归属方 reader 支持、已验证软件包输入及整图 core／位置准入。校验在 `data.diagnostics` 返回诊断；Apply 对准入失败返回 HTTP 422，对过期修订返回 409。安全且已保存的旧图在修订匹配、提交 JSON 结构相同时返回原修订号而不写入；已应用旧图的修改须显式迁移。预览和提交在图锁内比较保存修订号，只在软件包及归属方 setup 检查后发布，且活动修订号在 Restart 前不变。
 
 [`图兼容样例`](../../../tests/fixtures/graph_compat/README.md)固定预期路径及字节不变的行为。CLI 与管理器预检须显示相同版本／类型失败；准入失败时 GET 仍可查看原图。
 
@@ -129,7 +129,7 @@ IsOS 在 `aether-profile setup --json` 或 `egia-config setup --json` 上发送 
 
 setup 适配器 `identity` 保留 `core`、`product_version`、`setup_schema_version`，增加 `supported_graph_versions` 与 `supported_node_type_versions` 数组，表示可读取版本而不是单一写入版本。旧 `graph_version` 和 `node_type_version` 保留为兼容旧 IsOS 读取器的标量别名。Apply／Run 前 IsOS 对比图实际版本、每个注册类型 ID、精确包固定版本、API schema 和核心程序能力。不匹配时指出具体值及所有者，不猜测升级也不调用其他程序。`isos version check --json` 提供同样的机器可读原因。新写入器使用图 `0.1.0` 和新类型 `@v0.1`；读取器显式声明旧 `1.0.0` 和受支持 `@v1.*`。见[配置与日志契约](configuration_cn.md)。
 
-### G03 迁移路由——目标设计，尚未实现
+### G03 迁移路由
 
 仅所有者可用的 loopback API 沿用 schema-1 `{schema_version,ok,data,error}` 封装和 Host/Origin 检查。迁移请求针对 IsOS 选定部署的已保存图，不携带替代图字节。`revision` 与 `proposed_revision` 分别是原始已保存字节及建议规范字节的 64 位小写 SHA-256 十六进制字符串；提交必须同时提供，预览必须提供 `revision`。客户端从 `GET /node-graph` 取得原修订号。`changes` 是最多 256 项的有序 `{path,from,to}` 数组，只包含 `/version` 和映射的 `/node_type`，路径使用 JSON Pointer。超过 256 项时在 `/changes` 返回 `migration_change_limit`，不能截断。响应 `graph` 是建议 JSON 值，不代表可以运行。只有本地类型、边、软件包及已启用 core 的 identity/validate/render 预检都成功时，`can_apply` 才为 true。
 
@@ -157,4 +157,4 @@ setup 适配器 `identity` 保留 `core`、`product_version`、`setup_schema_ver
 
 CLI 使用同一迁移引擎：`isos config migrate --preview --revision <saved-sha256>` 只输出建议修订、变更和诊断；`isos config migrate --revision <saved-sha256> --proposed-revision <preview-sha256>` 提交。它不接收图文件，也不从当前磁盘隐式推断预期修订。实现必须保持 HTTP 与 CLI 的错误等价。
 
-缺失图的 GET 与 Init 在 G03 写入器启用后生成 `0.1.0` 草稿；PUT 首次 Apply 必须显式使用 `revision:""`，后续 `0.1.0` 修改使用保存修订号。CLI 的新图／`0.1.0` 修改 Apply 使用显式 `--revision`。旧 `1.0.0` 图不因 Init 改写，结构相同的 Apply 保持无写入。新版本的 Run/Restart 从 `data/generated/<deployment>/<saved-revision>/` 选择经摘要校验的清单与 EOS 投影，并在启动前将每个已保存生成文件与精确已保存图的新归属方 render 比较；旧版平面 `generated/<deployment>/core-setup/launch-inputs.json` 仅用于 `1.0.0` 兼容。详情见[图契约](node-graph_cn.md#g03-写入器与快照选择目标设计)。
+缺失图的 GET 与 Init 使用 G03 写入器生成 `0.1.0` 草稿；PUT 首次 Apply 必须显式使用 `revision:""`，后续 `0.1.0` 修改使用保存修订号。CLI 的新图／`0.1.0` 修改 Apply 使用显式 `--revision`。旧 `1.0.0` 图不因 Init 改写，结构相同的 Apply 保持无写入。新版本的 Run/Restart 从 `data/generated/<deployment>/<saved-revision>/` 选择经摘要校验的清单与 EOS 投影，并在启动前将每个已保存生成文件与精确已保存图的新归属方 render 比较；旧版平面 `generated/<deployment>/core-setup/launch-inputs.json` 仅用于 `1.0.0` 兼容。详情见[图契约](node-graph_cn.md#g03-写入器与快照选择)。

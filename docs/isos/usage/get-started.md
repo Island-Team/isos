@@ -47,4 +47,4 @@ Review the proposal and resolve owner-reader or package blockers. Then commit **
 isos config migrate --revision <saved-sha256> --proposed-revision <preview-sha256>
 ```
 
-A stale source or proposal digest requires a new preview. `isos status --json` then shows the new saved revision and prior active revision until explicit Restart. Unmatched legacy types stay read-only; use the [migration guide](../maintenance/migration.md#saved-graph-100--010-migration) to repair them explicitly.
+A stale source or proposal digest requires a new preview. `isos status --json` then shows the new saved revision and prior active revision until explicit Restart. Unmatched legacy types stay read-only; use the [migration guide](../maintenance/migration.md) to repair them explicitly.
