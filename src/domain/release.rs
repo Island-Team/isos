@@ -191,11 +191,6 @@ fn numeric_version(s: &str) -> Option<Vec<u32>> {
 }
 
 impl Release {
-    pub fn read_from_path(path: &Path) -> Result<Self> {
-        let release: Self = serde_json::from_slice(&std::fs::read(path)?)?;
-        release.validate()?;
-        Ok(release)
-    }
     pub fn validate(&self) -> Result<()> {
         ensure!(self.schema_version == 4, "release schema_version must be 4");
         ensure!(
@@ -320,7 +315,7 @@ impl Release {
                     .and_then(Value::as_str)
                     .ok_or_else(|| anyhow::anyhow!("contributed node type requires id"))?;
                 ensure!(
-                    id.contains("@v1.0") && type_ids.insert(id),
+                    (id.ends_with("@v0.1") || id.ends_with("@v1.0")) && type_ids.insert(id),
                     "invalid or duplicate contributed node type {id}"
                 );
                 for field in [

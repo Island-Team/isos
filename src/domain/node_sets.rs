@@ -7,35 +7,18 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    fs,
-};
+use std::collections::{BTreeMap, BTreeSet};
 
 pub fn installed_release(paths: &Paths, id: &str, version: &str) -> Result<Release> {
-    let root = packages::package_path(paths, id, version)?;
-    let receipt: packages::Receipt = serde_json::from_slice(&fs::read(root.join("receipt.json"))?)?;
-    ensure!(
-        receipt.id == id && receipt.version == version,
-        "package receipt identity differs"
-    );
-    let release = Release::read_from_path(&root.join("release.json"))?;
-    ensure!(
-        release.id == id && release.version == version,
-        "package release identity differs"
-    );
-    Ok(release)
+    Ok(packages::verify(paths, id, version)?.release)
 }
 
 pub fn list(paths: &Paths) -> Result<Value> {
     let mut sets = Vec::new();
     for receipt in packages::list(paths)? {
-        let release_path =
-            packages::package_path(paths, &receipt.id, &receipt.version)?.join("release.json");
-        if !release_path.is_file() {
+        let Ok(release) = installed_release(paths, &receipt.id, &receipt.version) else {
             continue;
-        }
-        let release = installed_release(paths, &receipt.id, &receipt.version)?;
+        };
         if let Some(contributions) = release.node_contributions {
             for set in contributions.node_sets {
                 let mut value = serde_json::to_value(set)?;
@@ -247,6 +230,7 @@ pub fn compose(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::path::Path;
 
     fn fixture() -> (tempfile::TempDir, Paths) {
@@ -261,7 +245,7 @@ mod tests {
         fs::create_dir(&bundle).unwrap();
         let manifest = temp.path().join("release.json");
         let release = json!({
-            "schema_version":4,"id":"test/sim","kind":"backend","version":"2.0.0",
+            "schema_version":4,"id":"test/sim","kind":"skill","version":"2.0.0",
             "source_commit":"a".repeat(40),
             "assets":[{"os":"linux","arch":"x86_64","url":"https://github.com/test/sim/releases/download/v2.0.0/sim.tar.gz","size_bytes":1,"sha256":"b".repeat(64)}],
             "node_contributions":{"node_types":[

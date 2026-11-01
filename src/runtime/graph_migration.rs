@@ -4,7 +4,7 @@ use crate::{
     config::{self, Paths},
     core_setup, edge_admission,
     graph_compat::{self, Diagnostic, SavedGraph},
-    lock, preflight, process,
+    lock, packages, preflight, process,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -110,6 +110,46 @@ fn diagnostic(
         code,
         message: message.into(),
         context: BTreeMap::new(),
+    }
+}
+
+pub(crate) fn package_diagnostic(error: &anyhow::Error) -> Diagnostic {
+    if let Some(failure) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<packages::PackageFailure>())
+    {
+        let mut context = BTreeMap::new();
+        context.insert("id".into(), failure.id.clone());
+        context.insert("version".into(), failure.version.clone());
+        context.insert("stage".into(), failure.stage.into());
+        return Diagnostic {
+            path: failure.path.clone(),
+            code: failure.code,
+            message: failure.to_string(),
+            context,
+        };
+    }
+    let message = error.to_string();
+    let path = message
+        .split(" at ")
+        .nth(1)
+        .filter(|path| path.starts_with('/'))
+        .unwrap_or("/");
+    diagnostic(
+        path,
+        "package_invalid_manifest",
+        "Repair the incomplete or invalid package pin",
+    )
+}
+
+fn package_or_owner_diagnostic(error: &anyhow::Error, owner_path: &str) -> Diagnostic {
+    if error
+        .chain()
+        .any(|cause| cause.downcast_ref::<packages::PackageFailure>().is_some())
+    {
+        package_diagnostic(error)
+    } else {
+        diagnostic(owner_path, "owner_reader_unavailable", error.to_string())
     }
 }
 
@@ -399,6 +439,8 @@ pub fn prepare(paths: &Paths, name: &str, proposal: &Proposal) -> Result<Prepare
     if let Some(diagnostic) = graph_compat::admission_diagnostic(&proposal.graph, None) {
         return Err(diagnostic);
     }
+    packages::verify_graph_packages(paths, &proposal.graph)
+        .map_err(|error| package_diagnostic(&error))?;
     if proposal.graph.pointer("/cores/eos").is_none() {
         return Err(diagnostic(
             "/cores/eos",
@@ -428,8 +470,8 @@ pub fn prepare(paths: &Paths, name: &str, proposal: &Proposal) -> Result<Prepare
             ));
         }
     }
-    let catalog = process::catalog()
-        .map_err(|error| diagnostic("/cores/eos", "owner_reader_unavailable", error.to_string()))?;
+    let catalog = process::catalog_for_graph(paths, &proposal.graph)
+        .map_err(|error| package_or_owner_diagnostic(&error, "/cores/eos"))?;
     if let Some(diagnostic) = graph_compat::admission_diagnostic(&proposal.graph, Some(&catalog)) {
         return Err(diagnostic);
     }
@@ -441,7 +483,7 @@ pub fn prepare(paths: &Paths, name: &str, proposal: &Proposal) -> Result<Prepare
     let source = serde_json::to_string(&proposal.graph)
         .map_err(|error| diagnostic("/", "invalid_graph", error.to_string()))?;
     let specs = process::project_with_packages(paths, &source)
-        .map_err(|error| diagnostic("/", "invalid_graph", error.to_string()))?;
+        .map_err(|error| package_or_owner_diagnostic(&error, "/"))?;
     preflight::verify_processes(paths, &specs).map_err(|error| {
         diagnostic("/cores/isos", "owner_reader_unavailable", error.to_string())
     })?;

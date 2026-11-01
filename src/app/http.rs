@@ -59,6 +59,26 @@ fn err(status: StatusCode, message: impl ToString) -> (StatusCode, Json<Value>) 
         Json(json!({"schema_version":1,"ok":false,"data":null,"error":message.to_string()})),
     )
 }
+fn package_err(error: &anyhow::Error, id: &str, version: &str) -> (StatusCode, Json<Value>) {
+    let failure = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<packages::PackageFailure>());
+    let diagnostic = failure.map_or_else(|| json!({"code":"package_invalid_manifest","path":"",
+        "message":format!("Reinstall or relink {id}@{version}"),"id":id,"version":version,"stage":"manifest"}),
+        packages::PackageFailure::diagnostic);
+    let status = if diagnostic["code"] == "package_version_exists" {
+        StatusCode::CONFLICT
+    } else {
+        StatusCode::UNPROCESSABLE_ENTITY
+    };
+    (
+        status,
+        Json(
+            json!({"schema_version":1,"ok":false,"data":{"diagnostics":[diagnostic]},
+        "error":format!("Reinstall or relink {id}@{version}")}),
+        ),
+    )
+}
 fn ok(data: Value) -> ApiResult {
     Ok(Json(
         json!({"schema_version":1,"ok":true,"data":data,"error":null}),
@@ -89,6 +109,8 @@ fn record_package(
             fields: json!({"package_id":id,"package_version":version,
                 "source_commit":receipt.as_ref().and_then(|receipt| receipt.source_commit.as_deref()),
                 "asset_sha256":receipt.as_ref().and_then(|receipt| receipt.asset_sha256.as_deref()),
+                "release_sha256":receipt.as_ref().and_then(|receipt| receipt.release_sha256.as_deref()),
+                "payload_sha256":receipt.as_ref().and_then(|receipt| receipt.payload_sha256.as_deref()),
                 "source_kind":source_kind}) });
     }
 }
@@ -449,6 +471,11 @@ async fn validate_node_graph(
             Err(diagnostic) => ok(json!({"valid":false,"diagnostics":[diagnostic]})),
         };
     }
+    if let Err(error) = packages::verify_graph_packages(&app.paths, &edit.graph) {
+        return ok(
+            json!({"valid":false,"diagnostics":[graph_migration::package_diagnostic(&error)]}),
+        );
+    }
     let catalog = process::catalog().ok();
     if let Some(diagnostic) = graph_compat::legacy_mapping_diagnostic(&edit.graph, catalog.as_ref())
     {
@@ -493,6 +520,16 @@ async fn apply_node_graph(
                 .map_err(migration_error)?;
         record(&app, "graph", "Applied node graph revision");
         return ok(json!({"revision":proposal.revision,"graph":proposal.graph}));
+    }
+    if let Err(error) = packages::verify_graph_packages(&app.paths, &graph) {
+        let diagnostic = graph_migration::package_diagnostic(&error);
+        let message = diagnostic.message.clone();
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(
+                json!({"schema_version":1,"ok":false,"data":{"diagnostics":[diagnostic]},"error":message}),
+            ),
+        ));
     }
     let catalog = process::catalog().ok();
     if let Some(diagnostic) = graph_compat::legacy_mapping_diagnostic(&graph, catalog.as_ref()) {
@@ -730,17 +767,11 @@ async fn preview_link(
             "manifest path must be absolute",
         ));
     }
-    let manifest = packages::read_manifest(&manifest_path)
-        .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
+    let manifest = packages::inspect_link_candidate(&request.path, &manifest_path)
+        .map_err(|error| package_err(&error, "unknown/package", "unknown"))?;
     let mut issues = Vec::new();
     if manifest.kind != "backend" {
         issues.push("release manifest kind must be backend".to_owned());
-    }
-    if manifest.adapters.is_empty() && !request.path.join("backend-v2.json").is_file() {
-        issues.push("bundle lacks backend-v2.json".to_owned());
-    }
-    if let Err(error) = packages::verify_declared_adapter_libraries(&request.path, &manifest) {
-        issues.push(error.to_string());
     }
     if crate::packages::package_path(&app.paths, &manifest.id, &manifest.version)
         .is_ok_and(|path| path.exists())
@@ -802,7 +833,7 @@ async fn backends(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult 
 
 async fn package_list(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
     authorized(&app, &headers)?;
-    let installed = packages::list(&app.paths)
+    let installed = packages::listing(&app.paths)
         .map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR, error))?;
     ok(json!({"installed":installed}))
 }
@@ -848,16 +879,12 @@ async fn package_install(
     let installed = match result {
         Ok(path) => path,
         Err(error) => {
-            record_package(
-                &app,
-                "error",
-                "package_install_failed",
-                &id,
-                &version,
-                "registry",
-                None,
-            );
-            return Err(err(StatusCode::UNPROCESSABLE_ENTITY, error));
+            let code = error
+                .chain()
+                .find_map(|cause| cause.downcast_ref::<packages::PackageFailure>())
+                .map_or("package_invalid_manifest", |failure| failure.code);
+            record_package(&app, "error", code, &id, &version, "approved_catalog", None);
+            return Err(package_err(&error, &id, &version));
         }
     };
     record_package(
@@ -866,11 +893,11 @@ async fn package_install(
         "package_verified",
         &id,
         &version,
-        "registry",
+        "approved_catalog",
         Some(&installed),
     );
     ok(
-        json!({"path":installed,"installed":packages::list(&app.paths).map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR,error))?}),
+        json!({"path":installed,"verified":true,"source_kind":"approved_catalog","installed":packages::listing(&app.paths).map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR,error))?}),
     )
 }
 
@@ -915,16 +942,12 @@ async fn package_link(
     let linked = match result {
         Ok(path) => path,
         Err(error) => {
-            record_package(
-                &app,
-                "error",
-                "package_link_failed",
-                &id,
-                &version,
-                "local_link",
-                None,
-            );
-            return Err(err(StatusCode::UNPROCESSABLE_ENTITY, error));
+            let code = error
+                .chain()
+                .find_map(|cause| cause.downcast_ref::<packages::PackageFailure>())
+                .map_or("package_invalid_manifest", |failure| failure.code);
+            record_package(&app, "error", code, &id, &version, "local_link", None);
+            return Err(package_err(&error, &id, &version));
         }
     };
     record_package(
@@ -941,7 +964,7 @@ async fn package_link(
         Some(&linked),
     );
     ok(
-        json!({"path":linked,"installed":packages::list(&app.paths).map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR,error))?}),
+        json!({"path":linked,"verified":linked.join("release.json").is_file(),"source_kind":"local_link","installed":packages::listing(&app.paths).map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR,error))?}),
     )
 }
 
@@ -1002,7 +1025,19 @@ async fn process_control(
     };
     let result =
         crate::manager::manager_call_revision(&app.paths, &app.deployment, op, control.revision)
-            .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
+            .map_err(|error| {
+                if let Some(remote) = error.downcast_ref::<crate::manager::RemoteDiagnosticError>()
+                    && remote.data["diagnostics"].is_array()
+                {
+                    (
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        Json(json!({"schema_version":1,"ok":false,
+                        "data":remote.data,"error":remote.message})),
+                    )
+                } else {
+                    err(StatusCode::UNPROCESSABLE_ENTITY, error)
+                }
+            })?;
     ok(result)
 }
 
@@ -1800,7 +1835,7 @@ mod tests {
             StatusCode::BAD_REQUEST
         );
         let body = json!({"id":"island/mujoco-sim","version":"1.0.0","path":bundle});
-        for expected in [StatusCode::OK, StatusCode::UNPROCESSABLE_ENTITY] {
+        for expected in [StatusCode::OK, StatusCode::CONFLICT] {
             let request = Request::builder()
                 .method(Method::POST)
                 .uri("/api/isos/v1/packages/link")
@@ -1834,7 +1869,7 @@ mod tests {
         );
         assert_eq!(lines["lines"][0]["fields"]["package_version"], "1.0.0");
         assert_eq!(lines["lines"][0]["fields"]["source_kind"], "local_link");
-        assert_eq!(lines["lines"][1]["event_code"], "package_link_failed");
+        assert_eq!(lines["lines"][1]["event_code"], "package_version_exists");
         assert_eq!(
             lines["lines"][1]["fields"]["package_id"],
             "island/mujoco-sim"
