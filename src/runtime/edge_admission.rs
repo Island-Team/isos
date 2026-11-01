@@ -114,6 +114,19 @@ fn transport(port: &Value) -> Option<&str> {
     })
 }
 
+fn valid_unit_annotations(schema: &Value) -> bool {
+    match schema {
+        Value::Object(fields) => {
+            fields
+                .get("x-unit")
+                .is_none_or(|unit| unit.as_str().is_some_and(|text| !text.trim().is_empty()))
+                && fields.values().all(valid_unit_annotations)
+        }
+        Value::Array(items) => items.iter().all(valid_unit_annotations),
+        _ => true,
+    }
+}
+
 fn valid_path(path: &str) -> bool {
     path.split('/').count() == 4
         && path.split('/').all(|part| {
@@ -149,17 +162,19 @@ fn routed_camera(
     output: &str,
     target: &Node<'_>,
     input: &str,
-    data_type: &str,
-    transport: &str,
-    data_class: Option<&str>,
+    output_port: &Value,
+    input_port: &Value,
 ) -> bool {
     source.value["node_type"] == "eos.hardware.camera@v0.1"
         && output == "frame"
         && target.value["node_type"] == "eos.interface.camera_gate@v0.1"
         && input == "frame"
-        && data_type == "camera_frame"
-        && transport == "in_process"
-        && data_class == Some("image")
+        && output_port["data_type"] == "camera_frame"
+        && input_port["data_type"] == "camera_frame"
+        && output_port["transport"] == "in_process"
+        && input_port["transport"] == "in_process"
+        && output_port["data_class"] == "image"
+        && input_port["data_class"] == "image"
 }
 
 fn visit(
@@ -552,10 +567,10 @@ pub fn admit(graph: &Value, catalog: &Value) -> Result<Vec<Edge>, Box<Diagnostic
                         Some(input_type),
                     ));
                 }
-                if !data_definitions
-                    .get(output_type)
-                    .is_some_and(|definition| definition["schema"].is_object())
-                    || ambiguous_data.contains(output_type)
+                if !data_definitions.get(output_type).is_some_and(|definition| {
+                    definition["schema"].is_object()
+                        && valid_unit_annotations(&definition["schema"])
+                }) || ambiguous_data.contains(output_type)
                 {
                     return Err(edge_error(
                         &pointer,
@@ -649,15 +664,8 @@ pub fn admit(graph: &Value, catalog: &Value) -> Result<Vec<Edge>, Box<Diagnostic
                 }
                 let data_class = output_class.or(input_class);
                 let is_fixed = fixed(output_type, data_class, output_name, input_name);
-                let is_routed = routed_camera(
-                    source,
-                    output_name,
-                    target,
-                    input_name,
-                    output_type,
-                    input_transport,
-                    data_class,
-                );
+                let is_routed =
+                    routed_camera(source, output_name, target, input_name, output, input);
                 let route_class = if target.core == "eos" && (is_fixed || is_routed) {
                     "eos_local"
                 } else if target.core == "egia" {

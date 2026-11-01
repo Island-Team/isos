@@ -12,6 +12,20 @@ fn graph() -> Value {
     serde_json::from_str(include_str!("fixtures/edge_admission/valid_0_1_0.json")).unwrap()
 }
 
+fn vision_bridge() -> Value {
+    serde_json::from_str(include_str!(
+        "fixtures/edge_admission/vision_bridge_unregistered.json"
+    ))
+    .unwrap()
+}
+
+fn fixed_command_qos() -> Value {
+    serde_json::from_str(include_str!(
+        "fixtures/edge_admission/fixed_command_qos.json"
+    ))
+    .unwrap()
+}
+
 fn camera_input(graph: &mut Value) -> &mut Value {
     &mut graph["cores"]["eos"]["layers"]["interface"]["groups"]["gate"]["nodes"]["preview"]["inputs"]
         ["frame"]
@@ -31,6 +45,40 @@ fn exact_eos_route_and_descriptive_egia_edge() {
     assert_eq!(
         edges[1].path,
         "/cores/eos/layers/interface/groups/gate/nodes/preview/inputs/frame"
+    );
+}
+
+#[test]
+fn frozen_vision_bridge_stays_closed_without_owner_registration_or_route() {
+    let graph = vision_bridge();
+    let error = admit(&graph, &catalog()).unwrap_err();
+    assert_eq!(error.code, "unsupported_node_type");
+    assert_eq!(
+        error.path,
+        "/cores/isosui/layers/system/groups/vision/nodes/panel/node_type"
+    );
+
+    let mut catalog = catalog();
+    catalog["types"].as_array_mut().unwrap().push(json!({
+        "id":"isosui.system.vision@v0.1","core":"isosui","layer":"system","group":"vision",
+        "inputs":[{"name":"frame","data_type":"vision_frame","transport":"websocket","data_class":"image","required":true}]
+    }));
+    let error = admit(&graph, &catalog).unwrap_err();
+    assert_eq!(error.code, "edge_bridge_undeclared");
+    assert_eq!(
+        error.path,
+        "/cores/isosui/layers/system/groups/vision/nodes/panel/inputs/frame"
+    );
+    assert_eq!(error.source.as_deref(), Some("eos/interface/gate/preview"));
+}
+
+#[test]
+fn frozen_command_route_rejects_explicit_qos() {
+    let error = admit(&fixed_command_qos(), &catalog()).unwrap_err();
+    assert_eq!(error.code, "edge_qos_forbidden");
+    assert_eq!(
+        error.path,
+        "/cores/eos/layers/hardware/groups/base/nodes/drive/inputs/command/0/priority"
     );
 }
 
@@ -55,6 +103,11 @@ fn exact_pointer_and_type_unit_identity() {
     assert_eq!(error.target_data_type.as_deref(), Some("camera_frame"));
     let mut definitions = catalog();
     definitions["data_types"].as_array_mut().unwrap().push(json!({"id":"camera_frame","schema":{"type":"object","properties":{"width_px":{"x-unit":"m"}}}}));
+    let error = admit(&graph(), &definitions).unwrap_err();
+    assert_eq!(error.code, "edge_unit_schema");
+    let mut definitions = catalog();
+    definitions["data_types"][0]["schema"]["properties"]["width_px"] =
+        json!({"type":"integer","x-unit":17});
     let error = admit(&graph(), &definitions).unwrap_err();
     assert_eq!(error.code, "edge_unit_schema");
 }

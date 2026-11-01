@@ -4,7 +4,7 @@ use anyhow::{Result, bail, ensure};
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::{fs, path::Path};
+use std::{collections::BTreeMap, fs, path::Path};
 
 pub const MAX_GRAPH_BYTES: usize = 1024 * 1024;
 pub const SUPPORTED_VERSIONS: [&str; 2] = ["1.0.0", "0.1.0"];
@@ -78,11 +78,21 @@ pub struct Diagnostic {
     pub path: String,
     pub code: &'static str,
     pub message: String,
+    #[serde(flatten)]
+    pub context: BTreeMap<String, String>,
 }
 
 impl std::fmt::Display for Diagnostic {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "{}: {}: {}", self.path, self.code, self.message)
+        if self.context.is_empty() {
+            write!(formatter, "{}: {}: {}", self.path, self.code, self.message)
+        } else {
+            write!(
+                formatter,
+                "{}",
+                serde_json::to_string(self).map_err(|_| std::fmt::Error)?
+            )
+        }
     }
 }
 
@@ -129,6 +139,7 @@ pub fn version_diagnostic(graph: &Value) -> Option<Diagnostic> {
             version.unwrap_or("<missing or invalid>"),
             SUPPORTED_VERSIONS.join(", ")
         ),
+        context: BTreeMap::new(),
     })
 }
 
@@ -144,6 +155,7 @@ pub fn admission_diagnostic(graph: &Value, catalog: Option<&Value>) -> Option<Di
                 path: "/cores".into(),
                 code: "invalid_graph",
                 message: "cores must be an object".into(),
+                context: BTreeMap::new(),
             });
         }
     };
@@ -153,6 +165,7 @@ pub fn admission_diagnostic(graph: &Value, catalog: Option<&Value>) -> Option<Di
                 path: format!("/cores/{core_id}"),
                 code: "unsupported_core",
                 message: format!("core {core_id} has no 0.1.0 owner reader"),
+                context: BTreeMap::new(),
             });
         }
         let Some(layers) = core.get("layers").and_then(Value::as_object) else {
@@ -181,6 +194,7 @@ pub fn admission_diagnostic(graph: &Value, catalog: Option<&Value>) -> Option<Di
                                 message: format!(
                                     "node type {node_type} is not approved for graph 0.1.0"
                                 ),
+                                context: BTreeMap::new(),
                             });
                         };
                         if (core_id.as_str(), layer_id.as_str(), group_id.as_str())
@@ -192,6 +206,7 @@ pub fn admission_diagnostic(graph: &Value, catalog: Option<&Value>) -> Option<Di
                                 message: format!(
                                     "{node_type} belongs at {expected_core}/{expected_layer}/{expected_group}"
                                 ),
+                                context: BTreeMap::new(),
                             });
                         }
                     }
@@ -200,6 +215,7 @@ pub fn admission_diagnostic(graph: &Value, catalog: Option<&Value>) -> Option<Di
                             path: format!("{path}/node_type"),
                             code: "unsafe_process_node",
                             message: "arbitrary-command process nodes cannot be admitted; use a role-selected component".into(),
+                            context: BTreeMap::new(),
                         });
                     }
                     if core_id == "isos"
@@ -213,6 +229,7 @@ pub fn admission_diagnostic(graph: &Value, catalog: Option<&Value>) -> Option<Di
                             message:
                                 "settings.command cannot be admitted; use role and bounded args"
                                     .into(),
+                            context: BTreeMap::new(),
                         });
                     }
                     if node_type == "eos.process.backend@v1.0" {
@@ -222,6 +239,7 @@ pub fn admission_diagnostic(graph: &Value, catalog: Option<&Value>) -> Option<Di
                             message:
                                 "legacy backend needs an exact verified replacement before Apply"
                                     .into(),
+                            context: BTreeMap::new(),
                         });
                     }
                     let registered = catalog.map_or_else(
@@ -244,6 +262,7 @@ pub fn admission_diagnostic(graph: &Value, catalog: Option<&Value>) -> Option<Di
                             path: format!("{path}/node_type"),
                             code: "unsupported_node_type",
                             message: format!("node type {node_type} is not registered"),
+                            context: BTreeMap::new(),
                         });
                     }
                 }
@@ -265,6 +284,7 @@ pub fn changed_legacy_diagnostic(saved: &SavedGraph, incoming: &Value) -> Option
         path: "/version".into(),
         code: "migration_required",
         message: "editing a saved 1.0.0 graph requires explicit migration".into(),
+        context: BTreeMap::new(),
     })
 }
 

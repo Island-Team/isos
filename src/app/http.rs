@@ -432,11 +432,10 @@ async fn validate_node_graph(
             bytes,
             changes: Vec::new(),
         };
-        let diagnostics: Vec<_> = graph_migration::prepare(&app.paths, &app.deployment, &proposal)
-            .err()
-            .into_iter()
-            .collect();
-        return ok(json!({"valid":diagnostics.is_empty(),"diagnostics":diagnostics}));
+        return match graph_migration::prepare(&app.paths, &app.deployment, &proposal) {
+            Ok(prepared) => ok(json!({"valid":true,"diagnostics":[],"edges":prepared.edges})),
+            Err(diagnostic) => ok(json!({"valid":false,"diagnostics":[diagnostic]})),
+        };
     }
     let catalog = process::catalog().ok();
     if let Some(diagnostic) = graph_compat::admission_diagnostic(&edit.graph, catalog.as_ref()) {
@@ -545,6 +544,7 @@ async fn apply_node_graph(
                             path: "/version".into(),
                             code: "migration_required",
                             message: "saved graph requires a compatible migration writer".into(),
+                            context: std::collections::BTreeMap::new(),
                         });
                 return Err((
                     StatusCode::UNPROCESSABLE_ENTITY,
