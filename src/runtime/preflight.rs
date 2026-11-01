@@ -124,6 +124,33 @@ pub fn verify_processes(paths: &Paths, specs: &[crate::process::ProcessSpec]) ->
     Ok(())
 }
 
+pub fn verify_new_graph_readers(specs: &[crate::process::ProcessSpec]) -> Result<()> {
+    for (id, binary) in [
+        ("eos", "aether-runtime"),
+        ("config", "aether-config-server"),
+    ] {
+        let spec = specs
+            .iter()
+            .find(|spec| spec.id == id)
+            .with_context(|| format!("graph lacks {id} process"))?;
+        let executable = Path::new(&spec.settings.command[0]);
+        let output = Command::new(executable).arg("--capabilities").output()?;
+        ensure!(output.status.success(), "{binary} capability probe failed");
+        let info: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+        ensure!(
+            info["binary"] == binary
+                && info["supported_graph_versions"]
+                    .as_array()
+                    .is_some_and(|versions| versions.iter().any(|version| version == "0.1.0"))
+                && info["features"].as_array().is_some_and(|features| features
+                    .iter()
+                    .any(|feature| feature == "graph-0.1-reader")),
+            "{binary} does not support graph 0.1.0"
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

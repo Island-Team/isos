@@ -1,5 +1,8 @@
 use crate::foreground::INTERRUPTED;
-use crate::{config, core_setup, http, log_store, preflight, process, services, starter};
+use crate::{
+    config, core_setup, graph_compat, graph_migration, http, log_store, preflight, process,
+    services, starter,
+};
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -69,13 +72,37 @@ fn preflight_packages(
     paths: &config::Paths,
     name: &str,
     source: &str,
+    revision: &str,
 ) -> Result<Vec<process::ProcessSpec>> {
-    let specs = process::project_with_packages(paths, source).inspect_err(|error| {
+    let mut specs = process::project_with_packages(paths, source).inspect_err(|error| {
         log_package_load_failure(paths, name, error);
     })?;
     core_setup::verify_launch_inputs(paths, name)?;
+    let graph: Value = serde_json::from_str(source)?;
+    if graph["version"] == "0.1.0" {
+        let generated = core_setup::snapshot_root(paths, name, revision).join("eos/graph.json");
+        process::use_generated_eos_profile(&mut specs, &generated)?;
+        preflight::verify_new_graph_readers(&specs)?;
+    }
     preflight::verify_processes(paths, &specs)?;
     Ok(specs)
+}
+
+fn validate_saved_graph(paths: &config::Paths, name: &str, source: &str) -> Result<()> {
+    let saved = graph_compat::parse(source.as_bytes())?;
+    if saved.value["version"] == "0.1.0" {
+        let proposal = graph_migration::Proposal {
+            graph: saved.value,
+            bytes: source.as_bytes().to_vec(),
+            revision: saved.revision,
+            changes: Vec::new(),
+        };
+        graph_migration::prepare(paths, name, &proposal)
+            .map_err(|diagnostic| anyhow::anyhow!(diagnostic.to_string()))?;
+        Ok(())
+    } else {
+        process::validate_full_graph(&paths.node_graph_path(name))
+    }
 }
 
 pub(crate) fn restart_processes(
@@ -269,15 +296,15 @@ pub(crate) fn api_call(
         "deployment_restart" => {
             let path = paths.node_graph_path(&name);
             let source = fs::read_to_string(&path)?;
-            process::validate_full_graph(&path)?;
-            let revision = starter::revision(&path)?;
+            validate_saved_graph(paths, &name, &source)?;
+            let revision = graph_compat::revision(source.as_bytes());
             if let Some(expected) = request.revision.as_deref() {
                 ensure!(
                     expected == revision,
                     "saved graph revision changed; reload before restart"
                 );
             }
-            let specs = preflight_packages(paths, &name, &source)?;
+            let specs = preflight_packages(paths, &name, &source, &revision)?;
             core_setup::prepare_run(paths, &name, &revision)?;
             ensure!(
                 starter::revision(&path)? == revision,
@@ -289,15 +316,15 @@ pub(crate) fn api_call(
         "deployment_start" => {
             let path = paths.node_graph_path(&name);
             let source = fs::read_to_string(&path)?;
-            process::validate_full_graph(&path)?;
-            let revision = starter::revision(&path)?;
+            validate_saved_graph(paths, &name, &source)?;
+            let revision = graph_compat::revision(source.as_bytes());
             if let Some(expected) = request.revision.as_deref() {
                 ensure!(
                     expected == revision,
                     "saved graph revision changed; reload before run"
                 );
             }
-            let specs = preflight_packages(paths, &name, &source)?;
+            let specs = preflight_packages(paths, &name, &source, &revision)?;
             core_setup::prepare_run(paths, &name, &revision)?;
             ensure!(
                 starter::revision(&path)? == revision,
@@ -636,6 +663,26 @@ pub(crate) fn service_call(
 #[cfg(test)]
 mod restart_tests {
     use super::*;
+
+    #[test]
+    fn run_rejects_unowned_core_before_projecting_children() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = config::Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        let mut graph: Value = serde_json::from_slice(include_bytes!(
+            "../../../tests/fixtures/graph_compat/migration_expected_0_1_0.json"
+        ))
+        .unwrap();
+        graph["cores"]["evil"] = json!({"layers":{}});
+        let error = validate_saved_graph(&paths, "default", &graph.to_string())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("/cores/evil"), "{error}");
+        assert!(error.contains("unsupported_core"), "{error}");
+    }
 
     #[test]
     fn typed_package_load_failure_records_exact_pin_and_session() {

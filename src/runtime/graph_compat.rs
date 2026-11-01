@@ -32,6 +32,46 @@ const KNOWN_LEGACY_TYPES: &[&str] = &[
     "eos.hardware.mujoco_base@v1.0",
     "eos.hardware.mujoco_manipulator@v1.0",
 ];
+const KNOWN_NEW_TYPES: &[&str] = &[
+    "eos.hardware.camera@v0.1",
+    "eos.hardware.base@v0.1",
+    "eos.hardware.manipulator@v0.1",
+    "eos.dispatcher.control@v0.1",
+    "eos.dispatcher.primitive_base@v0.1",
+    "eos.dispatcher.primitive_manipulator@v0.1",
+    "eos.interface.camera_gate@v0.1",
+    "eos.process.mujoco@v0.1",
+    "isos.process.component@v0.1",
+];
+const EGIA_TARGET_PASS_THROUGH: &[&str] = &[
+    "egia.common.source@v1.0",
+    "egia.common.context@v1.0",
+    "egia.common.planner@v1.0",
+    "egia.common.guard@v1.0",
+];
+
+fn target_placement(node_type: &str) -> Option<(&'static str, &'static str, &'static str)> {
+    match node_type {
+        "eos.hardware.camera@v0.1" => Some(("eos", "hardware", "camera")),
+        "eos.hardware.base@v0.1" => Some(("eos", "hardware", "base")),
+        "eos.hardware.manipulator@v0.1" => Some(("eos", "hardware", "manipulator")),
+        "eos.dispatcher.control@v0.1" => Some(("eos", "dispatcher", "control")),
+        "eos.dispatcher.primitive_base@v0.1" => Some(("eos", "dispatcher", "base")),
+        "eos.dispatcher.primitive_manipulator@v0.1" => Some(("eos", "dispatcher", "manipulator")),
+        "eos.interface.camera_gate@v0.1" => Some(("eos", "interface", "gate")),
+        "eos.process.mujoco@v0.1" => Some(("eos", "process", "mujoco")),
+        "isos.process.component@v0.1" => Some(("isos", "process", "component")),
+        "egia.common.source@v1.0" | "egia.common.context@v1.0" => Some(("egia", "common", "data")),
+        "egia.common.planner@v1.0" | "egia.common.guard@v1.0" => {
+            Some(("egia", "common", "process"))
+        }
+        _ => None,
+    }
+}
+
+pub fn is_isos_target_type(node_type: &str) -> bool {
+    node_type == "isos.process.component@v0.1"
+}
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct Diagnostic {
@@ -96,8 +136,25 @@ pub fn admission_diagnostic(graph: &Value, catalog: Option<&Value>) -> Option<Di
     if let Some(diagnostic) = version_diagnostic(graph) {
         return Some(diagnostic);
     }
-    let cores = graph.get("cores")?.as_object()?;
+    let target = graph["version"] == "0.1.0";
+    let cores = match graph.get("cores").and_then(Value::as_object) {
+        Some(cores) => cores,
+        None => {
+            return Some(Diagnostic {
+                path: "/cores".into(),
+                code: "invalid_graph",
+                message: "cores must be an object".into(),
+            });
+        }
+    };
     for (core_id, core) in cores {
+        if target && !matches!(core_id.as_str(), "eos" | "isos" | "egia") {
+            return Some(Diagnostic {
+                path: format!("/cores/{core_id}"),
+                code: "unsupported_core",
+                message: format!("core {core_id} has no 0.1.0 owner reader"),
+            });
+        }
         let Some(layers) = core.get("layers").and_then(Value::as_object) else {
             continue;
         };
@@ -114,6 +171,30 @@ pub fn admission_diagnostic(graph: &Value, catalog: Option<&Value>) -> Option<Di
                         "/cores/{core_id}/layers/{layer_id}/groups/{group_id}/nodes/{node_id}"
                     );
                     let node_type = node.get("node_type").and_then(Value::as_str).unwrap_or("");
+                    if target {
+                        let Some((expected_core, expected_layer, expected_group)) =
+                            target_placement(node_type)
+                        else {
+                            return Some(Diagnostic {
+                                path: format!("{path}/node_type"),
+                                code: "unsupported_node_type",
+                                message: format!(
+                                    "node type {node_type} is not approved for graph 0.1.0"
+                                ),
+                            });
+                        };
+                        if (core_id.as_str(), layer_id.as_str(), group_id.as_str())
+                            != (expected_core, expected_layer, expected_group)
+                        {
+                            return Some(Diagnostic {
+                                path: format!("{path}/node_type"),
+                                code: "invalid_node_placement",
+                                message: format!(
+                                    "{node_type} belongs at {expected_core}/{expected_layer}/{expected_group}"
+                                ),
+                            });
+                        }
+                    }
                     if node_type == "isos.process.component@v1.0" {
                         return Some(Diagnostic {
                             path: format!("{path}/node_type"),
@@ -144,11 +225,18 @@ pub fn admission_diagnostic(graph: &Value, catalog: Option<&Value>) -> Option<Di
                         });
                     }
                     let registered = catalog.map_or_else(
-                        || KNOWN_LEGACY_TYPES.contains(&node_type),
+                        || {
+                            KNOWN_LEGACY_TYPES.contains(&node_type)
+                                || KNOWN_NEW_TYPES.contains(&node_type)
+                        },
                         |catalog| {
-                            catalog["types"].as_array().is_some_and(|types| {
-                                types.iter().any(|item| item["id"] == node_type)
-                            })
+                            is_isos_target_type(node_type)
+                                || (graph["version"] == "0.1.0"
+                                    && (KNOWN_NEW_TYPES.contains(&node_type)
+                                        || EGIA_TARGET_PASS_THROUGH.contains(&node_type)))
+                                || catalog["types"].as_array().is_some_and(|types| {
+                                    types.iter().any(|item| item["id"] == node_type)
+                                })
                         },
                     );
                     if !registered {
@@ -253,6 +341,37 @@ mod tests {
         assert_eq!(
             version_diagnostic(&serde_json::json!({})).unwrap().path,
             "/version"
+        );
+    }
+
+    #[test]
+    fn target_graph_rejects_unknown_core_legacy_ui_and_misplaced_type() {
+        let source =
+            include_bytes!("../../tests/fixtures/graph_compat/migration_expected_0_1_0.json");
+        let mut graph = parse(source).unwrap().value;
+        graph["cores"]["evil"] = serde_json::json!({"layers":{}});
+        let diagnostic = admission_diagnostic(&graph, None).unwrap();
+        assert_eq!(
+            (diagnostic.path.as_str(), diagnostic.code),
+            ("/cores/evil", "unsupported_core")
+        );
+        graph["cores"].as_object_mut().unwrap().remove("evil");
+        let node = &mut graph["cores"]["eos"]["layers"]["dispatcher"]["groups"]["control"]["nodes"]
+            ["command"];
+        node["node_type"] = Value::String("isos.ui.vision@v1.0".into());
+        let diagnostic = admission_diagnostic(&graph, None).unwrap();
+        assert_eq!(diagnostic.code, "unsupported_node_type");
+        assert_eq!(
+            diagnostic.path,
+            "/cores/eos/layers/dispatcher/groups/control/nodes/command/node_type"
+        );
+        graph["cores"]["eos"]["layers"]["dispatcher"]["groups"]["control"]["nodes"]["command"]["node_type"] =
+            Value::String("eos.hardware.camera@v0.1".into());
+        let diagnostic = admission_diagnostic(&graph, None).unwrap();
+        assert_eq!(diagnostic.code, "invalid_node_placement");
+        assert_eq!(
+            diagnostic.path,
+            "/cores/eos/layers/dispatcher/groups/control/nodes/command/node_type"
         );
     }
 

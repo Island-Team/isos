@@ -12,6 +12,8 @@ The API binds only to `127.0.0.1` and serves no frontend files. IsosUI calls it 
 | --- | --- | --- |
 | `GET /api/isos/v1/node-graph` | `{revision,graph}` | Read the single saved graph. A missing graph returns an editable empty v1 draft. |
 | `PUT /api/isos/v1/node-graph` | `{schema_version:1,revision,graph}` | Validate and apply the graph. Stale revision returns 409. |
+| `POST /api/isos/v1/node-graph/migration/preview` | `{schema_version:1,revision}` → `{revision,proposed_revision,graph,changes,can_apply,diagnostics}` | Preview the saved legacy graph; no writes. |
+| `POST /api/isos/v1/node-graph/migration/apply` | `{schema_version:1,revision,proposed_revision}` → `{revision,graph,active_revision}` | Commit exactly the previewed migration under revision checks. |
 | `POST /api/isos/v1/node-graph/validate` | `{schema_version:1,graph}` → `{valid,diagnostics}` | Registry and package admission, without applying. Exact registered port type mismatches return `edge_type_mismatch` with a source, target, input and JSON-pointer path to the input source. |
 | `GET /api/isos/v1/node-types` | `{types:[...]}` | Node type catalog from `aether-profile`. |
 | `GET /api/isos/v1/core-setup/{role}/catalog` | Setup reply with `catalog` | Query the configured `eos` or `egia` adapter without starting its runtime. |
@@ -34,9 +36,9 @@ For a draft with a registered port type mismatch, validation returns `{"valid":f
 
 ### First compatibility-reader slice — implemented
 
-`GET /node-graph` keeps the schema-1 envelope and returns `data:{revision,graph,read_only,diagnostics}`. For an applied `1.0.0` graph, `read_only:true` while migration is unavailable and `revision` is SHA-256 of the exact saved bytes, different whitespace or key order therefore produces a different revision even for an equivalent graph. A missing graph or an unapplied starter without `core-setup/launch-inputs.json` returns an editable `1.0.0` draft with `read_only:false` in this slice; its initial safe Apply uses existing canonical JSON serialization and returns the SHA-256 of the bytes written. Changing the writer to `0.1.0` follows EOS reader support. A syntactically valid unknown version, such as `2.0.0`, returns the original graph object, original-byte revision, `read_only:true`, and `diagnostics:[{"path":"/version","code":"unsupported_graph_version","message":"supported graph versions: 1.0.0, 0.1.0"}]`. A malformed or oversized file returns HTTP 422 rather than a graph object. GET never normalizes or rewrites saved bytes.
+`GET /node-graph` keeps the schema-1 envelope and returns `data:{revision,graph,read_only,diagnostics}`. The revision is SHA-256 of the exact saved bytes. An applied safe `1.0.0` graph is read-only until explicit migration; an unapplied legacy starter remains editable. A missing graph returns an editable `0.1.0` draft with `revision:""`; Init creates and saves the same new-version starter only when absent. A syntactically valid unknown version, such as `2.0.0`, returns the original graph, original-byte revision, `read_only:true`, and a `/version` `unsupported_graph_version` diagnostic. Malformed or oversized files return HTTP 422. GET never rewrites saved bytes.
 
-`POST /node-graph/validate`, PUT Apply, CLI Apply, core setup, Run, and Restart admit only exact supported versions and registered type IDs. Parsing a `0.1.0` document permits inspection only until EOS and EGIA advertise compatible reader sets; it does not authorize Apply or launch through an older adapter. An unknown version returns the same `/version` code; an unknown type uses `/cores/<core>/layers/<layer>/groups/<group>/nodes/<id>/node_type` and `unsupported_node_type`; an unsafe process uses its exact node or `settings/command` path and `unsafe_process_node`. Validation places these in `data.diagnostics`; Apply returns HTTP 422 with the same diagnostics in `data.diagnostics` and a human-readable `error`. A safe saved legacy graph submitted with the matching revision and structurally identical JSON returns the original revision without a write, even when the submitted JSON has different formatting. A changed applied legacy graph returns HTTP 422 with `migration_required` at `/version`; an unapplied starter may receive its first changed Apply under the existing writer; stale revisions still return HTTP 409. No `0.1.0` graph is persisted by this slice. The later explicit preview/migrate operations must compare the saved revision under the graph lock, publish only after package and core setup checks, and leave the active revision unchanged until Restart.
+`POST /node-graph/validate`, PUT Apply, CLI Apply, core setup, Run, and Restart admit only exact supported versions and approved type identities at their registered placement. An unknown version fails at `/version`; an unknown or legacy-only type fails at its `/node_type`; an unsafe process fails at its exact node or `settings/command`. A `0.1.0` Apply requires an explicit expected revision, owner-reader support, verified package inputs, and graph-wide core and placement admission. Validation returns diagnostics in `data.diagnostics`; Apply returns HTTP 422 for admission failures, 409 for stale revisions. A safe saved legacy graph submitted with the matching revision and structurally identical JSON returns the original revision without writing; changed applied legacy graphs require explicit migration. Preview and commit compare saved revisions under the graph lock, publish only after package and owner setup checks, and leave the active revision unchanged until Restart.
 
 The [`graph compatibility fixtures`](../../../tests/fixtures/graph_compat/README.md) fix the expected paths and unchanged-byte behavior. The same version/type failures must appear through the CLI and manager preflight; GET remains available for inspection when admission fails.
 
@@ -138,6 +140,36 @@ If `selected` is missing from the verified catalog, append one unavailable optio
 {"schema_version":1,"ok":false,"data":null,"error":"selected scene warehouse is unavailable for eos/process/mujoco/sim.settings.scene"}
 ```
 
-## Release target: supported-version identity — not implemented
+## Supported-version identity
 
 The setup adapter's `identity` keeps `core`, `product_version`, and `setup_schema_version` and adds `supported_graph_versions` and `supported_node_type_versions` arrays. These are accepted input versions, not a single preferred writer version. Existing `graph_version` and `node_type_version` stay as deprecated scalar aliases for older IsOS readers. IsOS compares the saved graph's actual version, every registered type ID, exact package pins, API schema, and core executable capabilities before Apply or Run. A version mismatch names the unsupported value and owner; it never guesses an upgrade or invokes a different binary. `isos version check --json` exposes the same reasons in a script-readable report. The new writer emits graph `0.1.0` and new types `@v0.1`; the reader advertises legacy `1.0.0` and supported `@v1.*` explicitly. See [configuration and log contract](configuration.md).
+
+### G03 migration routes
+
+The owner-only loopback API uses the existing schema-1 `{schema_version,ok,data,error}` envelope and Host/Origin checks. A migration request operates on the saved deployment graph selected by IsOS; it never includes replacement graph bytes. `revision` and `proposed_revision` are lowercase 64-character SHA-256 hex strings of original saved bytes and canonical proposed bytes, respectively. Both are required on commit; `revision` is required on preview. The client obtains the source revision from `GET /node-graph`. `changes` is an ordered array of `{path,from,to}` entries for `/version` and mapped `/node_type` fields, at most 256 entries; all paths are JSON Pointers. More than 256 entries fails with `migration_change_limit` at `/changes`, without truncation. The `graph` response is the proposed JSON value, not proof of readiness. `can_apply` is true only after local type, edge, package, and enabled-core identity/validate/render preflight succeeds.
+
+Preview request:
+
+```json
+{"schema_version":1,"revision":"7a8daee6b7db9105f5483506ffc1743625b63089710dfbf936622329c471016b"}
+```
+
+A well-formed preview has HTTP 200 and `data` shaped as; this example uses an older EOS setup adapter, so publication remains blocked:
+
+```json
+{"revision":"7a8daee6b7db9105f5483506ffc1743625b63089710dfbf936622329c471016b","proposed_revision":"825d667d31c455844be7f22b565e0ab6b14b44aeb7ce4861a704ffd028081df1","graph":{"version":"0.1.0","robot":{"id":"demo-0","name":"Aether deployment"},"cores":{"eos":{"layers":{}}}},"changes":[{"path":"/version","from":"1.0.0","to":"0.1.0"}],"can_apply":false,"diagnostics":[{"path":"/cores/eos","code":"owner_reader_unavailable","message":"eos setup does not advertise graph 0.1.0"}]}
+```
+
+The shortened `graph` above shows response shape; the actual response contains the **full** proposed graph, with every accepted field preserved. A preflight blocker makes `can_apply:false` with diagnostics and no saved write. Malformed input or an invalid legacy graph returns HTTP 422 with `data.diagnostics`; a stale original revision returns HTTP 409 and `error:"node graph revision changed; reload before migration"`. Unknown graph versions use `/version` and `unsupported_graph_version`; unsafe process nodes use `unsafe_process_node`; unmapped types use `unmapped_node_type` at their exact `/node_type` path. No preview result authorizes Run.
+
+Commit request:
+
+```json
+{"schema_version":1,"revision":"7a8daee6b7db9105f5483506ffc1743625b63089710dfbf936622329c471016b","proposed_revision":"825d667d31c455844be7f22b565e0ab6b14b44aeb7ce4861a704ffd028081df1"}
+```
+
+On success, HTTP 200 returns `data:{revision:<new digest>,graph:<full saved 0.1.0 value>,active_revision:<old running digest or null>}`. A changed source or proposal returns HTTP 409; failed owner/package/edge/render preflight returns HTTP 422 with exact diagnostics. A filesystem publication failure **before graph rename** returns HTTP 500 and keeps original saved bytes. A graph-parent fsync failure after rename returns HTTP 500 with `commit_outcome_uncertain`; old bytes cannot be assumed. The caller may GET again to resolve that or a transport interruption after commit. `GET /node-graph` then reports the new saved revision and `read_only:false` when the new graph is admissible; `GET /process-status` retains the prior `active_revision` until explicit Restart.
+
+The CLI shares the same migration engine: `isos config migrate --preview --revision <saved-sha256>` prints the proposed revision, changes, and diagnostics without writing; `isos config migrate --revision <saved-sha256> --proposed-revision <preview-sha256>` commits. It does not accept a graph file or infer an expected revision from current disk. The implementation must keep HTTP and CLI failures equivalent.
+
+With the G03 writer, GET on a missing graph and Init produce a `0.1.0` draft; first PUT Apply uses an explicit `revision:""`, and later `0.1.0` edits use the saved revision. CLI Apply for a new or changed `0.1.0` graph uses explicit `--revision`. Init never rewrites an old `1.0.0` graph, and structurally identical legacy Apply stays a no-op. Run/Restart for the new version select the digest-checked manifest and EOS projection at `data/generated/<deployment>/<saved-revision>/` and compare every stored generated file against a fresh owner render of the exact saved graph before launch. The legacy flat `generated/<deployment>/core-setup/launch-inputs.json` is used only for `1.0.0` compatibility. See the [graph contract](node-graph.md#g03-writer-and-snapshot-selection).

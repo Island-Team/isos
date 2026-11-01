@@ -1,7 +1,7 @@
 //! Loopback configuration API and verified static IsosUI server.
 use crate::{
     config::{self, Paths},
-    core_setup, graph_compat, lock,
+    core_setup, graph_compat, graph_migration, lock,
     log_store::LogStore,
     node_options, node_sets, packages, process, readiness,
 };
@@ -301,7 +301,8 @@ async fn node_graph(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResul
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return ok(json!({
                 "revision":"",
-                "graph":{"version":"1.0.0","robot":{"id":"robot","name":"Robot"},"cores":{}},
+                "graph":crate::starter::draft(&app.paths, &app.deployment)
+                    .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?,
                 "read_only":false,"diagnostics":[]
             }));
         }
@@ -318,8 +319,91 @@ async fn node_graph(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResul
     let editable_starter = !applied
         && saved.value["version"] == "1.0.0"
         && graph_compat::admission_diagnostic(&saved.value, catalog.as_ref()).is_none();
+    let editable_new = saved.value["version"] == "0.1.0"
+        && graph_compat::admission_diagnostic(&saved.value, catalog.as_ref()).is_none();
     ok(json!({"revision":saved.revision,"graph":saved.value,
-        "read_only":saved.read_only && !editable_starter,"diagnostics":saved.diagnostics}))
+        "read_only":saved.read_only && !editable_starter && !editable_new,"diagnostics":saved.diagnostics}))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MigrationRequest {
+    schema_version: u32,
+    revision: String,
+    #[serde(default)]
+    proposed_revision: Option<String>,
+}
+
+fn migration_error(error: graph_migration::MigrationError) -> (StatusCode, Json<Value>) {
+    match error {
+        graph_migration::MigrationError::Conflict(message) => err(StatusCode::CONFLICT, message),
+        graph_migration::MigrationError::Diagnostic(diagnostic) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"schema_version":1,"ok":false,
+                "data":{"diagnostics":[diagnostic]},"error":"migration rejected"})),
+        ),
+        graph_migration::MigrationError::Filesystem(error) => {
+            err(StatusCode::INTERNAL_SERVER_ERROR, error)
+        }
+        graph_migration::MigrationError::OutcomeUncertain(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(
+                json!({"schema_version":1,"ok":false,"data":{"code":"commit_outcome_uncertain"},
+                "error":format!("commit_outcome_uncertain: {error:#}")}),
+            ),
+        ),
+    }
+}
+
+async fn migration_preview(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(request): Json<MigrationRequest>,
+) -> ApiResult {
+    authorized(&app, &headers)?;
+    if request.schema_version != 1 || request.proposed_revision.is_some() {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "preview requires schema_version 1 and revision only",
+        ));
+    }
+    let preview = graph_migration::preview(&app.paths, &app.deployment, &request.revision)
+        .map_err(migration_error)?;
+    let diagnostics: Vec<_> = preview.diagnostic.into_iter().collect();
+    ok(
+        json!({"revision":request.revision,"proposed_revision":preview.proposal.revision,
+        "graph":preview.proposal.graph,"changes":preview.proposal.changes,
+        "can_apply":diagnostics.is_empty(),"diagnostics":diagnostics}),
+    )
+}
+
+async fn migration_apply(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(request): Json<MigrationRequest>,
+) -> ApiResult {
+    authorized(&app, &headers)?;
+    if request.schema_version != 1 {
+        return Err(err(StatusCode::BAD_REQUEST, "API schema_version must be 1"));
+    }
+    let proposed_revision = request
+        .proposed_revision
+        .as_deref()
+        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "proposed_revision is required"))?;
+    let proposal = graph_migration::commit(
+        &app.paths,
+        &app.deployment,
+        &request.revision,
+        proposed_revision,
+    )
+    .map_err(migration_error)?;
+    let active_revision =
+        crate::manager::manager_call(&app.paths, &app.deployment, "deployment_status")
+            .ok()
+            .and_then(|status| status.get("active_revision").cloned());
+    record(&app, "graph", "Migrated saved node graph revision");
+    ok(json!({"revision":proposal.revision,"graph":proposal.graph,
+        "active_revision":active_revision}))
 }
 
 #[derive(Deserialize)]
@@ -338,6 +422,21 @@ async fn validate_node_graph(
     authorized(&app, &headers)?;
     if edit.schema_version != 1 {
         return Err(err(StatusCode::BAD_REQUEST, "API schema_version must be 1"));
+    }
+    if edit.graph["version"] == "0.1.0" {
+        let bytes = serde_json::to_vec_pretty(&edit.graph)
+            .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
+        let proposal = graph_migration::Proposal {
+            revision: graph_compat::revision(&bytes),
+            graph: edit.graph,
+            bytes,
+            changes: Vec::new(),
+        };
+        let diagnostics: Vec<_> = graph_migration::prepare(&app.paths, &app.deployment, &proposal)
+            .err()
+            .into_iter()
+            .collect();
+        return ok(json!({"valid":diagnostics.is_empty(),"diagnostics":diagnostics}));
     }
     let catalog = process::catalog().ok();
     if let Some(diagnostic) = graph_compat::admission_diagnostic(&edit.graph, catalog.as_ref()) {
@@ -370,6 +469,19 @@ async fn apply_node_graph(
         return Err(err(StatusCode::BAD_REQUEST, "API schema_version must be 1"));
     }
     let graph = edit.graph;
+    if graph["version"] == "0.1.0" {
+        let expected = edit.revision.as_deref().ok_or_else(|| {
+            err(
+                StatusCode::BAD_REQUEST,
+                "0.1.0 Apply requires an explicit revision, including an empty revision for a new graph",
+            )
+        })?;
+        let (proposal, _) =
+            graph_migration::apply_new(&app.paths, &app.deployment, graph, expected)
+                .map_err(migration_error)?;
+        record(&app, "graph", "Applied node graph revision");
+        return ok(json!({"revision":proposal.revision,"graph":proposal.graph}));
+    }
     let catalog = process::catalog().ok();
     if let Some(diagnostic) = graph_compat::admission_diagnostic(&graph, catalog.as_ref()) {
         return Err((
@@ -1060,6 +1172,14 @@ fn router(app: Arc<App>) -> Router {
             post(validate_node_graph).options(preflight),
         )
         .route(
+            "/api/isos/v1/node-graph/migration/preview",
+            post(migration_preview).options(preflight),
+        )
+        .route(
+            "/api/isos/v1/node-graph/migration/apply",
+            post(migration_apply).options(preflight),
+        )
+        .route(
             "/api/isos/v1/core-setup/{role}/{op}",
             get(core_setup_route)
                 .post(core_setup_route)
@@ -1152,6 +1272,45 @@ mod tests {
         assert_eq!(body["data"]["read_only"], true);
         assert_eq!(body["data"]["diagnostics"][0]["path"], "/version");
         assert_eq!(fs::read(path).unwrap(), source);
+    }
+
+    #[tokio::test]
+    async fn saved_new_graph_is_editable_and_missing_revision_apply_is_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = Arc::new(App {
+            paths: Paths {
+                config: temp.path().join("config"),
+                data: temp.path().join("data"),
+                runtime: temp.path().join("run"),
+            },
+            deployment: "default".into(),
+        });
+        let graph = crate::starter::draft(&app.paths, "default").unwrap();
+        let source = serde_json::to_vec_pretty(&graph).unwrap();
+        config::atomic_write(&app.paths.node_graph_path("default"), &source).unwrap();
+        let request = Request::builder()
+            .uri("/api/isos/v1/node-graph")
+            .header(header::HOST, "127.0.0.1:16000")
+            .body(Body::empty())
+            .unwrap();
+        let response = router(app.clone()).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 1_000_000).await.unwrap())
+                .unwrap();
+        assert_eq!(body["data"]["graph"]["version"], "0.1.0");
+        assert_eq!(body["data"]["read_only"], false, "{body}");
+        let request = Request::builder()
+            .method(Method::PUT)
+            .uri("/api/isos/v1/node-graph")
+            .header(header::HOST, "127.0.0.1:16000")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&json!({"schema_version":1,"graph":graph})).unwrap(),
+            ))
+            .unwrap();
+        let response = router(app).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
@@ -1411,7 +1570,7 @@ mod tests {
         let bytes = to_bytes(response.into_body(), 1_000_000).await.unwrap();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["data"]["revision"], "");
-        assert_eq!(body["data"]["graph"]["version"], "1.0.0");
+        assert_eq!(body["data"]["graph"]["version"], "0.1.0");
     }
 
     #[tokio::test]

@@ -14,14 +14,11 @@ fn process_present(graph: &Value, id: &str) -> bool {
 pub fn report(paths: &Paths, name: &str, active: Option<&Value>) -> Value {
     let graph_path = paths.node_graph_path(name);
     let saved = graph_compat::read(&graph_path).ok();
+    let graph_revision = saved.as_ref().map(|saved| saved.revision.clone());
     let graph: Value = saved.map_or(Value::Null, |saved| saved.value);
     let graph_version_issue = if graph.is_object() {
         graph_compat::version_diagnostic(&graph)
             .map(|diagnostic| format!("saved graph is incompatible: {diagnostic}"))
-            .or_else(|| {
-                (graph["version"] == "0.1.0")
-                    .then(|| "saved 0.1.0 graph requires compatible EOS and EGIA readers".into())
-            })
     } else {
         None
     };
@@ -47,11 +44,15 @@ pub fn report(paths: &Paths, name: &str, active: Option<&Value>) -> Value {
                 core_setup::adapter_path(paths, core)
             };
             let enabled = process_present(&graph, core);
-            let graph_configured = enabled
-                && paths
-                    .generated(name)
-                    .join("core-setup/launch-inputs.json")
-                    .is_file();
+            let generated = if graph["version"] == "0.1.0" {
+                graph_revision.as_deref().map(|revision| {
+                    core_setup::snapshot_root(paths, name, revision)
+                        .join("core-setup/launch-inputs.json")
+                })
+            } else {
+                Some(paths.generated(name).join("core-setup/launch-inputs.json"))
+            };
+            let graph_configured = enabled && generated.is_some_and(|path| path.is_file());
             let running = active
                 .and_then(|value| value.get("processes"))
                 .and_then(Value::as_array)
@@ -79,12 +80,20 @@ pub fn report(paths: &Paths, name: &str, active: Option<&Value>) -> Value {
                 });
             let (path, version, compatible, reason) = match path {
                 Ok(path) => match core_setup::identity(paths, core) {
-                    Ok(identity) => (
-                        Some(path.to_string_lossy().into_owned()),
-                        identity["product_version"].as_str().map(str::to_owned),
-                        true,
-                        None,
-                    ),
+                    Ok(identity) => {
+                        let supports_graph = graph["version"] != "0.1.0"
+                            || identity["supported_graph_versions"]
+                                .as_array()
+                                .is_some_and(|versions| versions.iter().any(|v| v == "0.1.0"));
+                        (
+                            Some(path.to_string_lossy().into_owned()),
+                            identity["product_version"].as_str().map(str::to_owned),
+                            supports_graph,
+                            (!supports_graph).then(|| format!(
+                                "{core} setup does not advertise graph 0.1.0"
+                            )),
+                        )
+                    },
                     Err(error) => (
                         Some(path.to_string_lossy().into_owned()),
                         None,
@@ -133,7 +142,7 @@ pub fn report(paths: &Paths, name: &str, active: Option<&Value>) -> Value {
             let action = if !enabled {
                 "Core is not enabled in the saved graph".into()
             } else if graph_version_issue.is_some() {
-                "Back up the old graph, run `isos init` to create a v1 starter, then add nodes and Save graph".into()
+                "Use a supported graph version or explicitly migrate the saved graph".into()
             } else if !compatible {
                 format!("Build {core} in its repository and configure its binary directory")
             } else if !graph_configured {
@@ -141,7 +150,11 @@ pub fn report(paths: &Paths, name: &str, active: Option<&Value>) -> Value {
             } else if running_changed {
                 "Restart the deployment to use the saved build".into()
             } else if reason.is_some() {
-                "Run `isos init` to refresh the configured build, then restart".into()
+                if graph["version"] == "0.1.0" {
+                    "Restore the pinned binary or create a new graph revision and Apply".into()
+                } else {
+                    "Run `isos init` to refresh the configured build, then restart".into()
+                }
             } else if running {
                 "Running from the configured build".into()
             } else {
@@ -188,8 +201,33 @@ mod tests {
             eos["action"]
                 .as_str()
                 .unwrap()
-                .contains("Back up the old graph")
+                .contains("explicitly migrate")
         );
         assert!(status["cores"][1]["reason"].is_null());
+    }
+
+    #[test]
+    fn new_graph_is_not_reported_as_an_unknown_version() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        paths.prepare().unwrap();
+        let graph = crate::starter::draft(&paths, "default").unwrap();
+        crate::config::atomic_write(
+            &paths.node_graph_path("default"),
+            &serde_json::to_vec_pretty(&graph).unwrap(),
+        )
+        .unwrap();
+        let status = report(&paths, "default", None);
+        assert_eq!(status["graph"]["configured"], true);
+        assert!(
+            !status["cores"][0]["reason"]
+                .as_str()
+                .unwrap_or("")
+                .contains("saved 0.1.0 graph requires")
+        );
     }
 }

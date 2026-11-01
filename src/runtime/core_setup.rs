@@ -363,6 +363,19 @@ pub fn prepare_run(paths: &Paths, name: &str, expected_revision: &str) -> Result
     );
     let graph = saved.value;
     graph_compat::admit(&graph, process::catalog().ok().as_ref())?;
+    if graph["version"] == "0.1.0" {
+        let proposal = crate::graph_migration::Proposal {
+            graph: graph.clone(),
+            bytes: Vec::new(),
+            revision: expected_revision.to_owned(),
+            changes: Vec::new(),
+        };
+        let prepared = crate::graph_migration::prepare(paths, name, &proposal)
+            .map_err(|diagnostic| anyhow::anyhow!(diagnostic.to_string()))?;
+        verify_rendered_snapshot(paths, name, &graph, expected_revision, &prepared.files)?;
+        verify_launch_inputs(paths, name)?;
+        return Ok(());
+    }
     let files = render_graph(paths, name, &graph, expected_revision)?;
     let _lock = crate::lock::Lock::take(paths)?;
     ensure!(
@@ -375,6 +388,20 @@ pub fn prepare_run(paths: &Paths, name: &str, expected_revision: &str) -> Result
 /// Revalidate a previously applied graph against the currently configured cores.
 /// A fresh draft has no launch inputs and remains unapplied.
 pub fn refresh_after_init(paths: &Paths, name: &str) -> Result<Option<String>> {
+    let graph_path = paths.node_graph_path(name);
+    let saved = graph_compat::read(&graph_path)
+        .with_context(|| format!("read {}", graph_path.display()))?;
+    if saved.value["version"] == "0.1.0" {
+        if !snapshot_root(paths, name, &saved.revision).exists() {
+            return Ok(None);
+        }
+        verify_launch_inputs(paths, name).map_err(|error| {
+            anyhow::anyhow!(
+                "0.1.0 generated inputs are stale or invalid: {error:#}; restore the pinned binary or create a new graph revision and Apply; `isos init` keeps the revisioned snapshot immutable"
+            )
+        })?;
+        return Ok(None);
+    }
     if !paths
         .generated(name)
         .join("core-setup/launch-inputs.json")
@@ -382,9 +409,6 @@ pub fn refresh_after_init(paths: &Paths, name: &str) -> Result<Option<String>> {
     {
         return Ok(None);
     }
-    let graph_path = paths.node_graph_path(name);
-    let saved = graph_compat::read(&graph_path)
-        .with_context(|| format!("read {}", graph_path.display()))?;
     let graph = saved.value;
     if let Some(diagnostic) = graph_compat::version_diagnostic(&graph) {
         bail!(
@@ -474,13 +498,25 @@ pub fn render_graph(
 }
 
 pub fn verify_launch_inputs(paths: &Paths, name: &str) -> Result<()> {
-    let file = paths.generated(name).join("core-setup/launch-inputs.json");
+    let graph_path = paths.node_graph_path(name);
+    let saved = graph_compat::read(&graph_path)?;
+    let file = if saved.value["version"] == "0.1.0" {
+        verify_revisioned(paths, name, &saved.value, &saved.revision)?;
+        snapshot_root(paths, name, &saved.revision).join("core-setup/launch-inputs.json")
+    } else {
+        paths.generated(name).join("core-setup/launch-inputs.json")
+    };
     let inputs: Value = serde_json::from_slice(&fs::read(&file).with_context(|| {
         format!(
             "saved launch inputs are missing at {}; save the graph",
             file.display()
         )
     })?)?;
+    let remedy = if saved.value["version"] == "0.1.0" {
+        "restore the pinned binary or create a new graph revision and Apply"
+    } else {
+        "run `isos init`, then restart"
+    };
     for input in inputs.as_array().context("invalid saved launch inputs")? {
         let path = Path::new(
             input["path"]
@@ -503,7 +539,7 @@ pub fn verify_launch_inputs(paths: &Paths, name: &str) -> Result<()> {
         };
         ensure!(
             path == configured,
-            "configured path for {} changed since graph Apply; run `isos init`, then restart",
+            "configured path for {} changed since graph Apply; {remedy}",
             input["binary"]
         );
         let current = revision(&fs::read(path).with_context(|| {
@@ -514,8 +550,180 @@ pub fn verify_launch_inputs(paths: &Paths, name: &str) -> Result<()> {
         })?);
         ensure!(
             input["sha256"] == current,
-            "configured file {} changed since graph Apply; run `isos init`, then restart",
+            "configured file {} changed since graph Apply; {remedy}",
             path.display()
+        );
+    }
+    Ok(())
+}
+
+pub fn snapshot_root(paths: &Paths, name: &str, graph_revision: &str) -> PathBuf {
+    paths.generated(name).join(graph_revision)
+}
+
+pub fn write_revisioned(
+    paths: &Paths,
+    name: &str,
+    graph: &Value,
+    graph_revision: &str,
+    files: Vec<(PathBuf, Vec<u8>)>,
+) -> Result<PathBuf> {
+    let root = snapshot_root(paths, name, graph_revision);
+    if root.exists() {
+        verify_revisioned(paths, name, graph, graph_revision)?;
+        return Ok(root);
+    }
+    let generated = paths.generated(name);
+    fs::create_dir_all(&generated)?;
+    let staging = tempfile::Builder::new()
+        .prefix("revision-")
+        .tempdir_in(&generated)?;
+    let mut entries = Vec::new();
+    for (relative, content) in files {
+        let relative = if relative == Path::new("launch-inputs.json") {
+            PathBuf::from("core-setup/launch-inputs.json")
+        } else {
+            relative
+        };
+        ensure!(
+            relative
+                .components()
+                .all(|part| matches!(part, Component::Normal(_))),
+            "invalid generated file path"
+        );
+        config::atomic_write(&staging.path().join(&relative), &content)?;
+        entries.push(json!({"path":relative,"sha256":revision(&content)}));
+    }
+    ensure!(
+        entries
+            .iter()
+            .any(|entry| entry["path"] == "eos/graph.json"),
+        "new graph requires generated EOS profile"
+    );
+    ensure!(
+        entries
+            .iter()
+            .any(|entry| entry["path"] == "core-setup/launch-inputs.json"),
+        "new graph requires launch inputs"
+    );
+    let mut package_receipts = Vec::new();
+    for package in package_refs(paths, graph)? {
+        let receipt = Path::new(package["path"].as_str().unwrap()).join("receipt.json");
+        package_receipts.push(json!({"id":package["id"],"version":package["version"],
+            "sha256":revision(&fs::read(receipt)?)}));
+    }
+    let manifest = json!({"schema_version":1,"source_revision":graph_revision,
+        "graph_sha256":graph_revision,"files":entries,"packages":package_receipts});
+    config::atomic_write(
+        &staging.path().join("manifest.json"),
+        &serde_json::to_vec_pretty(&manifest)?,
+    )?;
+    fs::File::open(staging.path())?.sync_all()?;
+    fs::rename(staging.path(), &root)?;
+    fs::File::open(&generated)?.sync_all()?;
+    Ok(root)
+}
+
+pub fn verify_revisioned(
+    paths: &Paths,
+    name: &str,
+    graph: &Value,
+    graph_revision: &str,
+) -> Result<()> {
+    let root = snapshot_root(paths, name, graph_revision);
+    let manifest: Value = serde_json::from_slice(&fs::read(root.join("manifest.json"))?)?;
+    ensure!(
+        manifest["schema_version"] == 1
+            && manifest["source_revision"] == graph_revision
+            && manifest["graph_sha256"] == graph_revision,
+        "generated manifest differs from saved graph revision"
+    );
+    let entries = manifest["files"]
+        .as_array()
+        .context("generated manifest lacks files")?;
+    for entry in entries {
+        let relative = Path::new(
+            entry["path"]
+                .as_str()
+                .context("generated file path missing")?,
+        );
+        ensure!(
+            relative
+                .components()
+                .all(|part| matches!(part, Component::Normal(_))),
+            "generated manifest has unsafe file path"
+        );
+        let file = root.join(relative);
+        ensure!(
+            fs::symlink_metadata(&file)?.file_type().is_file(),
+            "generated file is not regular: {}",
+            file.display()
+        );
+        ensure!(
+            entry["sha256"] == revision(&fs::read(&file)?),
+            "generated file digest changed: {}",
+            file.display()
+        );
+    }
+    for required in ["eos/graph.json", "core-setup/launch-inputs.json"] {
+        ensure!(
+            entries.iter().any(|entry| entry["path"] == required),
+            "generated manifest lacks {required}"
+        );
+    }
+    let packages = package_refs(paths, graph)?;
+    let recorded = manifest["packages"]
+        .as_array()
+        .context("generated manifest lacks packages")?;
+    ensure!(
+        packages.len() == recorded.len(),
+        "generated package set changed"
+    );
+    for (package, saved) in packages.iter().zip(recorded) {
+        let receipt = Path::new(package["path"].as_str().unwrap()).join("receipt.json");
+        ensure!(
+            saved["id"] == package["id"]
+                && saved["version"] == package["version"]
+                && saved["sha256"] == revision(&fs::read(receipt)?),
+            "generated package receipt changed"
+        );
+    }
+    Ok(())
+}
+
+pub fn verify_rendered_snapshot(
+    paths: &Paths,
+    name: &str,
+    graph: &Value,
+    graph_revision: &str,
+    expected: &[(PathBuf, Vec<u8>)],
+) -> Result<()> {
+    verify_revisioned(paths, name, graph, graph_revision)?;
+    let root = snapshot_root(paths, name, graph_revision);
+    let manifest: Value = serde_json::from_slice(&fs::read(root.join("manifest.json"))?)?;
+    let entries = manifest["files"]
+        .as_array()
+        .context("generated manifest lacks files")?;
+    ensure!(
+        entries.len() == expected.len(),
+        "generated file set differs from owner render"
+    );
+    for (relative, content) in expected {
+        let relative = if relative == Path::new("launch-inputs.json") {
+            Path::new("core-setup/launch-inputs.json")
+        } else {
+            relative.as_path()
+        };
+        let path = relative.to_string_lossy();
+        ensure!(
+            entries.iter().any(|entry| entry["path"] == path.as_ref()),
+            "generated manifest lacks owner-rendered file {}",
+            relative.display()
+        );
+        ensure!(
+            fs::read(root.join(relative))? == *content,
+            "generated file differs from owner render: {}",
+            relative.display()
         );
     }
     Ok(())
@@ -631,6 +839,84 @@ mod tests {
         assert!(!paths.generated("default").exists());
         let revision = crate::starter::revision(&paths.node_graph_path("default")).unwrap();
         prepare_run(&paths, "default", &revision).unwrap();
+    }
+
+    #[test]
+    fn paired_generated_file_and_manifest_tamper_cannot_replace_owner_render() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path());
+        paths.prepare().unwrap();
+        let graph = json!({"version":"0.1.0","robot":{},"cores":{}});
+        let graph_revision = revision(&serde_json::to_vec_pretty(&graph).unwrap());
+        let expected = vec![
+            (
+                PathBuf::from("eos/graph.json"),
+                b"original projection".to_vec(),
+            ),
+            (PathBuf::from("launch-inputs.json"), b"[]".to_vec()),
+        ];
+        let root =
+            write_revisioned(&paths, "default", &graph, &graph_revision, expected.clone()).unwrap();
+        verify_rendered_snapshot(&paths, "default", &graph, &graph_revision, &expected).unwrap();
+        fs::write(root.join("eos/graph.json"), b"changed projection").unwrap();
+        let manifest_path = root.join("manifest.json");
+        let mut manifest: Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        let entry = manifest["files"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|entry| entry["path"] == "eos/graph.json")
+            .unwrap();
+        entry["sha256"] = json!(revision(b"changed projection"));
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        verify_revisioned(&paths, "default", &graph, &graph_revision).unwrap();
+        assert!(
+            verify_rendered_snapshot(&paths, "default", &graph, &graph_revision, &expected)
+                .unwrap_err()
+                .to_string()
+                .contains("differs from owner render")
+        );
+    }
+
+    #[test]
+    fn init_reports_stale_new_graph_inputs_without_rewriting_snapshot() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path());
+        paths.prepare().unwrap();
+        let graph = json!({"version":"0.1.0","robot":{},"cores":{}});
+        let bytes = serde_json::to_vec_pretty(&graph).unwrap();
+        let graph_revision = revision(&bytes);
+        config::atomic_write(&paths.node_graph_path("default"), &bytes).unwrap();
+        let files = vec![
+            (PathBuf::from("eos/graph.json"), b"{}".to_vec()),
+            (
+                PathBuf::from("launch-inputs.json"),
+                b"[{\"core\":\"invalid\"}]".to_vec(),
+            ),
+        ];
+        let root = write_revisioned(&paths, "default", &graph, &graph_revision, files).unwrap();
+        let manifest_before = fs::read(root.join("manifest.json")).unwrap();
+        let error = refresh_after_init(&paths, "default")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("generated inputs are stale or invalid"),
+            "{error}"
+        );
+        assert!(
+            error.contains("create a new graph revision and Apply"),
+            "{error}"
+        );
+        assert_eq!(
+            fs::read(root.join("manifest.json")).unwrap(),
+            manifest_before
+        );
+        assert_eq!(fs::read(paths.node_graph_path("default")).unwrap(), bytes);
     }
 
     #[test]

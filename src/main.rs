@@ -16,6 +16,8 @@ mod entry;
 mod foreground;
 #[path = "runtime/graph_compat.rs"]
 mod graph_compat;
+#[path = "runtime/graph_migration.rs"]
+mod graph_migration;
 #[path = "app/http.rs"]
 mod http;
 #[path = "app/isosui.rs"]

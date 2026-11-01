@@ -1,6 +1,6 @@
-//! Create the editable shared graph from the generic v1 preset.
+//! Create the editable shared graph from the generic preset.
 
-use crate::config::Paths;
+use crate::{config::Paths, graph_compat, graph_migration};
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::{
@@ -60,7 +60,11 @@ pub fn draft(paths: &Paths, name: &str) -> Result<Value> {
         "--listen",
         "127.0.0.1:16021"
     ]));
-    Ok(graph)
+    let bytes = serde_json::to_vec(&graph)?;
+    let saved = graph_compat::parse(&bytes)?;
+    Ok(graph_migration::propose(&saved)
+        .map_err(|diagnostic| anyhow::anyhow!(diagnostic.to_string()))?
+        .graph)
 }
 
 pub fn init(paths: &Paths, name: &str) -> Result<PathBuf> {
@@ -164,7 +168,7 @@ mod tests {
         assert_eq!(
             graph["cores"]["eos"]["layers"]["dispatcher"]["groups"]["control"]["nodes"]["command"]
                 ["node_type"],
-            "eos.dispatcher.control@v1.0"
+            "eos.dispatcher.control@v0.1"
         );
     }
 }

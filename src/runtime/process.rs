@@ -271,6 +271,35 @@ pub fn project_with_packages(paths: &Paths, source: &str) -> Result<Vec<ProcessS
     Ok(specs)
 }
 
+pub fn use_generated_eos_profile(specs: &mut [ProcessSpec], path: &Path) -> Result<()> {
+    ensure!(
+        path.is_absolute() && path.is_file(),
+        "verified EOS generated profile is missing"
+    );
+    for id in ["eos", "config"] {
+        let spec = specs
+            .iter_mut()
+            .find(|spec| spec.id == id)
+            .with_context(|| format!("graph lacks {id} process"))?;
+        let mut matches = spec
+            .settings
+            .command
+            .iter()
+            .enumerate()
+            .filter(|(_, arg)| arg.as_str() == "--profile");
+        let index = matches
+            .next()
+            .map(|(index, _)| index)
+            .with_context(|| format!("{id} lacks --profile"))?;
+        ensure!(
+            matches.next().is_none() && index + 1 < spec.settings.command.len(),
+            "{id} has invalid --profile arguments"
+        );
+        spec.settings.command[index + 1] = path.to_string_lossy().into_owned();
+    }
+    Ok(())
+}
+
 fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>> {
     ensure!(
         source.len() as u64 <= MAX_GRAPH_BYTES,
@@ -282,14 +311,20 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
         .transpose()?
         .unwrap_or_default();
     let graph: Graph = serde_json::from_value(value)?;
-    ensure!(graph.version == "1.0.0", "graph version must be 1.0.0");
+    ensure!(
+        matches!(graph.version.as_str(), "1.0.0" | "0.1.0"),
+        "graph version must be 1.0.0 or 0.1.0"
+    );
     let mut specs = BTreeMap::new();
     let mut backends = BTreeMap::new();
     for (core_id, core) in &graph.cores {
         for (layer_id, layer) in &core.layers {
             for (group_id, group) in &layer.groups {
                 for (key, node) in &group.nodes {
-                    if node.node_type != "eos.process.mujoco@v1.0" {
+                    if !matches!(
+                        node.node_type.as_str(),
+                        "eos.process.mujoco@v1.0" | "eos.process.mujoco@v0.1"
+                    ) {
                         continue;
                     }
                     let path = format!("{core_id}/{layer_id}/{group_id}/{key}");
@@ -470,10 +505,16 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
             for (group_id, group) in layer.groups {
                 for (key, node) in group.nodes {
                     let path = format!("{core_id}/{layer_id}/{group_id}/{key}");
-                    if node.node_type == "eos.process.mujoco@v1.0" {
+                    if matches!(
+                        node.node_type.as_str(),
+                        "eos.process.mujoco@v1.0" | "eos.process.mujoco@v0.1"
+                    ) {
                         continue;
                     }
-                    if node.node_type == "isos.process.component@v1.1" {
+                    if matches!(
+                        node.node_type.as_str(),
+                        "isos.process.component@v1.1" | "isos.process.component@v0.1"
+                    ) {
                         ensure!(
                             core_id == "isos" && layer_id == "process" && group_id == "component",
                             "{path}: process type has invalid placement"
@@ -849,6 +890,21 @@ pub fn catalog() -> Result<Value> {
         }
     }
     let types = catalog["types"].as_array_mut().unwrap();
+    if !types
+        .iter()
+        .any(|item| item["id"] == "isos.process.component@v0.1")
+    {
+        let mut component = types
+            .iter()
+            .find(|item| item["id"] == "isos.process.component@v1.1")
+            .context("EOS catalog lacks IsOS legacy component definition")?
+            .clone();
+        component["id"] = Value::String("isos.process.component@v0.1".into());
+        component["description"] = Value::String(
+            "IsOS-owned role-selected child with bounded arguments and readiness".into(),
+        );
+        types.push(component);
+    }
     let builtin: BTreeSet<_> = types
         .iter()
         .filter_map(|value| value["id"].as_str().map(str::to_owned))

@@ -43,8 +43,24 @@ IsOS 校验边的来源、目的类型、`priority` 和 `frequency_hz`。**当�
 
 ### G01–G02 兼容读取证据
 
-首个读取切片只准入精确注册的旧类型身份，并按 JSON 指针拒绝未知版本和不安全进程节点；修订号来自已保存的原始字节。首次未应用初始图编辑仍使用 `1.0.0` 写入器。`0.1.0` 写入器和显式迁移尚未实现。上述算法第一步的共享规范化投影留待后续迁移切片；本切片把原始 JSON 值传给既有归属方类型化校验器，由它们应用已确立的可选字段默认值。
+G01–G02 读取切片只准入精确注册的旧类型身份，按 JSON 指针拒绝未知版本和不安全进程节点，并保留保存字节的修订号。G03 现已提供 `0.1.0` 写入器和显式迁移。读取器仍保留原始 JSON 值；类型化归属方校验器应用既定可选默认值，不修改保存字节。
 
 在 IsOS 仓库根目录运行 `cargo fmt --all -- --check`、`cargo test --no-default-features`、`cargo clippy --all-targets --no-default-features -- -D warnings` 和 `cargo build --no-default-features`。2026-11-01 全部通过，共 76 个单元测试及 5 个集成测试；完整本地输出保存在 `logs/test/2026-11-01-g01-g02/`。另外，用干净的临时 `ISOS_HOME` 和指向 EOS release 程序的 `ISOS_AETHER_BIN_DIR` 验证了首次编辑初始图 Apply、结构相同且空白不同的图无写入 Apply 保留 SHA-256，以及已应用旧图改动返回 `migration_required` 且字节不变。精确输入及预期路径见[`tests/fixtures/graph_compat/`](../../../tests/fixtures/graph_compat/README.md)。
 
 依赖顺序、产出及验收门槛统一放在 [IsOS 里程碑计划](../maintenance/roadmap_cn.md)。本页负责上述算法，契约字段仍放在 `interfaces/`，节点行为见[节点目录](../layers/README_cn.md)。本次发布不包含 WorkflowService、ActionList 或 workflow DAG。
+
+### G03 迁移事务
+
+[图契约](../interfaces/node-graph_cn.md#g03-显式图迁移)定义精确类型映射；[本地 API](../interfaces/local-api_cn.md#g03-迁移路由)定义请求与响应字段。HTTP 和 CLI 共享同一迁移引擎。引擎把原始 `SavedGraph` 字节及其 SHA-256 与解析值、建议值分别保存，预览不会改动来源。它只按表替换版本和类型，再确认其他所有已接受的 JSON 值相等。未知字段不能通过类型化反序列化而丢失，必须拒绝。映射后的类型仍须通过精确注册、设置、软件包来源、位置和端口兼容校验；不根据版本后缀猜测。
+
+依赖未就绪时预览仍可计算建议结果，但标记阻塞。提交在图锁内根据当前字节重复全部检查，并要求原修订号和建议摘要。0.1 就绪屏障包括 IsOS 自有 component 注册、EOS setup 和运行时对 EOS 投影的支持、EGIA setup 对图中旧 common 节点的支持，以及整图跨 core 边和引用的准入。在 G06 提供完整准入前，含跨 core 连线的图不能迁移。EOS setup identity 不得声明其运行时无法读取的图版本。IsOS 将按修订保存的仅 EOS 生成投影传给 EOS 运行时，不能让运行时在迁移后重新解析未经完整校验的原始整图。
+
+发布点是已暂存图文件的原子 rename。在这之前，按建议修订号命名的不可变生成文件、receipt 指纹及清单已校验、fsync 并发布；在锁内重查来源修订。准备失败则清理临时文件并保留旧图。未引用的已发布快照无害，可随后回收。rename 后还须 fsync 图父目录；失败时提交结果不确定，需重读保存修订号判断。图 rename 后不再进行 setup 或启动步骤。运行中子进程保留旧修订，只由显式 Restart 切换。rename 后崩溃或丢失响应时，重新 GET 并与预览摘要比较；用旧修订重试不会二次应用。
+
+实现须在预览、旧修订冲突、软件包指纹变化、未知或不安全类型、render 失败、快照或图发布失败时断言保存字节不变。成功用例校验精确夹具映射与 pin/字段保留、保存与运行中修订分离、Run/Restart 预检，以及事务失败后旧图恢复。完整日志存于 `logs/test/<run-id>/`；G03 分支合并前用干净的 `ISOS_HOME` 重放 HTTP 和 CLI 边界。
+
+新写入器以 `data/generated/<deployment>/<saved-revision>/` 作为 `0.1.0` 的不可变查找键；Run 和 Restart 校验其清单，并将经验证的 `eos/graph.json` 代入 EOS runtime 与 config-server 的 `--profile` 启动参数，不修改保存的 `settings.args`。它们不跟随可变的 `current` 指针或旧平面生成目录。旧平面的 `core-setup/launch-inputs.json` 只为 `1.0.0` 兼容保留。Init 和缺失图 GET 生成 `0.1.0` 初始图；修改新版本的 PUT 和 CLI Apply 使用相同的修订比较交换引擎。按归属方分区的校验器使用 IsOS 自有进程定义、EOS setup 投影、EGIA setup 与 IsOS 整图连线校验，不把 IsOS `@v0.1` 节点交给 EOS 整图 profile 校验。
+
+Run 和 Restart 还会将每个已保存的生成文件与根据精确已保存图重新执行的归属方 render 比较。即使文件和清单摘要一起被修改，也会拒绝启动。重新构建核心程序后，快照中的启动输入会过期。`isos init` 报告过期的输入并保留不可变快照；须恢复固定的程序，或创建新的图修订并 Apply。对未修改图字节刷新快照所需的独立生成身份留待 P04/P05。
+
+G03 实现证据（2026-11-01）：使用 `/home/ashex/projects/Island-eos/target/debug` 中的 EOS `fb57a0c5` 调试程序，以及 `logs/test/2026-11-01-g03/` 下的新 `ISOS_HOME` 目录，`cargo fmt --all -- --check`、`cargo clippy --all-targets --no-default-features -- -D warnings` 和 `cargo test --all-targets` 均通过（87 个单元测试及 5 个 CLI 测试）。CLI 重放执行 `isos config init`，预览已保存的 1.0 图（`can_apply:true`），用两个摘要提交，随后 `isos run` 在迁移后的活动修订号下启动 EOS、bridge 和 config；`isos version check --json` 显示 EOS 就绪。重复提交过期来源失败，保存字节不变。HTTP 重放依次调用 `GET /api/isos/v1/node-graph`、POST `/node-graph/migration/preview`、POST `/node-graph/migration/apply` 及重复的过期 POST：首次提交返回 0.1，重复请求返回 409，前后 SHA-256 相同。回归测试覆盖同时篡改投影和清单、跨 core 输入的精确路径、未知 core／旧 UI／类型位置拒绝、PUT 缺失修订号、精确软件包及适配器 pin 保留、Init 不可变行为及已保存 0.1 图的可编辑性。完整命令与输出位于 `logs/test/2026-11-01-g03/`。
