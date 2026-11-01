@@ -48,3 +48,13 @@ IsOS 校验边的来源、目的类型、`priority` 和 `frequency_hz`。**当�
 在 IsOS 仓库根目录运行 `cargo fmt --all -- --check`、`cargo test --no-default-features`、`cargo clippy --all-targets --no-default-features -- -D warnings` 和 `cargo build --no-default-features`。2026-11-01 全部通过，共 76 个单元测试及 5 个集成测试；完整本地输出保存在 `logs/test/2026-11-01-g01-g02/`。另外，用干净的临时 `ISOS_HOME` 和指向 EOS release 程序的 `ISOS_AETHER_BIN_DIR` 验证了首次编辑初始图 Apply、结构相同且空白不同的图无写入 Apply 保留 SHA-256，以及已应用旧图改动返回 `migration_required` 且字节不变。精确输入及预期路径见[`tests/fixtures/graph_compat/`](../../../tests/fixtures/graph_compat/README.md)。
 
 依赖顺序、产出及验收门槛统一放在 [IsOS 里程碑计划](../maintenance/roadmap_cn.md)。本页负责上述算法，契约字段仍放在 `interfaces/`，节点行为见[节点目录](../layers/README_cn.md)。本次发布不包含 WorkflowService、ActionList 或 workflow DAG。
+
+### G03 迁移事务——目标设计，尚未实现
+
+[图契约](../interfaces/node-graph_cn.md#g03-显式图迁移目标设计尚未实现)定义精确类型映射；[本地 API](../interfaces/local-api_cn.md#g03-迁移路由目标设计尚未实现)定义请求与响应字段。HTTP 和 CLI 共享同一迁移引擎。引擎把原始 `SavedGraph` 字节及其 SHA-256 与解析值、建议值分别保存，预览不会改动来源。它只按表替换版本和类型，再确认其他所有已接受的 JSON 值相等。未知字段不能通过类型化反序列化而丢失，必须拒绝。映射后的类型仍须通过精确注册、设置、软件包来源、位置和端口兼容校验；不根据版本后缀猜测。
+
+依赖未就绪时预览仍可计算建议结果，但标记阻塞。提交在图锁内根据当前字节重复全部检查，并要求原修订号和建议摘要。0.1 就绪屏障包括 IsOS 自有 component 注册、EOS setup 和运行时对 EOS 投影的支持、EGIA setup 对图中旧 common 节点的支持，以及整图跨 core 边和引用的准入。在 G06 提供完整准入前，含跨 core 连线的图不能迁移。EOS setup identity 不得声明其运行时无法读取的图版本。IsOS 将按修订保存的仅 EOS 生成投影传给 EOS 运行时，不能让运行时在迁移后重新解析未经完整校验的原始整图。
+
+发布点是已暂存图文件的原子 rename。在这之前，按建议修订号命名的不可变生成文件、receipt 指纹及清单已校验、fsync 并发布；在锁内重查来源修订。准备失败则清理临时文件并保留旧图。未引用的已发布快照无害，可随后回收。图 rename 后不再进行可能失败的 setup 或启动步骤。运行中子进程保留旧修订，只由显式 Restart 切换。rename 后崩溃或丢失响应时，重新 GET 并与预览摘要比较；用旧修订重试不会二次应用。
+
+实现须在预览、旧修订冲突、软件包指纹变化、未知或不安全类型、render 失败、快照或图发布失败时断言保存字节不变。成功用例校验精确夹具映射与 pin/字段保留、保存与运行中修订分离、Run/Restart 预检，以及事务失败后旧图恢复。完整日志存于 `logs/test/<run-id>/`；G03 分支合并前用干净的 `ISOS_HOME` 重放 HTTP 和 CLI 边界。

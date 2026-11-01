@@ -28,3 +28,7 @@ isos pkg node-sets
 运行前会重新校验精确的图修订、已配置程序、软件包、场景和资源。EOS 启动并持有 MuJoCo 子进程。安装包、修改程序路径或编辑草稿都不会改变运行中的部署；需显式 Apply 和 Restart。参见[软件包命令](packages_cn.md)、[图字段](../interfaces/node-graph_cn.md)及[独立服务契约](../interfaces/services_cn.md)。
 
 若重启时新子进程启动失败，IsOS 会停止本次启动，并按先前的进程配置重新启动先前的运行中修订。若先前的子进程也无法恢复，状态会显示部署已降级及重启错误。
+
+### 计划中的旧图迁移
+
+编辑已应用的 `1.0.0` 图之前，先检查保存修订号。计划中的 `isos config migrate --preview --revision <saved-sha256>` 不改变文件或运行中子进程，只报告精确类型替换、完整的 `0.1.0` 建议图和阻塞原因。审查并解决归属方 reader／软件包问题后，`isos config migrate --revision <saved-sha256> --proposed-revision <preview-sha256>` 只提交该建议结果。修订过期时须重新预览。`isos status --json` 随后显示新的保存修订号；运行中修订号在显式 Restart 前保持不变。当前程序尚无这些命令，详见[迁移指南](../maintenance/migration_cn.md#计划中的已保存图-100--010-迁移)。

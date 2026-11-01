@@ -105,3 +105,25 @@ IsOS 将已验证的可执行文件、场景路径和 MuJoCo 库路径传给 EOS
 已实现的首个兼容读取切片保留现有 `1.0.0` 写入器和初始草稿。若尚无已保存图，或已编辑的初始图尚无已应用的 `core-setup/launch-inputs.json` 快照，首次安全 `1.0.0` Apply 使用现有规范 JSON 序列化，并返回实际写入字节的 SHA-256。已应用的 `1.0.0` 图在迁移功能完成前标记为只读；未应用的初始图仍可编辑。对于安全且已保存的图，带匹配修订号的 PUT 或 CLI Apply 若提交结构相同的图，就返回原修订号而不写文件；首次 Apply 之后若图有改动，则返回 `migration_required` 诊断，要求显式迁移。这样避免 JSON 重新序列化暗中改变空白、键顺序和修订号。后续独立迁移操作先预览确定性的旧新差异，要求原始已保存修订号，并且只在校验及核心 setup 成功后原子写入 `0.1.0` 字节。迁移保留 ID、路径、引用、边、精确软件包版本及旧 schema 已接受的字段；未映射的未知字段须拒绝迁移，不能丢弃。不猜测旧类型到新类型的映射。未映射类型可供查看和修复，但不会获得新的执行路径。任意命令 `isos.process.component@v1.0` 及其 `settings.command` 不能校验、应用或启动，也不会自动变成 `role` 与 `args`。旧 `eos.process.backend@v1.0` 可查看，但 Apply 前须有精确且已验证的替代类型。解析、软件包检查、setup 生成或修订号比较失败时，已保存字节及运行中修订号不变；迁移成功也只有在 Restart 后才改变运行中修订号。
 
 固定兼容输入位于 [`tests/fixtures/graph_compat/`](../../../tests/fixtures/graph_compat/README.md)，包含安全的 `1.0.0` 图、空白不同但语义相同的图、未来 `2.0.0` 图、未知类型 ID 和不安全命令进程。这些字节及预期路径属于测试样例，不是新部署模板。
+
+## G03 显式图迁移——目标设计，尚未实现
+
+IsOS 只迁移**已保存**且安全的 `1.0.0` 图。预览与提交读取该文件，不接受编辑器另行提交的替代图。预览最多读取 1 MiB，对原始字节计算哈希，校验精确版本解析器、类型 ID、软件包版本、设置、引用和边，再构造确定的 `0.1.0` JSON 值。仅更改 `/version` 和下表列出的精确类型 ID。实例 ID、路径、描述、设置、引用、边、adapter 元数据及精确 `{id,version}` pin 在 JSON 值上保持不变。可选默认值仅用于校验投影，不写入迁移结果。旧归属方 schema 未接受的未知字段在其 JSON Pointer 返回 `unmapped_graph_field`，不可静默丢弃。规范字节采用 `serde_json::Value` 的字典序 object key、两空格缩进、UTF-8、无尾随换行的序列化，与 `serde_json::to_vec_pretty` 默认行为一致。建议修订号是该规范字节的 SHA-256；预览返回其 JSON 值和有界变更列表。预览不修改保存字节或生成配置。
+
+| 精确旧类型 | 精确目标类型 | 归属方与前提 |
+| --- | --- | --- |
+| `eos.hardware.camera@v1.0` | `eos.hardware.camera@v0.1` | EOS 通用 camera 类型已注册，重新校验设置和端口。 |
+| `eos.hardware.base@v1.0` | `eos.hardware.base@v0.1` | EOS 通用 base 类型已注册，重新校验设置和端口。 |
+| `eos.hardware.manipulator@v1.0` | `eos.hardware.manipulator@v0.1` | EOS 通用 manipulator 类型已注册，重新校验设置和端口。 |
+| `eos.dispatcher.control@v1.0` | `eos.dispatcher.control@v0.1` | EOS dispatcher 类型已注册；命令准入仍由 Dispatcher 管理。 |
+| `eos.dispatcher.primitive_base@v1.0` | `eos.dispatcher.primitive_base@v0.1` | EOS binding 类型已注册；重新校验目标与命令路由。 |
+| `eos.dispatcher.primitive_manipulator@v1.0` | `eos.dispatcher.primitive_manipulator@v0.1` | EOS binding 类型已注册；重新校验目标与命令路由。 |
+| `eos.interface.camera_gate@v1.0` | `eos.interface.camera_gate@v0.1` | EOS camera gate 类型已注册；重新校验证据边。 |
+| `isos.process.component@v1.1` | `isos.process.component@v0.1` | IsOS 按角色选择的进程类型已注册；重新校验 `role` 和有界 `args`。此类型归 IsOS；EOS 须使用按归属方分区的校验或显式 IsOS contribution 接受，不能把它注册为 EOS 内置类型。 |
+| `eos.process.mujoco@v1.0` | `eos.process.mujoco@v0.1` | 仅当**同一精确版本的已验证软件包**贡献新进程类型，且现有 scene/socket 设置通过校验。此前旧节点保持只读并返回 `unmapped_node_type`。 |
+
+以下安全旧类型在 `0.1.0` reader 和归属方仍注册时保留原 ID：`egia.common.source@v1.0`、`egia.common.context@v1.0`、`egia.common.planner@v1.0`、`egia.common.guard@v1.0`、`eos.control.manual@v1.0`、`eos.control.primitive@v1.0`、`eos.control.skill@v1.0`、`isos.ui.vision@v1.0`、`isosui.system.vision@v1.0`。它们不会获得新的运行时路由。缺少注册时，在节点的 `/node_type` 路径拒绝迁移。`isos.process.component@v1.0` 和任意 `settings.command` 返回 `unsafe_process_node`；`eos.process.backend@v1.0`、软件包专用 `eos.hardware.mujoco_*@v1.0` 与未知 ID **不自动映射**。后者需要操作员编写替代节点并选择精确验证过的软件包/adapter；只改版本后缀不足以完成转换。不会生成图定义的技能序列。
+
+映射完成但归属方 reader 尚未就绪时，预览可返回 `can_apply:false` 和精确诊断。提交必须同时带有已保存原始字节的修订号及预览的建议修订号。发布前，IsOS 要求自有 `0.1.0` registry 和每个启用 core 的 `setup identity` 声明图 `0.1.0`；还须检查**完整精确**类型注册，而不只检查 `supported_node_type_versions`，并对建议图执行各归属方的 `validate` 和 `render`。当前 EOS profile 仍报告标量图 `1.0.0`，当前初始图的 IsOS `component@v0.1` 也没有 EOS 可见的 contribution。在 EOS reader-features 与 IsOS 注册切片完成前，这两点阻止发布。EGIA 的兼容图 envelope 只支持四个旧 common ID，因此新的 `@v0.1` EGIA 阶段仍受阻。产品版本或图 envelope 本身不授权类型准入。
+
+提交在图锁内比较传入的原修订号与当前保存字节 SHA-256，并重新计算建议结果；来源或建议修订过期时不写文件并返回冲突。发布前检查 receipt、链接包指纹、scene/asset、边准入及两个 core 的 render。先 fsync 并发布以**建议修订号**命名的不可变生成配置快照，再 fsync 同目录图临时文件，最后原子 rename 图。图 rename 前失败则保存字节和运行中修订号不变；清理临时文件，未使用的已发布快照可回收。图 rename 后不再执行可能失败的部署操作。若连接在 rename 后中断，调用方重新读取保存修订号判断提交是否成功。成功迁移也只改变**已保存**修订号；运行中子进程保持 `active_revision`，直到显式 Restart 重新校验精确新图及软件包。

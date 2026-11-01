@@ -28,3 +28,7 @@ isos pkg node-sets
 Run rechecks the exact graph revision, configured executables, package, scene, and assets. EOS starts and owns its MuJoCo child. Installing a package, changing a configured build path, or editing a draft does not alter an active deployment; Apply and Restart explicitly. See [package commands](packages.md), [graph fields](../interfaces/node-graph.md), and the [independent services contract](../interfaces/services.md).
 
 If new children fail during a restart, IsOS stops that attempt and restarts the previous process specifications under the previous active revision. If the previous children cannot be restored, status reports a degraded deployment and the restart error.
+
+### Planned legacy-graph migration
+
+For an applied `1.0.0` graph, inspect its saved revision before editing. The planned `isos config migrate --preview --revision <saved-sha256>` reports exact type substitutions, the full `0.1.0` proposal, and blockers without changing the file or running children. After reviewing it and resolving owner-reader/package blockers, `isos config migrate --revision <saved-sha256> --proposed-revision <preview-sha256>` commits only that proposal. A stale revision requires a new preview. `isos status --json` then shows the new saved revision and prior active revision until explicit Restart. These commands are not available in the current binary; see the [migration guide](../maintenance/migration.md#planned-saved-graph-100--010-migration).

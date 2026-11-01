@@ -12,6 +12,8 @@ API 只绑定 `127.0.0.1`，不提供前端文件。IsosUI 通过地址和端口
 | --- | --- | --- |
 | `GET /api/isos/v1/node-graph` | `{revision,graph}` | 读取唯一已保存图；无图时返回可编辑空 v1 草稿。 |
 | `PUT /api/isos/v1/node-graph` | `{schema_version:1,revision,graph}` | 校验并应用图；修订过期返回 409。 |
+| `POST /api/isos/v1/node-graph/migration/preview` | `{schema_version:1,revision}` → `{revision,proposed_revision,graph,changes,can_apply,diagnostics}` | 只预览已保存旧图，不写入。 |
+| `POST /api/isos/v1/node-graph/migration/apply` | `{schema_version:1,revision,proposed_revision}` → `{revision,graph,active_revision}` | 在修订检查下提交精确预览结果。 |
 | `POST /api/isos/v1/node-graph/validate` | `{schema_version:1,graph}` → `{valid,diagnostics}` | 只校验注册表和软件包，不应用。注册端口类型不匹配时返回 `edge_type_mismatch`，包含来源、目标、输入和指向输入来源的 JSON 指针路径。 |
 | `GET /api/isos/v1/node-types` | `{types:[...]}` | 由 `aether-profile` 提供节点类型目录。 |
 | `GET /api/isos/v1/core-setup/{role}/catalog` | 含 `catalog` 的配置响应 | 查询已配置的 `eos` 或 `egia` 适配器，不启动核心运行时。 |
@@ -126,3 +128,31 @@ IsOS 在 `aether-profile setup --json` 或 `egia-config setup --json` 上发送 
 ## 发行目标：支持版本身份——尚未实现
 
 setup 适配器 `identity` 保留 `core`、`product_version`、`setup_schema_version`，增加 `supported_graph_versions` 与 `supported_node_type_versions` 数组，表示可读取版本而不是单一写入版本。旧 `graph_version` 和 `node_type_version` 保留为兼容旧 IsOS 读取器的标量别名。Apply／Run 前 IsOS 对比图实际版本、每个注册类型 ID、精确包固定版本、API schema 和核心程序能力。不匹配时指出具体值及所有者，不猜测升级也不调用其他程序。`isos version check --json` 提供同样的机器可读原因。新写入器使用图 `0.1.0` 和新类型 `@v0.1`；读取器显式声明旧 `1.0.0` 和受支持 `@v1.*`。见[配置与日志契约](configuration_cn.md)。
+
+### G03 迁移路由——目标设计，尚未实现
+
+仅所有者可用的 loopback API 沿用 schema-1 `{schema_version,ok,data,error}` 封装和 Host/Origin 检查。迁移请求针对 IsOS 选定部署的已保存图，不携带替代图字节。`revision` 与 `proposed_revision` 分别是原始已保存字节及建议规范字节的 64 位小写 SHA-256 十六进制字符串；提交必须同时提供，预览必须提供 `revision`。客户端从 `GET /node-graph` 取得原修订号。`changes` 是最多 256 项的有序 `{path,from,to}` 数组，只包含 `/version` 和映射的 `/node_type`，路径使用 JSON Pointer。响应 `graph` 是建议 JSON 值，不代表可以运行。只有本地类型、边、软件包及已启用 core 的 identity/validate/render 预检都成功时，`can_apply` 才为 true。
+
+预览请求：
+
+```json
+{"schema_version":1,"revision":"7a8daee6b7db9105f5483506ffc1743625b63089710dfbf936622329c471016b"}
+```
+
+成功预览使用 HTTP 200，`data` 结构如下：
+
+```json
+{"revision":"7a8daee6b7db9105f5483506ffc1743625b63089710dfbf936622329c471016b","proposed_revision":"825d667d31c455844be7f22b565e0ab6b14b44aeb7ce4861a704ffd028081df1","graph":{"version":"0.1.0","robot":{"id":"demo-0","name":"Aether deployment"},"cores":{}},"changes":[{"path":"/version","from":"1.0.0","to":"0.1.0"}],"can_apply":false,"diagnostics":[{"path":"/cores/isos/layers/process/groups/component/nodes/eos/node_type","code":"owner_reader_unavailable","message":"EOS has not admitted the IsOS-owned component@v0.1 contribution"}]}
+```
+
+上面缩短的 `graph` 只展示响应结构；真实响应包含保留全部已接受字段的**完整**建议图。预检阻塞时返回 `can_apply:false` 和诊断，不写入文件。输入格式错误或旧图无效时返回 HTTP 422 与 `data.diagnostics`；原修订过期返回 HTTP 409、`error:"node graph revision changed; reload before migration"`。未知图版本在 `/version` 返回 `unsupported_graph_version`；不安全进程返回 `unsafe_process_node`；未映射类型在其精确 `/node_type` 路径返回 `unmapped_node_type`。预览结果不授权 Run。
+
+提交请求：
+
+```json
+{"schema_version":1,"revision":"7a8daee6b7db9105f5483506ffc1743625b63089710dfbf936622329c471016b","proposed_revision":"825d667d31c455844be7f22b565e0ab6b14b44aeb7ce4861a704ffd028081df1"}
+```
+
+成功时 HTTP 200 返回 `data:{revision:<新摘要>,graph:<完整已保存 0.1.0 值>,active_revision:<旧的运行中摘要或 null>}`。来源或建议结果已变时返回 HTTP 409；归属方、软件包、边或生成预检失败时返回 HTTP 422 和精确诊断。文件发布失败返回 HTTP 500，保持原始保存字节；若提交后传输中断，调用方可再次 GET 判断结果。此时 `GET /node-graph` 返回新修订，图可准入时 `read_only:false`；`GET /process-status` 在显式 Restart 前保持旧 `active_revision`。
+
+CLI 使用同一迁移引擎：`isos config migrate --preview --revision <saved-sha256>` 只输出建议修订、变更和诊断；`isos config migrate --revision <saved-sha256> --proposed-revision <preview-sha256>` 提交。它不接收图文件，也不从当前磁盘隐式推断预期修订。实现必须保持 HTTP 与 CLI 的错误等价。
