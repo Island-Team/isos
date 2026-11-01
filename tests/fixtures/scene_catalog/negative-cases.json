@@ -268,7 +268,7 @@
       "expected_graph": {
         "code": "package_unsafe_path",
         "path": "/cores/eos/layers/process/groups/mujoco/nodes/simulator/package",
-        "stage": "descriptor"
+        "stage": "payload"
       }
     }
   ],

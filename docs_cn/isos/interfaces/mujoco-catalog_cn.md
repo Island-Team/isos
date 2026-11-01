@@ -19,13 +19,13 @@ schema v4 `release.json`、P01 收据和 `backend-v2.json` schema `2.0.0` 的版
 | `device_catalog[]` | 三个对象的数组／— | 每个 `devices` 类别和 ID 恰一项，无额外或重复 ID。每项有非空 `label`、`description` 和非空、唯一、属于已声明场景的 `scene_ids`；设备只在所选场景支持时可用。 |
 | `runtime.mujoco_version`、`.environment_variable`、`.library` | 版本、环境变量名、安全相对路径／— | 保留 `3.16.0`、`MUJOCO_ROOT`、`lib/libmujoco.so.3.16.0`。IsOS 在图准入和启动检查库；文件名吻合本身不能证明就绪时的实际加载 ABI。`MUJOCO_ROOT` 是主机运行输入，不是图选择值或密钥。 |
 
-缺少 `catalog_version` 且没有任何目标元数据的描述文件仅供历史图使用：保留先前验证的 `1.0.0` 图行为和 ID，不发布 P02 选择项或 `0.1.0` 预设。没有判别字段却含目标字段，或有判别字段却缺目标字段，均在发布选项／节点集合前失败。新语义不改写旧图字节。精确形状见[跨归属方夹具](../../../tests/fixtures/scene_catalog/README.md)。
+缺少 `catalog_version` 且没有任何目标元数据的描述文件仅供历史图使用：保留先前验证的 `1.0.0` 图行为和 ID，不发布 P02 选择项或 `0.1.0` 预设，即使当前发行侧车中含该预设也一样。目标描述文件和已验证侧车必须同时授权新集合的发现与合成。没有判别字段却含目标字段，或有判别字段却缺目标字段，均在发布选项／节点集合前失败。新语义不改写旧图字节。精确形状见[跨归属方夹具](../../../tests/fixtures/scene_catalog/README.md)。
 
 ## 图与节点集合准入
 
 包贡献位于 `eos/process/mujoco` 的 `eos.process.mujoco@v0.1`，并保留供已验证历史读取器使用的 `eos.process.mujoco@v1.0`。新进程类型有非空类型描述；`scene` 设置声明 `selector:{"provider":"package","resource":"scene","package_from":"node.package"}`。`socket` 为仅所有者可访问的 Unix 路径，`env` 为可选字符串表，`start_timeout_ms` 为正整数毫秒；`status` 和 `health` 输出带完整描述、`in_process` 传输及 `state` 数据类。进程实例固定 `node.package:{"id":"island/mujoco-sim","version":"0.1.1"}`，不保存可执行或场景路径。侧车可声明 `mujoco-v2` 适配器元数据，但不能自称 EOS 已编译它，也不能创建执行器／安全旁路。
 
-已验证的 `sim-hardware` 集合只能合成 `0.1.0` 草稿。七个节点包括包贡献的进程类型，以及 EOS 通用 `@v0.1` 相机、底盘、机械臂、底盘／机械臂原语绑定和相机闸门类型。它要求起始图已有 `eos.dispatcher.control@v0.1`，不重复该节点，也不虚构 `isos.ui.vision@v0.1` 类型。`scene`、`camera_device`、`base_device`、`manipulator_device`、`socket` 参数保存稳定 ID 和私有套接字路径；默认分别为 `pick-place`、`cam-0`、`base-0`、`arm-0`。IsOS 只对包贡献的进程类型注入 `node.package`。通用硬件实例使用精确的 `node.adapter.package` 固定版本、`simulator_node` 引用和选定 `device_id` 设置。合成返回草稿前须验证精确收据、描述形状、所选场景／设备类别及场景适用性；合成不授予启动权限。改变场景须按修订 Apply 并重启子进程，不得原位修改。
+已验证的 `sim-hardware` 集合只能合成 `0.1.0` 草稿。七个节点包括包贡献的进程类型，以及 EOS 通用 `@v0.1` 相机、底盘、机械臂、底盘／机械臂原语绑定和相机闸门类型。它要求起始图已有 `eos.dispatcher.control@v0.1`，不重复该节点，也不虚构 `isos.ui.vision@v0.1` 类型。`scene`、`camera_device`、`base_device`、`manipulator_device`、`socket` 参数保存稳定 ID 和私有套接字路径；默认分别为 `pick-place`、`cam-0`、`base-0`、`arm-0`。IsOS 只对包贡献的进程类型注入 `node.package`。通用硬件实例使用精确的 `node.adapter.package` 固定版本，并另设指向进程的 backend 引用；其 `adapter.settings.simulator_node` 和 `adapter.settings.device_id` 都必须等于该硬件类别所选的稳定设备 ID。合成返回草稿前须验证精确收据、描述形状、所选场景／设备类别及场景适用性；合成不授予启动权限。改变场景须按修订 Apply 并重启子进程，不得原位修改。
 
 Validate、Apply、迁移提交、Run、Restart 在所有者 setup 或启动子进程前，针对精确固定的进程及各通用适配器重复 P01 和 P02 检查。IsOS 检查所选场景的 profile、摘要及引用资源，按 `devices` 与 `device_catalog` 检查设备 ID，验证主机 MuJoCo 库可用性、图修订及 EOS 适配器可用性。Apply 失败不改变保存字节和活动修订；Run／Restart 失败不替换活动子进程。按需发布新已验证发行版或新图修订。当前 IsOS 合成器仍只接受 `1.0.0`，当前 `BackendDescriptor` 也拒绝目标字段；实现须一起改变。P03 随后按 `(node_path,setting)` 展示可用选项，不改变本准入边界。
 
@@ -45,4 +45,4 @@ P02 沿用 P01 的有界 `{code,path,message,id,version,stage}` 诊断和 HTTP 4
 | 所选设备未知、类别错误或场景不支持 | `mujoco_device_unavailable` | 对应通用节点的 `/adapter/settings/device_id` | `admission` |
 | MuJoCo 库缺失或不兼容 | `mujoco_library_unavailable` | `/cores/eos/layers/process/groups/mujoco/nodes/simulator/package` | `admission` |
 
-对已封存包，P01 `package_changed`（`payload` 阶段）及 `package_unsafe_path`（所属阶段）优先。测试描述语义错误时，须在发布收据前构造候选包；修改已封存描述文件只能得到 P01 篡改错误。[负例夹具](../../../tests/fixtures/scene_catalog/negative-cases.json)固定直接和图阶段的 `{code,path,stage}`，包括底盘／机械臂路径和过期修订的 HTTP 409。P03 可将这些有限原因展示为不可用选项，但不改变错误身份。
+对已封存包，P01 `package_changed`（`payload` 阶段）及 `package_unsafe_path`（所属阶段）优先。已链接场景符号链接在 P01 负载树哈希时以 `package_unsafe_path`、`stage:"payload"` 拒绝。测试描述语义错误时，须在发布收据前构造候选包；修改已封存描述文件只能得到 P01 篡改错误。[负例夹具](../../../tests/fixtures/scene_catalog/negative-cases.json)固定直接和图阶段的 `{code,path,stage}`，包括底盘／机械臂路径和过期修订的 HTTP 409。P03 可将这些有限原因展示为不可用选项，但不改变错误身份。
