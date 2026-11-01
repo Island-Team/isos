@@ -2,7 +2,7 @@
 
 [English](../../../docs/isos/interfaces/control-grants.md) · [设计](../design/control-grants_cn.md) · [首次使用](../usage/get-started_cn.md#r03-托管控制授权重放) · [固定用例](../../../tests/fixtures/control_grants/README_cn.md)
 
-**EOS/IsOS 本地 R03 重放已通过；已审查 PR 的合并仍待完成。** IsOS 负责为托管部署运行签发和传递授权；EOS 负责验证、准入、Dispatcher 和持久结果。[EOS gRPC 契约](https://github.com/Island-Team/Island-eos/blob/refactor%28v2%29/runtime-main/docs/eos/interfaces/grpc.md#r03-governed-actuator-admission-target-contract)定义请求元数据和操作语义。图连线、软件包、生成配置、浏览器请求及客户端自称的阶段均不能授予执行器权限。信任边界是本机操作系统用户；本契约不声称能区分同 UID 的不同进程。
+**R03 授权交接已验证。** IsOS 负责为托管部署运行签发和传递授权；EOS 负责验证、准入、Dispatcher 和持久结果。[EOS gRPC 契约](https://github.com/Island-Team/Island-eos/blob/refactor%28v2%29/runtime-main/docs/eos/interfaces/grpc.md#r03-governed-actuator-admission-target-contract)定义请求元数据和操作语义。图连线、软件包、生成配置、浏览器请求及客户端自称的阶段均不能授予执行器权限。信任边界是本机操作系统用户；本契约不声称能区分同 UID 的不同进程。
 
 ## 输入、文件和接收方
 
@@ -40,4 +40,4 @@ EOS 仅在**同时**收到所选 IsOS `v2/<revision>/<generation>/eos/graph.json
 
 发布验证时，使用干净的 `ISOS_HOME`、实际所选 EOS 和受监管 EGIA/bridge stub 重放[固定用例](../../../tests/fixtures/control_grants/README_cn.md)。检查文件权限、各子进程环境隔离、预检拒绝后的活动 PID 不变、运行轮换、同运行自动重启恢复、新运行旧授权拒绝、就绪前失败和脱敏日志。完整输出保存于 `logs/test/<run-id>/`；运行 IsOS 格式、严格 Clippy、测试与构建，以及 EOS R03 边界重放。授权测试不能证明 MuJoCo 实体运动；R05/R06 负责其 epoch fence 和 stop/reap 证据。
 
-使用 mock CXX 底盘绑定、IsOS `5c1cb278` 和 EOS 运行时代码 `607eb0a93824c9488d17d38c9785c44f87ca4934` 的本地 EOS/IsOS 重放已通过：已选 V2、私有授权包及按接收方传递、真实 gRPC 运动/Get、错误角色和过期修订拒绝、EGIA 与操作员授权各自轮换、旧授权拒绝和停止后撤销。精确环境、命令和结果见[设计证据](../design/control-grants_cn.md#集成边界与测试)及忽略的 `logs/test/20261102-r03-cross-repo/mock-base-grpc-pairwise.log`。R03 关闭前仍需合并已审查的 PR；MuJoCo 实体验证属于 R05/R06。
+使用 mock CXX 底盘绑定、IsOS `5c1cb278` 和 EOS 运行时代码 `607eb0a93824c9488d17d38c9785c44f87ca4934` 的本地 EOS/IsOS 重放已通过：已选 V2、私有授权包及按接收方传递、真实 gRPC 运动/Get、错误角色和过期修订拒绝、EGIA 与操作员授权各自轮换、旧授权拒绝和停止后撤销。精确环境、命令和结果见[设计证据](../design/control-grants_cn.md#集成边界与测试)及忽略的 `logs/test/20261102-r03-cross-repo/mock-base-grpc-pairwise.log`。EOS [#315](https://github.com/Island-Team/Island-eos/pull/315) 合并提交为 `dbd2e2c39a54236786577ace424c30e418ff3926`，IsOS [#52](https://github.com/Island-Team/isos/pull/52) 合并提交为 `df3c1f5692c9348c1cfb5b2ecb8b1abfa9fa82f2`；主仓库重放通过（`logs/test/20261102-r03-cross-repo/post-merge-primary.log`）。MuJoCo 实体验证属于 R05/R06，较广的 I4 生命周期门槛仍未关闭。
