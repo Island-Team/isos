@@ -40,11 +40,14 @@
     },
     {
       "id": "egia_legacy_types_in_target_envelope",
-      "operation": "validate",
-      "mutation": "egia_setup_and_runtime_advertise_1_0_exact_ids",
+      "operation": "reader_preflight",
+      "mutation": "egia_setup_only_advertises_four_exact_1_0_ids_runtime_has_no_graph_type_arrays",
       "expected": {
         "result": "admit_reader_only",
+        "scope": "isolated_p05_preflight",
         "graph_version": "0.1.0",
+        "runtime_supported_arrays_absent": true,
+        "public_run_admitted": false,
         "runtime_gateway_ready": false
       }
     },
@@ -556,15 +559,17 @@
     },
     {
       "id": "egia_runtime_non_graph_reader_shape",
-      "operation": "validate_apply_run",
+      "operation": "reader_preflight",
       "mutation": "egia_setup_arrays_four_exact_ids_runtime_features_only",
       "expected": {
         "result": "admit_reader_only",
+        "scope": "isolated_p05_preflight",
         "runtime_features": [
           "managed-config-v1",
           "eos-gateway-client-v2"
         ],
         "runtime_supported_arrays_absent": true,
+        "public_run_admitted": false,
         "runtime_gateway_ready": false
       }
     },

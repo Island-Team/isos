@@ -20,7 +20,7 @@ def main() -> None:
     ids = [case["id"] for case in cases]
     assert len(ids) == len(set(ids))
     by_id = {case["id"]: case for case in cases}
-    operations = {"validate", "apply", "run", "restart", "version_check", "validate_apply_run"}
+    operations = {"validate", "apply", "run", "restart", "version_check", "validate_apply_run", "reader_preflight"}
     outcomes = {"admit", "admit_read_only", "admit_reader_only", "reject", "suggest", "blocked", "first_failure"}
     codes = {
         "unsupported_graph_version", "unsupported_node_type", "migration_required", "package_invalid_sidecar",
@@ -45,10 +45,17 @@ def main() -> None:
                 assert expected["requested_feature"]
         else:
             assert "code" not in expected
+        if expected["result"] == "admit_reader_only":
+            assert case["operation"] == "reader_preflight"
+            assert expected["scope"] == "isolated_p05_preflight"
+            assert expected["runtime_supported_arrays_absent"] is True
+            assert expected["public_run_admitted"] is False
+            assert expected["runtime_gateway_ready"] is False
     assert by_id["probe_order_deterministic"]["expected"]["first_path"] == "/version"
     assert by_id["legacy_backend_preempted_by_migration_required"]["expected"]["code"] == "migration_required"
     assert by_id["eos_capabilities_sidecar_free"]["expected"]["capabilities_argv"] == ["--capabilities"]
     assert by_id["egia_runtime_non_graph_reader_shape"]["expected"]["runtime_supported_arrays_absent"] is True
+    assert by_id["egia_legacy_types_in_target_envelope"]["mutation"].startswith("egia_setup_only_")
     for case_id in ("egia_missing_managed_config_feature", "egia_missing_gateway_client_feature"):
         assert by_id[case_id]["expected"]["path"].endswith("/node_type")
     assert by_id["legacy_scalar_runtime_still_requires_feature"]["expected"]["requested_feature"] == "mujoco-child-v2"

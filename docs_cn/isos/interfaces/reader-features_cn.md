@@ -38,4 +38,4 @@ schema-1 HTTP 封装保留 `ok:false`、`error` 和 `data.diagnostics`；CLI 输
 
 `isos version check --json` 仅在 IsOS 已针对该图核验一个已安装或已索引发行版的签名／验证清单、精确资产摘要、核心角色、读取集合、必需特性及包贡献时，才可给出 `compatible_upgrade`。该字段为 `null` 或单个精确发行版 `{id,version,sha256}`；semver 范围、Git 分支、猜测 URL 或较新的产品版本均不够。列出候选不安装、不选择、不应用。缺少验证证据时，建议恢复兼容的所选构建或检查归属方发行目录。即使有候选，未来版本和未知版本依然失败。
 
-[`tests/fixtures/reader_features/`](../../../tests/fixtures/reader_features/) 中的 P05 夹具冻结实现和跨仓库重放的正例、负例及不停止行为。同伴 EOS／EGIA 契约审查通过后，本目标才可标为已实现。
+[`tests/fixtures/reader_features/`](../../../tests/fixtures/reader_features/) 中的 P05 夹具冻结实现和跨仓库重放的正例、负例及不停止行为。其中 `reader_preflight` 操作仅隔离检查身份；R02 尚未提供 EOS 网关就绪时，`admit_reader_only` 不表示公开 Run 成功。同伴 EOS／EGIA 契约审查通过后，本目标才可标为已实现。
