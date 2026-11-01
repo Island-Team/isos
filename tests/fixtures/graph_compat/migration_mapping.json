@@ -17,14 +17,14 @@
     "egia.common.source@v1.0",
     "egia.common.context@v1.0",
     "egia.common.planner@v1.0",
-    "egia.common.guard@v1.0",
+    "egia.common.guard@v1.0"
+  ],
+  "never_automatic": [
     "eos.control.manual@v1.0",
     "eos.control.primitive@v1.0",
     "eos.control.skill@v1.0",
     "isos.ui.vision@v1.0",
-    "isosui.system.vision@v1.0"
-  ],
-  "never_automatic": [
+    "isosui.system.vision@v1.0",
     "isos.process.component@v1.0",
     "eos.process.backend@v1.0",
     "eos.hardware.mujoco_camera@v1.0",
