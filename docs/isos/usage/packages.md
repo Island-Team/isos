@@ -20,7 +20,7 @@ For a release archive, `isos pkg verify <manifest> <asset>` checks the platform,
 
 See [backend design](../design/backend.md) and [release metadata](../interfaces/releases.md).
 
-## P01 first-use acceptance — target implementation
+## P01 first-use acceptance
 
 Build a bundle in the MuJoCo repository and keep its v4 `release.json` beside the bundle. In a fresh `ISOS_HOME`, run `isos pkg verify release.json asset.tar.gz` for an archive, or `isos pkg link island/mujoco-sim 0.1.1 /absolute/bundle --manifest /absolute/bundle/release.json` for a local build. `isos pkg list` must show the exact version as verified with receipt provenance. Install/link alone must leave the starter graph's saved revision, active revision and process status unchanged. Compose the package's node set, Validate, Apply and Run only after a verified exact pin exists. The [P01 receipt contract](../interfaces/package-verification.md) defines the accepted files and error classifications.
 

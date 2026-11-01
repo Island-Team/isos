@@ -20,7 +20,7 @@ isos run
 
 参见[后端设计](../design/backend_cn.md)和[发行元数据](../interfaces/releases_cn.md)。
 
-## P01 首次使用验收——目标实现
+## P01 首次使用验收
 
 在 MuJoCo 仓库构建包，并把 v4 `release.json` 放在包旁。使用全新的 `ISOS_HOME`，对归档执行 `isos pkg verify release.json asset.tar.gz`，或对本地构建执行 `isos pkg link island/mujoco-sim 0.1.1 /absolute/bundle --manifest /absolute/bundle/release.json`。`isos pkg list` 应把精确版本显示为已验证并列出收据来源。单纯安装／链接不得改变初始图的保存修订、活动修订或进程状态。存在精确已验证固定版本后，才合成包节点集合、Validate、Apply、Run。[P01 收据契约](../interfaces/package-verification_cn.md)定义接受的文件与错误类别。
 

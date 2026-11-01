@@ -2,7 +2,7 @@
 
 [中文](../../../docs_cn/isos/interfaces/package-verification_cn.md)
 
-**P01 owner contract — target implementation.** IsOS owns package installation, receipts, release snapshots and package admission. The CLI, loopback API and graph preparation call the same verifier. EOS receives only paths selected from a verified exact package pin; it does not install or trust a package sidecar independently. The [v4 release envelope](releases.md) defines distribution fields. This contract defines the local verification boundary for that envelope, without defining MuJoCo scene/device semantics (P02) or selector options (P03).
+**P01 owner contract — implemented.** IsOS owns package installation, receipts, release snapshots and package admission. The CLI, loopback API and graph preparation call the same verifier. EOS receives only paths selected from a verified exact package pin; it does not install or trust a package sidecar independently. The [v4 release envelope](releases.md) defines distribution fields. This contract defines the local verification boundary for that envelope, without defining MuJoCo scene/device semantics (P02) or selector options (P03).
 
 ## Invocation and result
 
