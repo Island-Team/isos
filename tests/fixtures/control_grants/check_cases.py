@@ -24,13 +24,14 @@ SHARED = (
     "control_grant_mismatch",
     "control_grant_issue_failed",
     "control_grant_delivery_failed",
+    "control_grant_reserved_arg",
 )
 
 
 def main() -> None:
     cases = json.loads((HERE / "cases.json").read_text())
-    assert len(cases) == 19
-    assert [case["id"] for case in cases] == [f"R03-I{i:02}" for i in range(1, 20)]
+    assert len(cases) == 25
+    assert [case["id"] for case in cases] == [f"R03-I{i:02}" for i in range(1, 26)]
     assert all(set(case) == {"id", "operation", "mutation", "expected"} for case in cases)
     assert len({case["mutation"] for case in cases}) == len(cases)
     for english, chinese in PAIRS:

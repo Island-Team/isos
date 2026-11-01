@@ -39,9 +39,9 @@ isos pkg node-sets
 
 ## R03 托管控制授权重放
 
-**目标，尚未实现。** 对 `0.1.0` 图 Validate 和 Apply 后，从干净的 `ISOS_HOME` 启动托管部署。检查 `isos status --json`：`active_revision` 必须等于保存图精确字节的 SHA-256，`run_id` 必须标识本次启动。IsOS 必须选中已验证的 schema-2 生成叶目录，并在 `run/control-grants/<deployment>/<run_id>/` 下创建一个私有运行授权包。只检查文件名、权限以及验证文件的运行/修订，不打印授权内容，也不把它放进命令行、浏览器或日志。EOS 接收 `EOS_CONTROL_GRANTS_FILE`；EGIA 只接收 `EGIA_EOS_CONTROL_GRANT_FILE`；受监管的 bridge 只接收 `AETHER_BRIDGE_CONTROL_GRANT_FILE`。[所有者契约](../interfaces/control-grants_cn.md)规定精确字段和方法范围。
+**目标，尚未实现。** 对 `0.1.0` 图 Validate 和 Apply 后，从干净的 `ISOS_HOME` 启动托管部署。检查 `isos status --json`：`active_revision` 必须等于保存图精确字节的 SHA-256，`run_id` 必须标识本次启动。IsOS 必须显式选中并验证 schema-2 V2 生成代，在 `run/control-grants/<deployment>/<run_id>/` 下创建一个私有运行授权包；G03 回退不够。只检查文件名、权限以及验证文件的运行/修订，不打印授权内容，也不把它放进命令行、浏览器或日志。必需的已选 EOS 运行时接收 `EOS_CONTROL_GRANTS_FILE`；仅**已选** EGIA 接收 `EGIA_EOS_CONTROL_GRANT_FILE`，仅**已选**受监管 bridge 接收 `AETHER_BRIDGE_CONTROL_GRANT_FILE`。仅 EOS 的部署有效。[所有者契约](../interfaces/control-grants_cn.md)规定精确字段和方法范围。
 
-使用 EOS 发现元数据，把 `eos-active-revision` 与 IsOS 的 `active_revision` 比较；`eos-projection-sha256` 是独立摘要。托管 EGIA gRPC 运动使用自己的角色授权和活动修订。操作员授权允许 bridge `primitive_typed` 运动及受监管的 gRPC stop/recovery，不允许 gRPC 运动；任何授权都不从浏览器获取。丢失响应时按原操作 ID 查询。幂等 Start 和自动子进程重启保留本次运行授权；显式 Restart 即使图字节未变也轮换两个授权。通过 `isos logs all --current` 检查首条就绪或故障事件，并确认没有凭据或 bearer 文本。授权包缺失、不安全或过期时，必须在 EOS 可写就绪前失败。EOS 注入验证文件的测试只是 R03 的一侧；IsOS 的签发、传递及干净 home 重放也必须通过，才能关闭托管里程碑。R05/R06 后续验证 MuJoCo 实体 fence 与安全停止。
+使用 EOS 发现元数据，把 `eos-active-revision` 与 IsOS 的 `active_revision` 比较；`eos-projection-sha256` 是独立摘要。若已选择，托管 EGIA gRPC 运动使用自己的角色授权和活动修订。操作员授权允许 bridge `primitive_typed` 运动及受监管的 gRPC stop/recovery，不允许 gRPC 运动；任何授权都不从浏览器获取。丢失响应时按原操作 ID 查询。幂等 Start 和自动子进程重启保留本次运行授权；显式 Restart 即使图字节未变也轮换两个授权。`deployment_starting` **之前**的拒绝须用请求关联号在传统 `isos` 日志来源和状态中查找管理器会话的 `deployment_preflight_failed`；`isos logs all --current` 此时可能仍显示以前准入的运行。候选运行开始后，才用 `isos logs all --current` 检查其首条就绪或故障事件。确认没有凭据或 bearer 文本。授权包缺失、不安全或过期时，必须在 EOS 可写就绪前失败。EOS 注入验证文件的测试只是 R03 的一侧；IsOS 的签发、传递及干净 home 重放也必须通过，才能关闭托管里程碑。R05/R06 后续验证 MuJoCo 实体 fence 与安全停止。
 
 ### 迁移已保存的旧图
 
