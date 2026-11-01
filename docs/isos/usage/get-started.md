@@ -35,7 +35,7 @@ If new children fail during a restart, IsOS stops that attempt and restarts the 
 
 ### Migrate a saved legacy graph
 
-For an applied `1.0.0` graph, read its saved revision from Graph or `GET /api/isos/v1/node-graph` before editing. Preview reports exact type substitutions, the full `0.1.0` proposal, and blockers without changing saved bytes or running children:
+For an applied `1.0.0` graph, read its saved revision from Graph or `GET /api/isos/v1/node-graph` before editing. A wholly mapped safe graph also shows `legacy_projection` for inspection: its legacy type IDs stay unchanged, while `mappings` lists candidate replacements and `defaults` marks display-only values. Edit the original `graph` and use explicit migration; submitting the projection as a changed graph is rejected without writing. An unmapped old control type stays read-only and reports its exact `/node_type` path before Run. Preview reports exact type substitutions, the full `0.1.0` proposal, and blockers without changing saved bytes or running children:
 
 ```sh
 isos config migrate --preview --revision <saved-sha256>

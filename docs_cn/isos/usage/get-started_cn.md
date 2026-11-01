@@ -35,7 +35,7 @@ isos pkg node-sets
 
 ### 迁移已保存的旧图
 
-编辑已应用的 `1.0.0` 图之前，先从 Graph 或 `GET /api/isos/v1/node-graph` 读取保存修订号。预览会报告精确类型替换、完整的 `0.1.0` 建议图及阻塞原因，且不改变保存字节或运行中的子进程：
+编辑已应用的 `1.0.0` 图之前，先从 Graph 或 `GET /api/isos/v1/node-graph` 读取保存修订号。整图已映射且安全时，还会显示只用于检查的 `legacy_projection`：旧类型 ID 保持不变，`mappings` 列出候选替代类型，`defaults` 标记仅供展示的默认值。应编辑原始 `graph` 并显式迁移；把投影当作更改图提交会被拒绝且不写入。未映射的旧 control 类型保持只读，并在 Run 之前报告精确的 `/node_type` 路径。预览会报告精确类型替换、完整的 `0.1.0` 建议图及阻塞原因，且不改变保存字节或运行中的子进程：
 
 ```sh
 isos config migrate --preview --revision <saved-sha256>
