@@ -48,7 +48,10 @@ pub(crate) fn config_command(paths: &config::Paths, name: &str, cmd: ConfigComma
             } else {
                 graph_compat::admit_legacy_mapped(&graph, process::catalog().ok().as_ref())?;
                 process::validate_full_graph(&file)?;
-                process::project_with_packages(paths, &source)?
+                let specs = process::project_with_packages(paths, &source)?;
+                let catalog = process::catalog_for_graph(paths, &graph)?;
+                crate::reader_features::check(paths, &graph, &specs, &catalog)?;
+                specs
             };
             println!("valid node graph: {} IsOS processes", specs.len());
         }
@@ -138,6 +141,8 @@ pub(crate) fn apply_graph_file(
                         paths,
                         &serde_json::to_string(&saved.value)?,
                     )?;
+                    let catalog = process::catalog_for_graph(paths, &saved.value)?;
+                    crate::reader_features::check(paths, &saved.value, &specs, &catalog)?;
                     let rendered =
                         core_setup::render_graph(paths, name, &saved.value, &saved.revision)?;
                     core_setup::write_rendered(paths, name, rendered)?;
@@ -159,6 +164,8 @@ pub(crate) fn apply_graph_file(
     process::validate_value(paths, &graph)?;
     let normalized = serde_json::to_vec_pretty(&graph)?;
     let specs = process::project_with_packages(paths, &String::from_utf8(normalized.clone())?)?;
+    let catalog = process::catalog_for_graph(paths, &graph)?;
+    crate::reader_features::check(paths, &graph, &specs, &catalog)?;
     let revision = hex::encode(Sha256::digest(&normalized));
     let rendered = core_setup::render_graph(paths, name, &graph, &revision)?;
     let _lock = lock::Lock::take(paths)?;

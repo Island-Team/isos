@@ -1,7 +1,11 @@
 //! Human-facing readiness for configured core executables.
 
-use crate::{config::Paths, core_bins, core_setup, generated_v2, graph_compat, isosui, process};
+use crate::{
+    config::Paths, core_bins, core_setup, generated_v2, graph_compat, isosui, process,
+    reader_features,
+};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 
 fn process_present(graph: &Value, id: &str) -> bool {
     graph
@@ -27,6 +31,26 @@ pub fn report(paths: &Paths, name: &str, active: Option<&Value>) -> Value {
     } else {
         None
     };
+    let mut reader_issues = BTreeMap::new();
+    if graph.is_object() && graph_admission_issue.is_none() {
+        if let (Some(specs), Ok(catalog)) = (&projected, process::catalog_for_graph(paths, &graph))
+        {
+            for core in ["eos", "egia"] {
+                if let Err(issue) =
+                    reader_features::check_core(paths, &graph, specs, &catalog, core)
+                {
+                    reader_issues.insert(core, issue);
+                }
+            }
+        } else if let Err(issue) = reader_features::check_setup_basics(paths, &graph) {
+            let core = if issue.context["reader"]["core"] == "egia" {
+                "egia"
+            } else {
+                "eos"
+            };
+            reader_issues.insert(core, issue);
+        }
+    }
     let endpoints = graph
         .is_object()
         .then(|| core_setup::endpoints(paths, name, &graph))
@@ -112,15 +136,18 @@ pub fn report(paths: &Paths, name: &str, active: Option<&Value>) -> Value {
                 None
             };
             let endpoint_issue = endpoints.as_ref().err().map(ToString::to_string);
+            let selected_issue = reader_issues.get(core);
             let ready = compatible
                 && graph_configured
                 && graph_admission_issue.is_none()
+                && selected_issue.is_none()
                 && inputs_issue.is_none()
                 && endpoint_issue.is_none()
                 && !running_changed;
             let reason = if enabled {
                 graph_admission_issue
                     .clone()
+                    .or_else(|| selected_issue.map(ToString::to_string))
                     .or(reason)
                     .or(inputs_issue)
                     .or(endpoint_issue)
@@ -164,7 +191,9 @@ pub fn report(paths: &Paths, name: &str, active: Option<&Value>) -> Value {
             json!({"core":core,"path":path,"version":version,"compatible":compatible,
                 "configured":explicit || path.is_some(),"enabled":enabled,"graph_configured":graph_configured,
                 "running":running,"ready":ready,"reason":reason,"action":action,
-                "configured_endpoint":configured_endpoint})
+                "configured_endpoint":configured_endpoint,
+                "diagnostics":selected_issue.into_iter().collect::<Vec<_>>(),
+                "compatible_upgrade":null})
         })
         .collect();
     let ui = match isosui::bundle_for_serve(paths) {

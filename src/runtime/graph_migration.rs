@@ -505,28 +505,7 @@ pub fn prepare(paths: &Paths, name: &str, proposal: &Proposal) -> Result<Prepare
             "0.1.0 deployment requires an EOS core",
         ));
     }
-    for role in ["eos", "egia"] {
-        if role == "egia" && proposal.graph.pointer("/cores/egia").is_none() {
-            continue;
-        }
-        let identity = core_setup::identity(paths, role).map_err(|error| {
-            diagnostic(
-                format!("/cores/{role}"),
-                "owner_reader_unavailable",
-                error.to_string(),
-            )
-        })?;
-        let supports = identity["supported_graph_versions"]
-            .as_array()
-            .is_some_and(|versions| versions.iter().any(|version| version == "0.1.0"));
-        if !supports {
-            return Err(diagnostic(
-                format!("/cores/{role}"),
-                "owner_reader_unavailable",
-                format!("{role} setup does not advertise graph 0.1.0"),
-            ));
-        }
-    }
+    reader_features::check_setup_basics(paths, &proposal.graph)?;
     let catalog = process::catalog_for_graph(paths, &proposal.graph)
         .map_err(|error| package_or_owner_diagnostic(&error, "/cores/eos"))?;
     if let Some(diagnostic) = graph_compat::admission_diagnostic(&proposal.graph, Some(&catalog)) {

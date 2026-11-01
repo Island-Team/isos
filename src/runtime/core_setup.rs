@@ -11,8 +11,10 @@ use std::{
     collections::BTreeSet,
     fs,
     io::{Read, Write},
+    os::unix::process::CommandExt,
     path::{Component, Path, PathBuf},
     process::{Command, Stdio},
+    sync::mpsc,
     thread,
     time::{Duration, Instant},
 };
@@ -171,7 +173,16 @@ fn request(
     Ok(request)
 }
 
+#[cfg(test)]
 fn invoke(program: &Path, request: &Value) -> Result<Value> {
+    invoke_with_env(program, request, None)
+}
+
+fn invoke_with_env(
+    program: &Path,
+    request: &Value,
+    environment: Option<&std::collections::BTreeMap<String, String>>,
+) -> Result<Value> {
     let identity = request["op"] == "identity";
     let reply_limit = if identity { 64 * 1024 } else { MAX_REPLY };
     let timeout = if identity {
@@ -179,59 +190,89 @@ fn invoke(program: &Path, request: &Value) -> Result<Value> {
     } else {
         TIMEOUT
     };
-    let mut child = Command::new(program)
+    let mut command = Command::new(program);
+    command
         .args(["setup", "--json"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(environment) = environment {
+        command.envs(environment);
+    }
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = command
         .spawn()
         .with_context(|| format!("start setup adapter {}", program.display()))?;
+    let group = child.id() as i32;
     let input = serde_json::to_vec(request)?;
     let writer = child.stdin.take().unwrap();
-    let write_task = thread::spawn(move || {
+    let (write_tx, write_rx) = mpsc::channel();
+    thread::spawn(move || {
         let mut writer = writer;
-        writer.write_all(&input)
+        let _ = write_tx.send(writer.write_all(&input));
     });
     let stdout = child.stdout.take().unwrap();
-    let reader = thread::spawn(move || {
+    let (out_tx, out_rx) = mpsc::channel();
+    thread::spawn(move || {
         let mut data = Vec::new();
-        stdout
+        let result = stdout
             .take((reply_limit + 1) as u64)
             .read_to_end(&mut data)
-            .map(|_| data)
+            .map(|_| data);
+        let _ = out_tx.send(result);
     });
     let stderr = child.stderr.take().unwrap();
-    let error_reader = thread::spawn(move || {
+    let (err_tx, err_rx) = mpsc::channel();
+    thread::spawn(move || {
         let mut data = Vec::new();
-        stderr.take(8193).read_to_end(&mut data).map(|_| data)
+        let result = stderr.take(8193).read_to_end(&mut data).map(|_| data);
+        let _ = err_tx.send(result);
     });
     let started = Instant::now();
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
+    let mut status = None;
+    let mut written = None;
+    let mut output = None;
+    let mut stderr = None;
+    loop {
+        if status.is_none() {
+            status = child.try_wait()?;
+        }
+        if written.is_none() {
+            written = write_rx.try_recv().ok();
+        }
+        if output.is_none() {
+            output = out_rx.try_recv().ok();
+        }
+        if stderr.is_none() {
+            stderr = err_rx.try_recv().ok();
+        }
+        if status.is_some() && written.is_some() && output.is_some() && stderr.is_some() {
+            break;
         }
         if started.elapsed() > timeout {
+            unsafe { libc::kill(-group, libc::SIGKILL) };
             let _ = child.kill();
             let _ = child.wait();
             bail!("setup adapter timed out");
         }
         thread::sleep(Duration::from_millis(10));
-    };
-    write_task
-        .join()
-        .map_err(|_| anyhow::anyhow!("setup adapter request writer failed"))??;
-    let output = reader
-        .join()
-        .map_err(|_| anyhow::anyhow!("setup adapter reader failed"))??;
-    let stderr = error_reader
-        .join()
-        .map_err(|_| anyhow::anyhow!("setup adapter stderr reader failed"))??;
+    }
+    written.unwrap()?;
+    let output = output.unwrap()?;
+    let stderr = stderr.unwrap()?;
     ensure!(
         output.len() <= reply_limit,
         "setup adapter response exceeds limit"
     );
     ensure!(
-        status.success(),
+        status.unwrap().success(),
         "setup adapter failed: {}",
         if identity {
             "check the selected build".into()
@@ -239,7 +280,8 @@ fn invoke(program: &Path, request: &Value) -> Result<Value> {
             String::from_utf8_lossy(&stderr)
         }
     );
-    let reply: Value = serde_json::from_slice(&output).context("parse setup adapter response")?;
+    let reply: Value = crate::reader_features::parse_unique_json(&output)
+        .context("parse setup adapter response")?;
     let typed: SetupReply = serde_json::from_value(reply.clone())
         .context("setup adapter response violates schema 2")?;
     ensure!(typed.schema_version == 1, "setup adapter schema mismatch");
@@ -304,14 +346,51 @@ pub fn call(
 ) -> Result<Value> {
     graph_compat::admit_legacy_mapped(graph, process::catalog().ok().as_ref())?;
     let request = request(paths, name, role, op, graph, graph_revision)?;
-    invoke(&selected_adapter(paths, role)?, &request)
+    let environment = if role == "egia" {
+        Some(crate::generated_v2::egia_launch_env(graph)?)
+    } else {
+        None
+    };
+    invoke_with_env(
+        &selected_adapter(paths, role)?,
+        &request,
+        environment.as_ref(),
+    )
 }
 
 pub fn identity(paths: &Paths, role: &str) -> Result<Value> {
+    identity_with_env(paths, role, None)
+}
+
+pub fn identity_for_graph(paths: &Paths, role: &str, graph: &Value) -> Result<Value> {
     ensure!(matches!(role, "eos" | "egia"), "unknown setup core {role}");
-    let reply = invoke(
+    let environment = if role == "egia" {
+        Some(crate::generated_v2::egia_launch_env(graph)?)
+    } else {
+        None
+    };
+    let reply = invoke_with_env(
         &selected_adapter(paths, role)?,
         &json!({"schema_version":1,"op":"identity","core":role}),
+        environment.as_ref(),
+    )?;
+    ensure!(reply["ok"] == true, "setup identity rejected");
+    reply
+        .get("identity")
+        .cloned()
+        .context("identity reply missing identity")
+}
+
+fn identity_with_env(
+    paths: &Paths,
+    role: &str,
+    environment: Option<&std::collections::BTreeMap<String, String>>,
+) -> Result<Value> {
+    ensure!(matches!(role, "eos" | "egia"), "unknown setup core {role}");
+    let reply = invoke_with_env(
+        &selected_adapter(paths, role)?,
+        &json!({"schema_version":1,"op":"identity","core":role}),
+        environment,
     )?;
     ensure!(reply["ok"] == true, "{role} identity rejected");
     let identity = reply
@@ -319,8 +398,12 @@ pub fn identity(paths: &Paths, role: &str) -> Result<Value> {
         .context("identity reply missing identity")?;
     ensure!(
         identity["core"] == role
-            && identity["graph_version"] == "1.0.0"
-            && identity["node_type_version"] == "1.0"
+            && identity["graph_version"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+            && identity["node_type_version"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
             && identity["setup_schema_version"] == 1
             && identity["product_version"]
                 .as_str()
@@ -409,7 +492,8 @@ pub fn refresh_after_init(paths: &Paths, name: &str) -> Result<Option<String>> {
     );
     crate::process::validate_value(paths, &graph)?;
     let specs = crate::process::project_with_packages(paths, &serde_json::to_string(&graph)?)?;
-    crate::preflight::verify_processes(paths, &specs)?;
+    let catalog = process::catalog_for_graph(paths, &graph)?;
+    crate::reader_features::check(paths, &graph, &specs, &catalog)?;
     let expected_revision = saved.revision;
     let files = render_graph(paths, name, &graph, &expected_revision)?;
     let _lock = crate::lock::Lock::take(paths)?;
