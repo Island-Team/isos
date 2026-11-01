@@ -12,7 +12,7 @@ fn process_present(graph: &Value, id: &str) -> bool {
         .pointer(&format!(
             "/cores/isos/layers/process/groups/component/nodes/{id}"
         ))
-        .is_some()
+        .is_some_and(|node| node["enabled"] != false)
 }
 
 pub fn report(paths: &Paths, name: &str, active: Option<&Value>) -> Value {
@@ -213,6 +213,14 @@ pub fn report(paths: &Paths, name: &str, active: Option<&Value>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disabled_process_is_not_an_enabled_core() {
+        let graph = json!({"cores":{"isos":{"layers":{"process":{"groups":{"component":{"nodes":{
+            "egia":{"enabled":false}
+        }}}}}}}});
+        assert!(!process_present(&graph, "egia"));
+    }
 
     #[test]
     fn unmapped_legacy_graph_is_not_ready_even_with_generated_inputs() {
