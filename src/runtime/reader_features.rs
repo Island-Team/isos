@@ -671,6 +671,17 @@ fn check_inner(
             json!({"types":EGIA_TYPES.iter().map(|id| json!({"id":id})).collect::<Vec<_>>()});
         check_reader(&egia, graph, "egia", &egia_catalog)?;
         if version == "0.1.0" {
+            if EGIA_TYPES.iter().any(|id| !egia.node_types.contains(*id)) {
+                return Err(egia.diagnostic(
+                    "reader_identity_invalid",
+                    "",
+                    "reader",
+                    Some(version),
+                    None,
+                    None,
+                    None,
+                ));
+            }
             for token in ["graph-0.1-reader", "setup-v1", "catalog"] {
                 feature(&egia, graph, "/version", None, token)?;
             }

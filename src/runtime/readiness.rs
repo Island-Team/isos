@@ -104,7 +104,11 @@ pub fn report(paths: &Paths, name: &str, active: Option<&Value>) -> Value {
                         })
                 });
             let (path, version, compatible, reason) = match path {
-                Ok(path) => match core_setup::identity(paths, core) {
+                Ok(path) => match if core == "egia" && graph.is_object() {
+                    core_setup::identity_for_graph(paths, core, &graph)
+                } else {
+                    core_setup::identity(paths, core)
+                } {
                     Ok(identity) => {
                         let supports_graph = graph["version"] != "0.1.0"
                             || identity["supported_graph_versions"]
