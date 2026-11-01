@@ -131,7 +131,7 @@ setup 适配器 `identity` 保留 `core`、`product_version`、`setup_schema_ver
 
 ### G03 迁移路由——目标设计，尚未实现
 
-仅所有者可用的 loopback API 沿用 schema-1 `{schema_version,ok,data,error}` 封装和 Host/Origin 检查。迁移请求针对 IsOS 选定部署的已保存图，不携带替代图字节。`revision` 与 `proposed_revision` 分别是原始已保存字节及建议规范字节的 64 位小写 SHA-256 十六进制字符串；提交必须同时提供，预览必须提供 `revision`。客户端从 `GET /node-graph` 取得原修订号。`changes` 是最多 256 项的有序 `{path,from,to}` 数组，只包含 `/version` 和映射的 `/node_type`，路径使用 JSON Pointer。响应 `graph` 是建议 JSON 值，不代表可以运行。只有本地类型、边、软件包及已启用 core 的 identity/validate/render 预检都成功时，`can_apply` 才为 true。
+仅所有者可用的 loopback API 沿用 schema-1 `{schema_version,ok,data,error}` 封装和 Host/Origin 检查。迁移请求针对 IsOS 选定部署的已保存图，不携带替代图字节。`revision` 与 `proposed_revision` 分别是原始已保存字节及建议规范字节的 64 位小写 SHA-256 十六进制字符串；提交必须同时提供，预览必须提供 `revision`。客户端从 `GET /node-graph` 取得原修订号。`changes` 是最多 256 项的有序 `{path,from,to}` 数组，只包含 `/version` 和映射的 `/node_type`，路径使用 JSON Pointer。超过 256 项时在 `/changes` 返回 `migration_change_limit`，不能截断。响应 `graph` 是建议 JSON 值，不代表可以运行。只有本地类型、边、软件包及已启用 core 的 identity/validate/render 预检都成功时，`can_apply` 才为 true。
 
 预览请求：
 
@@ -153,6 +153,8 @@ setup 适配器 `identity` 保留 `core`、`product_version`、`setup_schema_ver
 {"schema_version":1,"revision":"7a8daee6b7db9105f5483506ffc1743625b63089710dfbf936622329c471016b","proposed_revision":"825d667d31c455844be7f22b565e0ab6b14b44aeb7ce4861a704ffd028081df1"}
 ```
 
-成功时 HTTP 200 返回 `data:{revision:<新摘要>,graph:<完整已保存 0.1.0 值>,active_revision:<旧的运行中摘要或 null>}`。来源或建议结果已变时返回 HTTP 409；归属方、软件包、边或生成预检失败时返回 HTTP 422 和精确诊断。文件发布失败返回 HTTP 500，保持原始保存字节；若提交后传输中断，调用方可再次 GET 判断结果。此时 `GET /node-graph` 返回新修订，图可准入时 `read_only:false`；`GET /process-status` 在显式 Restart 前保持旧 `active_revision`。
+成功时 HTTP 200 返回 `data:{revision:<新摘要>,graph:<完整已保存 0.1.0 值>,active_revision:<旧的运行中摘要或 null>}`。来源或建议结果已变时返回 HTTP 409；归属方、软件包、边或生成预检失败时返回 HTTP 422 和精确诊断。图 rename 之前文件发布失败返回 HTTP 500，并保持原始保存字节；rename 后父目录 fsync 失败返回 HTTP 500 和 `commit_outcome_uncertain`，不能声称旧字节仍在。若提交后传输中断，调用方可再次 GET 判断结果。此时 `GET /node-graph` 返回新修订，图可准入时 `read_only:false`；`GET /process-status` 在显式 Restart 前保持旧 `active_revision`。
 
 CLI 使用同一迁移引擎：`isos config migrate --preview --revision <saved-sha256>` 只输出建议修订、变更和诊断；`isos config migrate --revision <saved-sha256> --proposed-revision <preview-sha256>` 提交。它不接收图文件，也不从当前磁盘隐式推断预期修订。实现必须保持 HTTP 与 CLI 的错误等价。
+
+缺失图的 GET 与 Init 在 G03 写入器启用后生成 `0.1.0` 草稿；PUT 首次 Apply 使用 `revision:""`，后续 `0.1.0` 修改使用保存修订号。CLI 的新图／`0.1.0` 修改 Apply 使用显式 `--revision`。旧 `1.0.0` 图不因 Init 改写，结构相同的 Apply 保持无写入。新版本的 Run/Restart 只从 `data/generated/<deployment>/<saved-revision>/` 加载经摘要校验的清单与 EOS 投影；旧版平面 `generated/<deployment>/core-setup/launch-inputs.json` 仅用于 `1.0.0` 兼容。详情见[图契约](node-graph_cn.md#g03-写入器与快照选择目标设计)。

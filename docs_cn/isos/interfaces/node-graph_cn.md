@@ -108,7 +108,7 @@ IsOS 将已验证的可执行文件、场景路径和 MuJoCo 库路径传给 EOS
 
 ## G03 显式图迁移——目标设计，尚未实现
 
-IsOS 只迁移**已保存**且安全的 `1.0.0` 图。预览与提交读取该文件，不接受编辑器另行提交的替代图。预览最多读取 1 MiB，对原始字节计算哈希，校验精确版本解析器、类型 ID、软件包版本、设置、引用和边，再构造确定的 `0.1.0` JSON 值。仅更改 `/version` 和下表列出的精确类型 ID。实例 ID、路径、描述、设置、引用、边、adapter 元数据及精确 `{id,version}` pin 在 JSON 值上保持不变。可选默认值仅用于校验投影，不写入迁移结果。旧归属方 schema 未接受的未知字段在其 JSON Pointer 返回 `unmapped_graph_field`，不可静默丢弃。规范字节采用 `serde_json::Value` 的字典序 object key、两空格缩进、UTF-8、无尾随换行的序列化，与 `serde_json::to_vec_pretty` 默认行为一致。建议修订号是该规范字节的 SHA-256；预览返回其 JSON 值和有界变更列表。预览不修改保存字节或生成配置。
+IsOS 只迁移**已保存**且安全的 `1.0.0` 图。预览与提交读取该文件，不接受编辑器另行提交的替代图。预览最多读取 1 MiB，对原始字节计算哈希，校验精确版本解析器、类型 ID、软件包版本、设置、引用和边，再构造确定的 `0.1.0` JSON 值。仅更改 `/version` 和下表列出的精确类型 ID。实例 ID、路径、描述、设置、引用、边、adapter 元数据及精确 `{id,version}` pin 在 JSON 值上保持不变。可选默认值仅用于校验投影，不写入迁移结果。通用图字段、注册节点类型字段、设置 schema 与软件包贡献 schema 构成接受边界；只有 schema 明确声明的扩展 map 可保留其成员。其他未知字段在其 JSON Pointer 返回 `unmapped_graph_field`，不能经类型化反序列化静默丢弃。规范字节采用 `serde_json::Value` 的字典序 object key、两空格缩进、UTF-8、无尾随换行的序列化，与 `serde_json::to_vec_pretty` 默认行为一致。建议修订号是该规范字节的 SHA-256；预览返回其 JSON 值和有界变更列表；`changes` 超过 256 项时在 `/changes` 返回 `migration_change_limit` 并拒绝，不截断。预览不修改保存字节或生成配置。
 
 | 精确旧类型 | 精确目标类型 | 归属方与前提 |
 | --- | --- | --- |
@@ -126,4 +126,12 @@ IsOS 只迁移**已保存**且安全的 `1.0.0` 图。预览与提交读取该�
 
 映射完成但归属方 reader 尚未就绪时，预览可返回 `can_apply:false` 和精确诊断。提交必须同时带有已保存原始字节的修订号及预览的建议修订号。发布前，IsOS 要求自有 `0.1.0` registry 和每个启用 core 的 `setup identity` 声明图 `0.1.0`；还须检查**完整精确**类型注册，而不只检查 `supported_node_type_versions`，并对建议图执行各归属方的 `validate` 和 `render`。当前 EOS profile 仍报告标量图 `1.0.0`，当前初始图的 IsOS `component@v0.1` 也没有 EOS 可见的 contribution。在 EOS reader-features 与 IsOS 注册切片完成前，这两点阻止发布。EGIA 的兼容图 envelope 只支持四个旧 common ID，因此新的 `@v0.1` EGIA 阶段仍受阻。产品版本或图 envelope 本身不授权类型准入。
 
-提交在图锁内比较传入的原修订号与当前保存字节 SHA-256，并重新计算建议结果；来源或建议修订过期时不写文件并返回冲突。发布前检查 receipt、链接包指纹、scene/asset、边准入及两个 core 的 render。先 fsync 并发布以**建议修订号**命名的不可变生成配置快照，再 fsync 同目录图临时文件，最后原子 rename 图。图 rename 前失败则保存字节和运行中修订号不变；清理临时文件，未使用的已发布快照可回收。图 rename 后不再执行可能失败的部署操作。若连接在 rename 后中断，调用方重新读取保存修订号判断提交是否成功。成功迁移也只改变**已保存**修订号；运行中子进程保持 `active_revision`，直到显式 Restart 重新校验精确新图及软件包。
+提交在图锁内比较传入的原修订号与当前保存字节 SHA-256，并重新计算建议结果；来源或建议修订过期时不写文件并返回冲突。发布前检查 receipt、链接包指纹、scene/asset、边准入及两个 core 的 render。先 fsync 并发布以**建议修订号**命名的不可变生成配置快照，再 fsync 同目录图临时文件，最后原子 rename 图。图 rename 前失败则保存字节和运行中修订号不变；清理临时文件，未使用的已发布快照可回收。图 rename 后不再执行校验、setup 或启动操作，但仍需 fsync 图的父目录。若此 fsync 失败或连接在 rename 后中断，返回 `commit_outcome_uncertain` 或断线；此时不能断言旧字节仍在，调用方重新读取保存修订号判断提交是否成功。成功迁移也只改变**已保存**修订号；运行中子进程保持 `active_revision`，直到显式 Restart 重新校验精确新图及软件包。
+
+### G03 写入器与快照选择——目标设计
+
+归属方 reader 通过验收后，**缺失**的部署图由 GET 返回可编辑的 `0.1.0` 草稿；`isos init` 和 `isos config init` 只在文件不存在时创建 `0.1.0` 初始图。它们绝不重写已有 `1.0.0` 图。新初始图使用 `eos.dispatcher.control@v0.1` 与 IsOS 自有的 `isos.process.component@v0.1` 按角色选择的子进程。缺失图首次 PUT 必须带 `revision:""`；后续修改 `0.1.0` 的 PUT 必须带精确保存修订号。CLI 修改 `0.1.0` 时要求 `--revision <saved-sha256>`（缺失图使用 `--revision ""`）。两者只在同样的预检和 CAS 成功后写入规范 `0.1.0` 字节。已保存且安全的 `1.0.0` 图仍可查看；结构相同的 Apply 保持无写入，未应用旧初始图可完成旧版首次 Apply，已应用旧图的改动必须迁移。归属方 reader 不可用时，新草稿不能暗中降级为 `1.0.0`：Init 仍可离线创建 `0.1.0` 草稿，但 Apply 返回 `owner_reader_unavailable` 并保持已保存字节不变。
+
+对于 `0.1.0`，生成文件位于 `data/generated/<deployment>/<saved-revision>/`，包含 `core-setup/launch-inputs.json`、`eos/graph.json` 和已启用 core 的覆盖文件。清单记录来源修订、精确图／软件包／程序摘要，以及生成文件路径和摘要；Run 或 Restart 前重新校验。IsOS **仅根据当前已保存图的 SHA-256** 选择此目录并校验清单；不存在可变的 `current` 指针或 symlink。EOS runtime 与 config-server 的启动 `--profile` 参数替换为该目录下经验证的 `eos/graph.json`；已保存图的 `settings.args` 保持不变。旧 `data/generated/<deployment>/core-setup/launch-inputs.json` 布局只为 `1.0.0` Run/Restart 和 GET 已应用状态保留只读兼容；`0.1.0` reader 不回退到它。`GET /node-graph` 按版本、准入和旧版应用状态决定 `read_only`，不依据无关快照目录。`GET /process-status` 从 manager 的已启动修订取得 `active_revision`，不从生成路径推断。
+
+`0.1.0` 校验握手按归属方分区。IsOS 解析并校验完整图，包括精确节点路径、引用、软件包 pin 和全部跨 core 连线；其自有 registry 校验 `isos.process.component@v0.1` 和其他 IsOS 类型。IsOS 聚合目录合并这些自有定义、EOS 定义及已验证的软件包 contribution。对于 `0.1.0`，IsOS 把完整图交给 EOS setup Validate/Render，由 EOS 仅投影并校验 `eos` core；EGIA setup 校验自己的子树。IsOS **不会**对 `0.1.0` 使用旧整图 `aether-profile validate --file`，否则会错误要求 EOS 拥有 IsOS 进程类型。旧 `1.0.0` 保留既有整图校验。在 G06 之前，建议 `0.1.0` 图中的任意跨 core 边或引用都在精确路径阻塞迁移、Apply 和 Run，包括从旧图保留的连线。启用的归属方 adapter 必须声明 `0.1.0`、成功 Validate/Render，且已启动的 EOS runtime 能读取生成投影，IsOS 才发布图。

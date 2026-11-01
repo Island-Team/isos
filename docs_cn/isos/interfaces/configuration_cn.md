@@ -13,7 +13,7 @@
 | `config/deployments/<name>.nodes.json`／IsOS | 人工编写的部署图 | 名称通过 slug 校验；修订为已保存字节的 SHA-256；只有修订检查后的 Apply 或显式迁移可写。 |
 | `config/services/<id>.toml`／IsOS | 独立启动的模型类服务 | 只能通过显式服务命令启动；本次不作为图节点。 |
 | `config/mode`／IsOS | `dev` 或 `product` | `isos init` 写入；无效值阻止启动。 |
-| `data/generated/<name>/<revision>/eos/` 与 `egia/`／IsOS | 已校验的核心配置快照 | **目标：**按已保存修订命名的不可变目录；先写私有临时文件、fsync，再原子发布；仅写入有界 setup 适配器返回的文件。当前实现使用部署级目录。 |
+| `data/generated/<name>/<revision>/eos/` 与 `egia/`／IsOS | 已校验的核心配置快照 | **目标：**按已保存修订命名的不可变目录，含 `core-setup/launch-inputs.json` 与归属方覆盖文件；先写私有临时文件、fsync，再原子发布。`0.1.0` Run/Restart 只按当前已保存字节摘要选择，并校验清单。当前平面的部署级生成目录只为 `1.0.0` 兼容保留。 |
 | `data/packages/<namespace>/<name>/<version>/`／IsOS | 精确版本包、收据和节点类型侧车 | 安装或链接只产生收据，不激活图；Apply 与 Run 重新计算链接内容指纹。 |
 | `data/logs/<name>/`／IsOS 与 EOS 子进程 | 按来源轮转的 JSONL 和统一 `events.log` | 仅所有者访问；有界游标读取；目标事件含运行 ID。 |
 | `data/cache/`／IsOS | 下载和目录缓存 | **目标：**可删除；包身份依赖收据和摘要，不依赖缓存存在。 |

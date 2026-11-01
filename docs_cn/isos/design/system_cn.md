@@ -55,6 +55,8 @@ IsOS 校验边的来源、目的类型、`priority` 和 `frequency_hz`。**当�
 
 依赖未就绪时预览仍可计算建议结果，但标记阻塞。提交在图锁内根据当前字节重复全部检查，并要求原修订号和建议摘要。0.1 就绪屏障包括 IsOS 自有 component 注册、EOS setup 和运行时对 EOS 投影的支持、EGIA setup 对图中旧 common 节点的支持，以及整图跨 core 边和引用的准入。在 G06 提供完整准入前，含跨 core 连线的图不能迁移。EOS setup identity 不得声明其运行时无法读取的图版本。IsOS 将按修订保存的仅 EOS 生成投影传给 EOS 运行时，不能让运行时在迁移后重新解析未经完整校验的原始整图。
 
-发布点是已暂存图文件的原子 rename。在这之前，按建议修订号命名的不可变生成文件、receipt 指纹及清单已校验、fsync 并发布；在锁内重查来源修订。准备失败则清理临时文件并保留旧图。未引用的已发布快照无害，可随后回收。图 rename 后不再进行可能失败的 setup 或启动步骤。运行中子进程保留旧修订，只由显式 Restart 切换。rename 后崩溃或丢失响应时，重新 GET 并与预览摘要比较；用旧修订重试不会二次应用。
+发布点是已暂存图文件的原子 rename。在这之前，按建议修订号命名的不可变生成文件、receipt 指纹及清单已校验、fsync 并发布；在锁内重查来源修订。准备失败则清理临时文件并保留旧图。未引用的已发布快照无害，可随后回收。rename 后还须 fsync 图父目录；失败时提交结果不确定，需重读保存修订号判断。图 rename 后不再进行 setup 或启动步骤。运行中子进程保留旧修订，只由显式 Restart 切换。rename 后崩溃或丢失响应时，重新 GET 并与预览摘要比较；用旧修订重试不会二次应用。
 
 实现须在预览、旧修订冲突、软件包指纹变化、未知或不安全类型、render 失败、快照或图发布失败时断言保存字节不变。成功用例校验精确夹具映射与 pin/字段保留、保存与运行中修订分离、Run/Restart 预检，以及事务失败后旧图恢复。完整日志存于 `logs/test/<run-id>/`；G03 分支合并前用干净的 `ISOS_HOME` 重放 HTTP 和 CLI 边界。
+
+新写入器以 `data/generated/<deployment>/<saved-revision>/` 作为 `0.1.0` 的不可变查找键；Run 和 Restart 校验其清单，并将经验证的 `eos/graph.json` 代入 EOS runtime 与 config-server 的 `--profile` 启动参数，不修改保存的 `settings.args`。它们不跟随可变的 `current` 指针或旧平面生成目录。旧平面的 `core-setup/launch-inputs.json` 只为 `1.0.0` 兼容保留。Init 和缺失图 GET 生成 `0.1.0` 初始图；修改新版本的 PUT 和 CLI Apply 使用相同的修订比较交换引擎。按归属方分区的校验器使用 IsOS 自有进程定义、EOS setup 投影、EGIA setup 与 IsOS 整图连线校验，不把 IsOS `@v0.1` 节点交给 EOS 整图 profile 校验。
