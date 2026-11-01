@@ -1149,6 +1149,7 @@ pub struct Supervisor {
     deployment: String,
     run_id: String,
     control_grants: Option<control_grants::Bundle>,
+    candidate_skill_inputs: Option<crate::candidate_skill_preflight::Inputs>,
     admitted_nodes: Arc<BTreeSet<String>>,
 }
 
@@ -1216,6 +1217,7 @@ impl Supervisor {
             deployment: deployment.to_owned(),
             run_id: crate::manager::next_run_id(),
             control_grants: None,
+            candidate_skill_inputs: None,
             admitted_nodes: Arc::new(admitted_nodes),
         })
     }
@@ -1256,6 +1258,52 @@ impl Supervisor {
         Ok(())
     }
 
+    /// Retire an unpublished candidate without hiding an uncertain grant cleanup.
+    pub fn retire_candidate_grants(&mut self) -> Result<()> {
+        ensure!(
+            self.running.is_empty(),
+            "candidate children are still running"
+        );
+        if let Some(bundle) = &self.control_grants {
+            bundle.retire()?;
+            self.control_grants = None;
+        }
+        Ok(())
+    }
+
+    /// Leave a failed candidate's on-disk directory for operator repair rather
+    /// than letting Drop retry and erase the only cleanup breadcrumb.
+    pub fn detach_candidate_grants(&mut self) {
+        self.control_grants = None;
+    }
+
+    pub fn revoke_candidate_grants_keep_directory(&mut self) -> Result<()> {
+        ensure!(
+            self.running.is_empty(),
+            "candidate children are still running"
+        );
+        if let Some(bundle) = self.control_grants.take() {
+            bundle.revoke_keep_directory()?;
+        }
+        Ok(())
+    }
+
+    pub fn candidate_verifier(&self) -> Result<PathBuf> {
+        let bundle = self
+            .control_grants
+            .as_ref()
+            .context("candidate grants missing")?;
+        bundle.verify()?;
+        bundle
+            .launch_env("eos")
+            .map(|(_, path)| path)
+            .context("candidate verifier missing")
+    }
+
+    pub fn set_candidate_skill_inputs(&mut self, inputs: crate::candidate_skill_preflight::Inputs) {
+        self.candidate_skill_inputs = Some(inputs);
+    }
+
     fn spawn(
         &self,
         spec: &ProcessSpec,
@@ -1263,6 +1311,10 @@ impl Supervisor {
         secret_sources: &BTreeSet<String>,
     ) -> Result<Child> {
         if spec.id == "eos" && spec.settings.role.as_deref() == Some("eos") {
+            if let Some(inputs) = &self.candidate_skill_inputs {
+                inputs.launch_recheck(&self.paths, &self.deployment)?;
+                inputs.verify_launch_selectors(spec, secrets, secret_sources)?;
+            }
             crate::skill_selection::verify_child_handoff(&self.paths, &self.deployment, spec)?;
         }
         let mut command = Command::new(&spec.settings.command[0]);
@@ -1747,6 +1799,29 @@ mod tests {
     use std::os::unix::fs::MetadataExt;
     use std::os::unix::net::UnixListener;
     use std::sync::mpsc;
+
+    #[test]
+    fn unpublished_candidate_grants_have_checked_retirement() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        paths.prepare().unwrap();
+        let mut candidate = Supervisor::new(&paths, "test").unwrap();
+        candidate.prepare_control_grants(&"a".repeat(64)).unwrap();
+        let bundle = paths
+            .runtime
+            .join(format!("control-grants/test/{}", candidate.run_id()));
+        let verifier = candidate.candidate_verifier().unwrap();
+        fs::set_permissions(&verifier, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(candidate.retire_candidate_grants().is_err());
+        assert!(bundle.exists());
+        fs::set_permissions(&verifier, fs::Permissions::from_mode(0o600)).unwrap();
+        candidate.retire_candidate_grants().unwrap();
+        assert!(!bundle.exists());
+    }
 
     #[test]
     fn managed_grants_are_delivered_only_to_the_named_children_and_retired_after_stop() {

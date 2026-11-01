@@ -14,7 +14,32 @@ Run/Restart 在 deployment lock 下执行现有 G01/G06/P01/P04/P05 与 R03 预�
 
 EOS 在目录变成可用前再次检查选中 manifest 与库内容。链接 payload 可能在 IsOS 预检与 EOS 启动之间变化；EOS 以 nofollow 打开同一文件句柄，哈希并复制到私有暂存，受限 worker 只加载该副本。Catalog 准入不能调用 handler；无效 ABI、描述符或不支持的已声明 callback 类别在调用前失败。若有效 handler 随后请求未声明的 primitive，Broker 在 handler 已启动后、Dispatcher release 前拒绝该请求。此负面边界不宣称能隔离任意同 UID 或内核受损的软件包代码。
 
+## 候选预检事务（目标设计）
+
+实现候选（2026-11-02）：`restart_processes_with_plan` 和首次 Run 现在创建尚未发布的候选 grant，调用所选 EOS 私有目录预检，解析封闭结果，并在发布 run scope 或停止旧子进程前复核选中字节及 grant。可检查的撤销路径和持久清理标记阻止清理不确定后的替换。实际启动时再次检查所选 EOS 程序、profile、选中文件、generation 和进程规格；EOS 独立重复准入。stub 进程测试覆盖清理环境、有效封闭拒绝、期限和进程组回收。18 个冻结用例仍是资格表；真实 EOS 双代重放和独立实现复核尚待完成。
+
+验证命令：`cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test --no-fail-fast`、`cargo build --all-targets`、`python3 tests/fixtures/skill_selection/preflight_cases.py`、`python3 tests/fixtures/skill_selection/check_cases.py`。通过的运行包含 213 个 Rust 单元测试、七个 CLI 指南测试、一个移除命令测试、九个 edge 测试及两个用例检查。完整输出在忽略的 `logs/test/20261102-r04-isos-candidate-preflight-impl/`。
+
+独立复核修复证据（2026-11-02）：私有探测现在只传所选 EOS 子进程的有效 `ISOS_GPU` 和 `ISOS_ROS` asset 选择器，遵循图中环境、source 移除及已解析 `env_from` 的优先级。IsOS 在停止旧子进程前与 EOS 实际启动时再次检查相同值。主清理标记写入失败时，当前 manager 以内存状态阻止替换，并在 data root 写入备用标记；探测清理不确定时撤销候选 grant 文件，但保留空 run 目录作为持久遗留标记；即使两个标记写入均失败，manager 重启后仍阻止替换。故障注入覆盖标记写入失败。针对 EOS 提交 `b5bf113adf7760efc8f98114d0d5aaa090fac62b` 与双 asset 原生技能发布的真实重放接受匹配的 `nvidia`/`jazzy` 组合，并对缺失选择器或错误 ROS 返回封闭的 `package/package_invalid`。这证明 asset 选择器一致性，尚非完整双代部署重放。复核修复检查通过 215 个 Rust 单元测试、七个 CLI 指南测试、一个移除命令测试、九个 edge 测试、格式检查、严格 Clippy、全 target 构建及两个用例检查。完整命令与输出在忽略的 `logs/test/20261102-r04-isos-candidate-preflight-review-fix/`。
+
+`restart_processes_with_plan` 现在于准备 R03 grant 后、调用 `managers.remove(name)` 或 `active.supervisor.stop()` 前探测候选。该事务仅对非空选中 host 增加[私有候选预检](../interfaces/skill-selection_cn.md#候选-abi-预检isos-实现候选)。`preflight_packages` 仍负责图、P01/P04/P05 与选中进程规格。候选 `Supervisor` 拥有新 run ID 与 grant；探测期间不发布 run scope；探测自身不修改旧 manager 表项、子进程或日志范围。
+
+1. 在 deployment lock 下固定保存图字节和修订、选中 schema-2 leaf、manifest/generation 完整清单、精确选中 `aether-runtime` 文件及 feature、选中字节、P01 收据/发布/payload/库摘要、实际 `--node-types` 参数、secret 和进程规格。先按现状验证旧运行 grant，再准备候选 grant。`host-skill-abi-v2` feature 声明本身不是 ABI 准入。
+2. 用精确程序、EOS 私有预检参数、清理后的 manager 环境、候选 verifier/选中文件以及经验证的有效 `ISOS_GPU`/`ISOS_ROS` asset 选择器启动探测。对进程组实施统一 90 秒墙钟期限、有界 stdout/stderr 收集和已确认回收。只解析一行封闭 JSON，逐项比对回显及有序库摘要。有效拒绝、无效输出、超时和清理不确定映射为四个固定 IsOS 代码；日志不出现原始输出或 guest 文本。
+3. 探测失败或随后停止前重检失败时，以新增的可返回错误并证明目录删除的显式 API 撤销候选 grant。`Supervisor::stop()`/Drop 只打印错误，不能作为证明。确认探测进程组清理；任一清理无法确认时优先报告 `skill_catalog_preflight_cleanup_unconfirmed`。在 `managers.remove(name)` 前返回，保留旧 PID、run ID、修订、grant 和 run scope；无需恢复 run。候选目录修复前禁止下一次替换。
+4. `ok:true` 后立即重新哈希保存图、选中 generation 完整清单、程序字节及 P01 包/库输入，验证候选 grant 与进程规格。这是最后的停止前门槛，候选 grant 继续用于启动。然后执行现有旧子进程停止、run scope 发布与候选启动顺序。新 EOS 用新暂存字节独立重复选中文件、grant、包、ABI 与纯目录就绪准入；不缓存探测结果。旧子进程停止后失败才走现有恢复路径。同一 run 的 EOS 自动重启重复启动准入，无须替换预检。
+
+P01 拒绝发布版本 `1`，因此它不能用于验证选中 pin 的跨所有者边界。P01 可以验证版本超过 EOS 64 字节选中 pin 上限的发布；IsOS 现在于精确的图 `/package` 指针以 `skill_selection_invalid` 拒绝该选择，发生在 Apply 发布及候选 grant/探测分配之前。IsOS 在此图检查中实施 EOS 的 96 字节包 ID 与 64 字节版本上限。封闭的 EOS `selection/selection_invalid` 响应仍是错误交接的协议解析用例，不能证明普通 P01 有效的选中发布会产生这一探测响应。合成探测测试绕过包链接和验证，只有使用真实包的测试证明所有者门槛。
+
+选中 pin 审计证据（2026-11-02）：`cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test --no-fail-fast`、两个技能选择用例脚本与 `git diff --check` 均通过。完整测试包含 216 个 Rust 单元测试、七个 CLI 指南测试、一个移除命令测试和九个 edge 测试。新增的真实包单元测试链接并验证 P01 有效的超长 pin，然后检查精确图拒绝。完整输出在忽略的 `logs/test/20261102-r04-ipf07-pin-audit/`。
+
+探测可在旧子进程停止前拒绝无效 ABI、不支持的 callback、缺失静态 primitive binding、重复身份与超大目录；不能证明实时 adapter 健康、Dispatcher 状态、R05 实体 release fence 或 R06 actuator 停止与模拟器回收。探测绝不调用 guest handler；有效 handler 后续发出的未声明调用由 EOS Broker 在 Dispatcher release 前拒绝，维持唯一执行器准入路径。
+
 验证使用[机器用例](../../../tests/fixtures/skill_selection/README_cn.md)。单元测试检查指针、pin 收集、排序与去重、规范字节、P01 链接变化、P04 generation 和子进程环境。stub 集成测试启动两代进程：篡改库和旧 EOS feature 在停止第一代前拒绝；有效选择只到达 EOS。EOS owner replay 检查错误 revision、ABI/描述符、未声明能力和 worker 回收。完整命令与输出放入 `logs/test/<run-id>/`；实现后在此记录结果。
+
+候选预检设计证据（2026-11-02）：`cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test`、两个用例检查、变更文件相对链接扫描与 `git diff --check` 均通过。Cargo test 报告 207 个单元、七个 CLI 指南、一个移除命令和九个 edge 测试。完整本地输出在忽略的 `logs/test/20261102-r04-isos-candidate-preflight-design/`。固定 EOS 设计提交：`cf48e439c88d7938f5d5e9cf839b066883359d36`。这些检查仅证明文档与用例一致；实现、跨仓重放与独立设计复核仍未完成。
+
+候选预检设计用例：`python3 tests/fixtures/skill_selection/preflight_cases.py` 检查 18 个所有者用例和 EOS 封闭结果示例。这仅是契约形状证据；进程测试、跨所有者重放与独立设计复核仍未完成。
 
 设计用例检查（2026-11-02）：`python3 tests/fixtures/skill_selection/check_cases.py` 通过 20 个用例 ID 与选择文件结构；`git diff --check` 通过。变更文档的相对链接扫描未发现缺失目标。完整本地输出在忽略的 `logs/test/20261102-r04-isos-design/`。这只检查契约结构；实现与跨所有者重放仍未完成。
 
@@ -33,3 +58,5 @@ IsOS 选择所有者版本 `df481774d80e8988cb8e17170fa071dfbf267672` 已通过�
 ## 精确诊断路径
 
 Validate、Apply、Run 和 Restart 必须在通用 `ProcessSettings` 反序列化之前对原始图运行 R04 预验证器；现有通用解析器会把嵌套错误收缩为节点路径，丢失字段或数组索引。只有位于 `isos/process/component/eos`、解析到 `aether-runtime` 的 `@v0.1` 节点可以选择库；`bridge`、`config` 和其他 EOS-role 节点即使 `role` 同为 `eos` 仍须在各自 `/settings/skill_libraries` 指针失败。
+
+前置合并版本更新（2026-11-02）：候选预检已变基到 IsOS `master` `c716b20942f294a6f59e58a19af596cd1c8b1e4b`，包含通过审查的选择与受控子进程事件。组合版本通过 `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test --no-fail-fast`（220 个单元、七个 CLI、一个移除命令和九个边检查测试）、`cargo build --all-targets`、20 个选择、18 个预检、31 个子进程事件、37 个 JSONL、22 个 wire／12 个状态游标用例，以及 `git diff --check`。完整输出和命令位于忽略的 `logs/test/20261102-r04-candidate-merge-refresh/`。关闭 R04 前仍需独立复核本分支并在最终合并版本上进行跨所有者重放。

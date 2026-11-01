@@ -357,6 +357,28 @@ impl Bundle {
         .map_err(|_| failure("control_grant_unsafe_path"))?;
         Ok(())
     }
+
+    /// Revoke an uncertain candidate while retaining its run directory as a
+    /// durable breadcrumb for the next manager's replacement check.
+    pub fn revoke_keep_directory(&self) -> Result<()> {
+        self.verify()?;
+        for name in GRANT_NAMES {
+            fs::remove_file(self.root.join(name))
+                .map_err(|_| failure("control_grant_unsafe_path"))?;
+        }
+        ensure!(
+            fs::read_dir(&self.root)?.next().is_none(),
+            failure("control_grant_unsafe_path")
+        );
+        File::open(&self.root)?.sync_all()?;
+        File::open(
+            self.root
+                .parent()
+                .ok_or_else(|| failure("control_grant_unsafe_path"))?,
+        )?
+        .sync_all()?;
+        Ok(())
+    }
 }
 
 pub fn validate_plan(specs: &[process::ProcessSpec]) -> Result<()> {
