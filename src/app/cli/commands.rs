@@ -162,6 +162,7 @@ pub(crate) fn apply_graph_file(
     let revision = hex::encode(Sha256::digest(&normalized));
     let rendered = core_setup::render_graph(paths, name, &graph, &revision)?;
     let _lock = lock::Lock::take(paths)?;
+    packages::verify_graph_packages(paths, &graph)?;
     let destination = paths.node_graph_path(name);
     let previous = fs::read(&destination).ok();
     ensure!(
@@ -270,7 +271,7 @@ pub(crate) fn package_command(paths: &config::Paths, cmd: PackageCommand) -> Res
             println!("linked {} {} at {}", id, version, installed.display());
         }
         PackageCommand::List { json } => {
-            let receipts = packages::list(paths)?;
+            let receipts = packages::listing(paths)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&receipts)?);
             } else if receipts.is_empty() {
@@ -278,14 +279,11 @@ pub(crate) fn package_command(paths: &config::Paths, cmd: PackageCommand) -> Res
             } else {
                 for receipt in receipts {
                     println!(
-                        "{:<36} {:<14} {}",
-                        receipt.id,
-                        receipt.version,
-                        if receipt.local_link.is_some() {
-                            "linked"
-                        } else {
-                            "installed"
-                        }
+                        "{:<36} {:<14} {:<24} {}",
+                        receipt["id"].as_str().unwrap_or("unknown"),
+                        receipt["version"].as_str().unwrap_or("unknown"),
+                        receipt["status"].as_str().unwrap_or("unavailable"),
+                        receipt["source_kind"].as_str().unwrap_or("unknown source")
                     );
                 }
             }

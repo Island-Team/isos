@@ -2,6 +2,8 @@
 
 IsOS 默认从 os-island.com 获取已批准的发行元数据，从 GitHub Releases 下载资产。候选发行也可以通过 --allow-unapproved 明确安装。发行文件名为 island-release.json，schema_version 为 4。
 
+P01 本地完整性与收据边界见[已验证软件包准入](package-verification_cn.md)。下方历史 v4 示例说明发行封装；已验证的 `0.x` Apply 和 Run 需要 P01 收据并复查精确固定版本。
+
 GitHub Release 资产上传完成后，软件包开发者可运行 `isos packages publish --manifest island-release.json` 发布完整的 v4 清单。该命令只提交目录元数据，不会上传 GitHub Release 资产。详见[身份验证](authentication_cn.md)和[软件包操作](../usage/packages_cn.md)。
 
 [English](../../../docs/isos/interfaces/releases.md)

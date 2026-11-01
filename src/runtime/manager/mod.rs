@@ -97,10 +97,10 @@ fn validate_saved_graph(paths: &config::Paths, name: &str, source: &str) -> Resu
             revision: saved.revision,
             changes: Vec::new(),
         };
-        graph_migration::prepare(paths, name, &proposal)
-            .map_err(|diagnostic| anyhow::anyhow!(diagnostic.to_string()))?;
+        graph_migration::prepare(paths, name, &proposal).map_err(anyhow::Error::new)?;
         Ok(())
     } else {
+        crate::packages::verify_graph_packages(paths, &saved.value)?;
         graph_compat::admit_legacy_mapped(&saved.value, process::catalog().ok().as_ref())?;
         process::validate_full_graph(&paths.node_graph_path(name))
     }
@@ -494,7 +494,19 @@ pub(crate) fn handle_client(
         Err(error) => ApiResponse {
             schema_version: 1,
             ok: false,
-            data: Value::Null,
+            data: error
+                .chain()
+                .find_map(|cause| {
+                    cause
+                        .downcast_ref::<graph_compat::Diagnostic>()
+                        .map(|diagnostic| json!({"diagnostics":[diagnostic]}))
+                        .or_else(|| {
+                            cause
+                                .downcast_ref::<crate::packages::PackageFailure>()
+                                .map(|failure| json!({"diagnostics":[failure.diagnostic()]}))
+                        })
+                })
+                .unwrap_or(Value::Null),
             error: Some(error.to_string()),
         },
     };
@@ -617,13 +629,26 @@ pub(crate) fn manager_request(paths: &config::Paths, request: ApiRequest) -> Res
     let mut line = String::new();
     BufReader::new(stream).read_line(&mut line)?;
     let response: ApiResponse = serde_json::from_str(&line)?;
-    ensure!(
-        response.ok,
-        "{}",
-        response.error.unwrap_or_else(|| "manager error".into())
-    );
+    if !response.ok {
+        return Err(anyhow::Error::new(RemoteDiagnosticError {
+            message: response.error.unwrap_or_else(|| "manager error".into()),
+            data: response.data,
+        }));
+    }
     Ok(response.data)
 }
+
+#[derive(Debug)]
+pub(crate) struct RemoteDiagnosticError {
+    pub message: String,
+    pub data: Value,
+}
+impl std::fmt::Display for RemoteDiagnosticError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+impl std::error::Error for RemoteDiagnosticError {}
 
 pub(crate) fn check_manager_binary(paths: &config::Paths, name: &str) -> Result<()> {
     let active = manager_call(paths, name, "manager_identity")?;

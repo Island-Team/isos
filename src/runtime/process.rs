@@ -35,8 +35,8 @@ impl std::fmt::Display for PackageLoadFailure {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             formatter,
-            "package {}@{} {} load failed: {}",
-            self.id, self.version, self.stage, self.source
+            "Reinstall or relink {}@{}",
+            self.id, self.version
         )
     }
 }
@@ -774,11 +774,13 @@ pub fn normalize_source(source: &str) -> Result<Value> {
 }
 
 pub fn validate_value(paths: &Paths, graph: &Value) -> Result<()> {
+    packages::verify_graph_packages(paths, graph)?;
     graph_compat::admit_legacy_mapped(graph, catalog().ok().as_ref())?;
     validate_value_with_profile(paths, graph, &core_bins::resolve("aether-profile")?)
 }
 
 pub fn validate_value_with_profile(paths: &Paths, graph: &Value, profile: &Path) -> Result<()> {
+    packages::verify_graph_packages(paths, graph)?;
     graph_compat::admit_legacy_mapped(graph, catalog().ok().as_ref())?;
     reject_obsolete_nodes(graph)?;
     paths.prepare()?;
@@ -798,12 +800,21 @@ pub fn validate_value_with_profile(paths: &Paths, graph: &Value, profile: &Path)
 /// validates the process projection again before supervising any child.
 pub fn validate_full_graph(path: &Path) -> Result<()> {
     let graph = normalize_source(&fs::read_to_string(path)?)?;
+    packages::verify_graph_packages(&Paths::discover()?, &graph)?;
     graph_compat::admit_legacy_mapped(&graph, catalog().ok().as_ref())?;
     reject_obsolete_nodes(&graph)?;
     validate_with_program(path, &core_bins::resolve("aether-profile")?)
 }
 
 pub fn catalog() -> Result<Value> {
+    catalog_with_sidecars(packages::node_type_sidecars(&Paths::discover()?)?)
+}
+
+pub fn catalog_for_graph(paths: &Paths, graph: &Value) -> Result<Value> {
+    catalog_with_sidecars(packages::node_type_sidecars_for_graph(paths, graph)?)
+}
+
+fn catalog_with_sidecars(sidecars: Vec<PathBuf>) -> Result<Value> {
     let program = core_bins::resolve("aether-profile")?;
     let mut command = Command::new(&program);
     command.arg("catalog");
@@ -827,7 +838,7 @@ pub fn catalog() -> Result<Value> {
     let mut contributed = BTreeMap::new();
     let mut contributed_data = BTreeMap::new();
     let mut contributed_adapters = BTreeMap::new();
-    for sidecar in packages::node_type_sidecars(&Paths::discover()?)? {
+    for sidecar in sidecars {
         let value: Value = serde_json::from_slice(&fs::read(&sidecar)?)?;
         let admitted = Command::new(&program)
             .arg("catalog")
@@ -1322,10 +1333,10 @@ mod tests {
         paths.prepare().unwrap();
         let graph = serde_json::json!({"version":"1.0.0","robot":{"id":"r","name":"R"},"cores":{"eos":{"layers":{"process":{"groups":{"mujoco":{"nodes":{"sim":{"id":"sim","node_type":"eos.process.mujoco@v1.0","package":{"id":"island/mujoco-sim","version":"0.1.1"},"settings":{"scene":"default","socket":paths.runtime.join("mujoco.sock")}}}}}}}}}}).to_string();
         let error = project_with_packages(&paths, &graph).unwrap_err();
-        let failure = error.downcast_ref::<PackageLoadFailure>().unwrap();
+        let failure = error.downcast_ref::<packages::PackageFailure>().unwrap();
         assert_eq!(failure.id, "island/mujoco-sim");
         assert_eq!(failure.version, "0.1.1");
-        assert_eq!(failure.stage, "backend");
+        assert_eq!(failure.stage, "manifest");
     }
 
     fn graph(settings: &str) -> String {

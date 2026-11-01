@@ -4,6 +4,8 @@
 
 The approved catalog at https://www.os-island.com is the default source of release metadata. GitHub Releases are the default asset host. Installation does not activate a package. A deployment graph selects exact package versions, and config apply makes the selection explicit.
 
+The P01 local integrity and receipt boundary is specified in [verified package admission](package-verification.md). Historical v4 examples below describe the release envelope; verified `0.x` Apply and Run require a P01 receipt and revalidation of the exact pin.
+
 After attaching the verified release archive to its GitHub Release, a package developer can publish the complete v4 manifest with `isos packages publish --manifest island-release.json`. The CLI submits metadata to Island-port; it does not upload GitHub release assets. See [IsOS authentication](authentication.md) and [package operations](../usage/packages.md).
 
     isos packages search mujoco

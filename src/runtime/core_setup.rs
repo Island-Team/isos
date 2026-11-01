@@ -79,43 +79,9 @@ pub fn adapter_path(paths: &Paths, role: &str) -> Result<PathBuf> {
 }
 
 fn package_refs(paths: &Paths, graph: &Value) -> Result<Vec<Value>> {
-    fn collect(value: &Value, found: &mut BTreeSet<(String, String)>) {
-        if let Some(package) = value.get("package")
-            && let (Some(id), Some(version)) = (package["id"].as_str(), package["version"].as_str())
-        {
-            found.insert((id.into(), version.into()));
-        }
-        match value {
-            Value::Object(object) => {
-                for value in object.values() {
-                    collect(value, found);
-                }
-            }
-            Value::Array(items) => {
-                for value in items {
-                    collect(value, found);
-                }
-            }
-            _ => (),
-        }
-    }
-    let mut found = BTreeSet::new();
-    collect(graph, &mut found);
-    found
-        .into_iter()
-        .map(|(id, version)| {
-            let path = packages::package_path(paths, &id, &version)?;
-            let receipt: Value =
-                serde_json::from_slice(&fs::read(path.join("receipt.json")).with_context(
-                    || format!("package {id}@{version} is not installed or linked"),
-                )?)?;
-            ensure!(
-                receipt["id"] == id && receipt["version"] == version,
-                "package {id}@{version} receipt identity differs"
-            );
-            Ok(json!({"id":id,"version":version,"path":path}))
-        })
-        .collect()
+    packages::verify_graph_packages(paths, graph)?.into_iter().map(|package| {
+        Ok(json!({"id":package.release.id,"version":package.release.version,"path":package.store}))
+    }).collect()
 }
 
 fn command_arg(graph: &Value, node: &str, flag: &str) -> Result<Option<String>> {

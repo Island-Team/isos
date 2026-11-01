@@ -7,7 +7,6 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     fs,
-    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
 };
 
@@ -143,28 +142,7 @@ fn bundle_asset_hash(root: &Path, digest: &mut Sha256) -> Result<()> {
 }
 
 fn relative_file(root: &Path, relative: &str, executable: bool) -> Result<PathBuf> {
-    ensure!(
-        !relative.is_empty()
-            && !relative.starts_with('/')
-            && relative.split('/').all(|p| !matches!(p, "" | "." | "..")),
-        "unsafe package path {relative}"
-    );
-    let path = root
-        .join(relative)
-        .canonicalize()
-        .with_context(|| format!("missing package file {relative}"))?;
-    ensure!(
-        path.starts_with(root) && path.is_file(),
-        "package path escapes bundle: {relative}"
-    );
-    if executable {
-        ensure!(
-            fs::metadata(&path)?.permissions().mode() & 0o111 != 0,
-            "package executable is not executable: {}",
-            path.display()
-        );
-    }
-    Ok(path)
+    packages::checked_file(root, relative, executable)
 }
 
 pub fn resolve(
@@ -174,20 +152,8 @@ pub fn resolve(
     scene_id: &str,
     env: &BTreeMap<String, String>,
 ) -> Result<ResolvedBackend> {
-    let installed = packages::package_path(paths, id, version)?;
-    let receipt: packages::Receipt = serde_json::from_slice(
-        &fs::read(installed.join("receipt.json"))
-            .with_context(|| format!("backend {id}@{version} is not installed"))?,
-    )?;
-    ensure!(
-        receipt.id == id && receipt.version == version,
-        "package receipt identity mismatch"
-    );
-    let root = receipt
-        .local_link
-        .as_deref()
-        .unwrap_or(&installed)
-        .canonicalize()?;
+    let verified = packages::verify(paths, id, version)?;
+    let root = verified.root;
     let descriptor_bytes =
         fs::read(root.join("backend-v2.json")).context("backend-v2.json is missing")?;
     ensure!(
@@ -289,15 +255,11 @@ pub fn installed(paths: &Paths) -> Vec<serde_json::Value> {
             .into_iter()
             .filter(|r| r.id == "island/mujoco-sim" && r.version == "0.1.1")
         {
-            let root = receipt
-                .local_link
-                .as_deref()
-                .unwrap_or_else(|| Path::new(""));
-            let root = if receipt.local_link.is_some() {
-                root.to_path_buf()
-            } else {
-                packages::package_path(paths, &receipt.id, &receipt.version).unwrap_or_default()
-            };
+            let verified = packages::verify(paths, &receipt.id, &receipt.version);
+            let root = verified
+                .as_ref()
+                .map(|package| package.root.clone())
+                .unwrap_or_default();
             let descriptor = fs::read(root.join("backend-v2.json"))
                 .ok()
                 .and_then(|bytes| serde_json::from_slice::<BackendDescriptor>(&bytes).ok());
@@ -309,7 +271,9 @@ pub fn installed(paths: &Paths) -> Vec<serde_json::Value> {
                 .as_ref()
                 .map(|d| d.devices.values().cloned().collect())
                 .unwrap_or_default();
-            let issues: Vec<String> = if let Some(scene) = scenes.first() {
+            let issues: Vec<String> = if let Err(error) = &verified {
+                vec![error.to_string()]
+            } else if let Some(scene) = scenes.first() {
                 resolve(
                     paths,
                     &receipt.id,
@@ -323,7 +287,12 @@ pub fn installed(paths: &Paths) -> Vec<serde_json::Value> {
             } else {
                 vec!["backend-v2.json is missing or has no scenes".into()]
             };
-            rows.push(serde_json::json!({"id":receipt.id,"version":receipt.version,"linked":receipt.local_link.is_some(),"scenes":scenes,"devices":devices,"ready":issues.is_empty(),"issues":issues}));
+            let linked = verified
+                .as_ref()
+                .map_or(receipt.local_link.is_some(), |package| {
+                    package.receipt.local_link.is_some()
+                });
+            rows.push(serde_json::json!({"id":receipt.id,"version":receipt.version,"linked":linked,"scenes":scenes,"devices":devices,"ready":issues.is_empty(),"issues":issues}));
         }
     }
     rows
@@ -359,6 +328,15 @@ mod tests {
         let mj = temp.path().join("mujoco");
         fs::create_dir_all(mj.join("lib")).unwrap();
         fs::write(mj.join("lib/libmujoco.so.3.16.0"), "stub").unwrap();
+        let platform = crate::release::Platform::current();
+        let linked_release = serde_json::json!({"schema_version":4,"id":"island/mujoco-sim","kind":"backend","version":"0.1.1",
+            "source_commit":"0123456789012345678901234567890123456789",
+            "assets":[{"os":platform.os,"arch":platform.arch,"url":"https://github.com/Island-Team/isos-mujoco/releases/download/v0.1.1/bundle.tar.gz","size_bytes":1,"sha256":"a".repeat(64)}]});
+        fs::write(
+            bundle.join("release.json"),
+            serde_json::to_vec(&linked_release).unwrap(),
+        )
+        .unwrap();
         packages::link(&paths, "island/mujoco-sim", "0.1.1", &bundle).unwrap();
         let env = BTreeMap::from([("MUJOCO_ROOT".into(), mj.to_string_lossy().into_owned())]);
         let first = resolve(&paths, "island/mujoco-sim", "0.1.1", "default", &env).unwrap();
@@ -366,8 +344,7 @@ mod tests {
         assert!(first.environment["LD_LIBRARY_PATH"].starts_with(mj.join("lib").to_str().unwrap()));
         assert!(resolve(&paths, "island/mujoco-sim", "0.1.1", "unknown", &env).is_err());
         fs::write(bundle.join("assets/mesh.stl"), "mesh-b").unwrap();
-        let second = resolve(&paths, "island/mujoco-sim", "0.1.1", "default", &env).unwrap();
-        assert_ne!(first.fingerprint, second.fingerprint);
+        assert!(resolve(&paths, "island/mujoco-sim", "0.1.1", "default", &env).is_err());
         fs::create_dir(bundle.join("assets/nested")).unwrap();
         fs::write(
             bundle.join("assets/nested/child.xml"),
@@ -380,10 +357,9 @@ mod tests {
             "<include file=\"nested/child.xml\"/>",
         )
         .unwrap();
-        let nested = resolve(&paths, "island/mujoco-sim", "0.1.1", "default", &env).unwrap();
+        assert!(resolve(&paths, "island/mujoco-sim", "0.1.1", "default", &env).is_err());
         fs::write(bundle.join("assets/nested/part.stl"), "nested-b").unwrap();
-        let changed = resolve(&paths, "island/mujoco-sim", "0.1.1", "default", &env).unwrap();
-        assert_ne!(nested.fingerprint, changed.fingerprint);
+        assert!(resolve(&paths, "island/mujoco-sim", "0.1.1", "default", &env).is_err());
         fs::write(bundle.join("assets/scene.xml"), "<mesh file=\"mesh.stl\"/>").unwrap();
         fs::remove_file(bundle.join("assets/mesh.stl")).unwrap();
         assert!(resolve(&paths, "island/mujoco-sim", "0.1.1", "default", &env).is_err());
@@ -402,6 +378,7 @@ mod tests {
         fs::write(bundle.join("bin/sim"), "#!/bin/sh\nexit 0\n").unwrap();
         fs::set_permissions(bundle.join("bin/sim"), fs::Permissions::from_mode(0o755)).unwrap();
         fs::write(bundle.join("assets/mesh.stl"), "mesh-c").unwrap();
+        fs::remove_file(bundle.join("release.json")).unwrap();
         let archive = temp.path().join("bundle.tar.gz");
         let encoder = flate2::write::GzEncoder::new(
             fs::File::create(&archive).unwrap(),
