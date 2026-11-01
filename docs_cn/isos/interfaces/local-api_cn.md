@@ -125,7 +125,7 @@ IsOS 在 `aether-profile setup --json` 或 `egia-config setup --json` 上发送 
 {"schema_version":1,"ok":false,"data":null,"error":"selected scene warehouse is unavailable for eos/process/mujoco/sim.settings.scene"}
 ```
 
-## 发行目标：支持版本身份——尚未实现
+## 支持版本身份
 
 setup 适配器 `identity` 保留 `core`、`product_version`、`setup_schema_version`，增加 `supported_graph_versions` 与 `supported_node_type_versions` 数组，表示可读取版本而不是单一写入版本。旧 `graph_version` 和 `node_type_version` 保留为兼容旧 IsOS 读取器的标量别名。Apply／Run 前 IsOS 对比图实际版本、每个注册类型 ID、精确包固定版本、API schema 和核心程序能力。不匹配时指出具体值及所有者，不猜测升级也不调用其他程序。`isos version check --json` 提供同样的机器可读原因。新写入器使用图 `0.1.0` 和新类型 `@v0.1`；读取器显式声明旧 `1.0.0` 和受支持 `@v1.*`。见[配置与日志契约](configuration_cn.md)。
 
@@ -139,10 +139,10 @@ setup 适配器 `identity` 保留 `core`、`product_version`、`setup_schema_ver
 {"schema_version":1,"revision":"7a8daee6b7db9105f5483506ffc1743625b63089710dfbf936622329c471016b"}
 ```
 
-成功预览使用 HTTP 200，`data` 结构如下：
+格式正确的预览使用 HTTP 200，`data` 结构如下；此例选择了旧版 EOS setup 适配器，因此仍不能发布：
 
 ```json
-{"revision":"7a8daee6b7db9105f5483506ffc1743625b63089710dfbf936622329c471016b","proposed_revision":"825d667d31c455844be7f22b565e0ab6b14b44aeb7ce4861a704ffd028081df1","graph":{"version":"0.1.0","robot":{"id":"demo-0","name":"Aether deployment"},"cores":{}},"changes":[{"path":"/version","from":"1.0.0","to":"0.1.0"}],"can_apply":false,"diagnostics":[{"path":"/cores/isos/layers/process/groups/component/nodes/eos/node_type","code":"owner_reader_unavailable","message":"EOS has not admitted the IsOS-owned component@v0.1 contribution"}]}
+{"revision":"7a8daee6b7db9105f5483506ffc1743625b63089710dfbf936622329c471016b","proposed_revision":"825d667d31c455844be7f22b565e0ab6b14b44aeb7ce4861a704ffd028081df1","graph":{"version":"0.1.0","robot":{"id":"demo-0","name":"Aether deployment"},"cores":{"eos":{"layers":{}}}},"changes":[{"path":"/version","from":"1.0.0","to":"0.1.0"}],"can_apply":false,"diagnostics":[{"path":"/cores/eos","code":"owner_reader_unavailable","message":"eos setup does not advertise graph 0.1.0"}]}
 ```
 
 上面缩短的 `graph` 只展示响应结构；真实响应包含保留全部已接受字段的**完整**建议图。预检阻塞时返回 `can_apply:false` 和诊断，不写入文件。输入格式错误或旧图无效时返回 HTTP 422 与 `data.diagnostics`；原修订过期返回 HTTP 409、`error:"node graph revision changed; reload before migration"`。未知图版本在 `/version` 返回 `unsupported_graph_version`；不安全进程返回 `unsafe_process_node`；未映射类型在其精确 `/node_type` 路径返回 `unmapped_node_type`。预览结果不授权 Run。

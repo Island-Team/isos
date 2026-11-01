@@ -140,7 +140,7 @@ If `selected` is missing from the verified catalog, append one unavailable optio
 {"schema_version":1,"ok":false,"data":null,"error":"selected scene warehouse is unavailable for eos/process/mujoco/sim.settings.scene"}
 ```
 
-## Release target: supported-version identity — not implemented
+## Supported-version identity
 
 The setup adapter's `identity` keeps `core`, `product_version`, and `setup_schema_version` and adds `supported_graph_versions` and `supported_node_type_versions` arrays. These are accepted input versions, not a single preferred writer version. Existing `graph_version` and `node_type_version` stay as deprecated scalar aliases for older IsOS readers. IsOS compares the saved graph's actual version, every registered type ID, exact package pins, API schema, and core executable capabilities before Apply or Run. A version mismatch names the unsupported value and owner; it never guesses an upgrade or invokes a different binary. `isos version check --json` exposes the same reasons in a script-readable report. The new writer emits graph `0.1.0` and new types `@v0.1`; the reader advertises legacy `1.0.0` and supported `@v1.*` explicitly. See [configuration and log contract](configuration.md).
 
@@ -154,10 +154,10 @@ Preview request:
 {"schema_version":1,"revision":"7a8daee6b7db9105f5483506ffc1743625b63089710dfbf936622329c471016b"}
 ```
 
-A successful preview has HTTP 200 and `data` shaped as:
+A well-formed preview has HTTP 200 and `data` shaped as; this example uses an older EOS setup adapter, so publication remains blocked:
 
 ```json
-{"revision":"7a8daee6b7db9105f5483506ffc1743625b63089710dfbf936622329c471016b","proposed_revision":"825d667d31c455844be7f22b565e0ab6b14b44aeb7ce4861a704ffd028081df1","graph":{"version":"0.1.0","robot":{"id":"demo-0","name":"Aether deployment"},"cores":{}},"changes":[{"path":"/version","from":"1.0.0","to":"0.1.0"}],"can_apply":false,"diagnostics":[{"path":"/cores/isos/layers/process/groups/component/nodes/eos/node_type","code":"owner_reader_unavailable","message":"EOS has not admitted the IsOS-owned component@v0.1 contribution"}]}
+{"revision":"7a8daee6b7db9105f5483506ffc1743625b63089710dfbf936622329c471016b","proposed_revision":"825d667d31c455844be7f22b565e0ab6b14b44aeb7ce4861a704ffd028081df1","graph":{"version":"0.1.0","robot":{"id":"demo-0","name":"Aether deployment"},"cores":{"eos":{"layers":{}}}},"changes":[{"path":"/version","from":"1.0.0","to":"0.1.0"}],"can_apply":false,"diagnostics":[{"path":"/cores/eos","code":"owner_reader_unavailable","message":"eos setup does not advertise graph 0.1.0"}]}
 ```
 
 The shortened `graph` above shows response shape; the actual response contains the **full** proposed graph, with every accepted field preserved. A preflight blocker makes `can_apply:false` with diagnostics and no saved write. Malformed input or an invalid legacy graph returns HTTP 422 with `data.diagnostics`; a stale original revision returns HTTP 409 and `error:"node graph revision changed; reload before migration"`. Unknown graph versions use `/version` and `unsupported_graph_version`; unsafe process nodes use `unsafe_process_node`; unmapped types use `unmapped_node_type` at their exact `/node_type` path. No preview result authorizes Run.

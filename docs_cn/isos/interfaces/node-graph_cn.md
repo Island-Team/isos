@@ -64,9 +64,9 @@ IsOS 将已验证的可执行文件、场景路径和 MuJoCo 库路径传给 EOS
 
 `eos.dispatcher.primitive_base@v1.0` 与 `eos.dispatcher.primitive_manipulator@v1.0` 是绑定节点。其 `settings` 用字符串 `primitive_name`、`primitive_version`、`movement_type` 指定原语。硬件 `inputs.command` 是来自绑定节点的 `{node,output}` 边数组；每个绑定输出必须连接到一个兼容硬件节点。适配器实现由硬件实例的 `adapter.type` 选择，与通用硬件节点类型独立。IsOS Vision 配置为 `isos.ui.vision@v1.0`，放在 `isos/ui/panel` 下，是内部 UI 节点，不作为进程监管。
 
-## 发行目标：图 `0.1.0` 与兼容读取——尚未实现
+## 图 `0.1.0` 写入器与兼容读取——G03 已实现，G06 边准入待完成
 
-**状态：**上文 `1.0.0` 图和 `@v1.*` 类型已实现；本节为目标，不可按当前命令使用。产品、图、节点类型、HTTP 路由和仿真器协议独立版本化。新图写 `version:"0.1.0"`，新类型用 `@v0.1`。读取器继续接受已有安全 `1.0.0` 图及已注册 `@v1.0`／`@v1.1` 类型，不批量替换类型 ID。未注册类型按路径给出迁移诊断；旧任意命令 `isos.process.component@v1.0` 绝不执行。新 `isos.process.component@v0.1` 按上述 `role` 与有界 `args` 选择程序。既有 HTTP 路径、protobuf 包名、发行清单 schema 4 和 MuJoCo socket 协议 `2.0.0` 不改。
+**状态：**G03 已实现 `0.1.0` 写入器、精确旧图迁移及基本 core／类型位置准入；G06 将补齐完整边准入。产品、图、节点类型、HTTP 路由和仿真器协议独立版本化。新图写 `version:"0.1.0"`，新类型用 `@v0.1`。读取器继续接受已有安全 `1.0.0` 图及已注册 `@v1.0`／`@v1.1` 类型，不批量替换类型 ID。未注册类型按路径给出迁移诊断；旧任意命令 `isos.process.component@v1.0` 绝不执行。新 `isos.process.component@v0.1` 按上述 `role` 与有界 `args` 选择程序。既有 HTTP 路径、protobuf 包名、发行清单 schema 4 和 MuJoCo socket 协议 `2.0.0` 不改。
 
 | 图字段 | JSON 类型／单位 | 所有者与用途 | 默认值和校验 | 兼容扩展 |
 | --- | --- | --- | --- | --- |
