@@ -2,7 +2,7 @@
 
 [English](../../../docs/isos/interfaces/mujoco-catalog.md) · [已验证软件包](package-verification_cn.md) · [部署图](node-graph_cn.md) · [MuJoCo 所有者描述文件](https://github.com/Island-Team/isos-mujoco-sim/blob/master/docs/mujoco/interfaces/package.md)
 
-**P02 IsOS 归属方契约；实现待完成。**`island/mujoco-sim@0.1.1` 拥有 `backend-v2.json` 的增量目录及包贡献的进程类型。IsOS 拥有收据验证、目录准入、图选择、修订检查、节点集合合成及下列诊断。EOS 拥有通用相机、底盘、机械臂、原语绑定、相机闸门类型及运行时适配器。目录项不授予执行器路由，也不能证明仿真器私有套接字已就绪。P03 拥有通用 `/node-options` HTTP 封装；本契约只提供已验证的 MuJoCo 资源与不可用原因。
+**P02 IsOS 归属方契约。**`island/mujoco-sim@0.1.1` 拥有 `backend-v2.json` 的增量目录及包贡献的进程类型。IsOS 拥有收据验证、目录准入、图选择、修订检查、节点集合合成及下列诊断。EOS 拥有通用相机、底盘、机械臂、原语绑定、相机闸门类型及运行时适配器。目录项不授予执行器路由，也不能证明仿真器私有套接字已就绪。P03 拥有通用 `/node-options` HTTP 封装；本契约只提供已验证的 MuJoCo 资源与不可用原因。
 
 ## 输入与兼容
 
@@ -27,7 +27,7 @@ schema v4 `release.json`、P01 收据和 `backend-v2.json` schema `2.0.0` 的版
 
 已验证的 `sim-hardware` 集合只能合成 `0.1.0` 草稿。七个节点包括包贡献的进程类型，以及 EOS 通用 `@v0.1` 相机、底盘、机械臂、底盘／机械臂原语绑定和相机闸门类型。它要求起始图已有 `eos.dispatcher.control@v0.1`，不重复该节点，也不虚构 `isos.ui.vision@v0.1` 类型。`scene`、`camera_device`、`base_device`、`manipulator_device`、`socket` 参数保存稳定 ID 和私有套接字路径；默认分别为 `pick-place`、`cam-0`、`base-0`、`arm-0`。IsOS 只对包贡献的进程类型注入 `node.package`。通用硬件实例使用精确的 `node.adapter.package` 固定版本，并另设指向进程的 backend 引用；其 `adapter.settings.simulator_node` 和 `adapter.settings.device_id` 都必须等于该硬件类别所选的稳定设备 ID。合成返回草稿前须验证精确收据、描述形状、所选场景／设备类别及场景适用性；合成不授予启动权限。改变场景须按修订 Apply 并重启子进程，不得原位修改。
 
-Validate、Apply、迁移提交、Run、Restart 在所有者 setup 或启动子进程前，针对精确固定的进程及各通用适配器重复 P01 和 P02 检查。IsOS 检查所选场景的 profile、摘要及引用资源，按 `devices` 与 `device_catalog` 检查设备 ID，验证主机 MuJoCo 库可用性、图修订及 EOS 适配器可用性。Apply 失败不改变保存字节和活动修订；Run／Restart 失败不替换活动子进程。按需发布新已验证发行版或新图修订。当前 IsOS 合成器仍只接受 `1.0.0`，当前 `BackendDescriptor` 也拒绝目标字段；实现须一起改变。P03 随后按 `(node_path,setting)` 展示可用选项，不改变本准入边界。
+Validate、Apply、迁移提交、Run、Restart 在所有者 setup 或启动子进程前，针对精确固定的进程及各通用适配器重复 P01 和 P02 检查。IsOS 检查所选场景的 profile、摘要及引用资源，按 `devices` 与 `device_catalog` 检查设备 ID，验证主机 MuJoCo 库可用性、图修订及 EOS 适配器可用性。Apply 失败不改变保存字节和活动修订；Run／Restart 失败不替换活动子进程。按需发布新已验证发行版或新图修订。合成器只在完整且已验证的目标描述文件下将目标预设加入 `0.1.0` 草稿；历史集合保留 `1.0.0` 行为。IsOS 先用汇总的归属方目录验证全图，再仅将 `/cores/eos` 投影交给 EOS profile 验证。P03 随后按 `(node_path,setting)` 展示可用选项，不改变本准入边界。
 
 ## 稳定诊断
 
