@@ -1,26 +1,66 @@
 //! Bounded, owner-only per-deployment logs and cursor reads.
 
 use crate::config::Paths;
+use crate::event_policy;
 use anyhow::{Context, Result, ensure};
 use chrono::{SecondsFormat, Utc};
 use serde_json::{Value, json};
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fs::{self, File, OpenOptions},
     io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
 };
 
 const DEFAULT_MAX_BYTES: u64 = 262_144;
 const DEFAULT_BACKUPS: u8 = 2;
 const DEFAULT_MAX_SOURCES: u16 = 32;
 const MAX_READ_BYTES: u64 = 65_536;
+static INGEST_REJECTED: AtomicU64 = AtomicU64::new(0);
+static WRITE_FAILED: AtomicU64 = AtomicU64::new(0);
+static REJECTION_REASONS: OnceLock<Mutex<BTreeMap<&'static str, u64>>> = OnceLock::new();
+
+fn saturating_increment(counter: &AtomicU64) {
+    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+        Some(n.saturating_add(1))
+    });
+}
+
+fn reject(reason: &'static str) {
+    saturating_increment(&INGEST_REJECTED);
+    let mut reasons = REJECTION_REASONS
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .unwrap();
+    let count = reasons.entry(reason).or_default();
+    *count = count.saturating_add(1);
+}
+
+pub fn rejection_reasons() -> Value {
+    let reasons = REJECTION_REASONS
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .unwrap();
+    json!(&*reasons)
+}
+
+pub fn counters() -> (u64, u64) {
+    (
+        INGEST_REJECTED.load(Ordering::Relaxed),
+        WRITE_FAILED.load(Ordering::Relaxed),
+    )
+}
 
 pub struct LogContext<'a> {
     pub run_id: Option<&'a str>,
     pub correlation_id: Option<&'a str>,
+    pub node_path: Option<&'a str>,
     pub fields: Value,
 }
 
@@ -32,14 +72,27 @@ pub struct LogStore {
     max_sources: u16,
     level: u8,
     lock: Arc<Mutex<()>>,
+    suppression: Arc<Mutex<BTreeMap<String, (Instant, u32)>>>,
+}
+
+fn token_valid(value: &str, max: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= max
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 fn source_valid(source: &str) -> bool {
-    !source.is_empty()
-        && source.len() <= 48
-        && source
+    token_valid(source, 48)
+}
+
+fn event_code_valid(code: &str) -> bool {
+    !code.is_empty()
+        && code.len() <= 64
+        && code
             .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 }
 
 pub fn valid_source(source: &str) -> bool {
@@ -70,6 +123,10 @@ fn private_dir(path: &Path) -> Result<()> {
 
 impl LogStore {
     pub fn new(paths: &Paths, deployment: &str) -> Result<Self> {
+        Self::try_new(paths, deployment).inspect_err(|_| saturating_increment(&WRITE_FAILED))
+    }
+
+    fn try_new(paths: &Paths, deployment: &str) -> Result<Self> {
         ensure!(source_valid(deployment), "invalid deployment for logs");
         let max_bytes = std::env::var("ISOS_LOG_MAX_BYTES")
             .ok()
@@ -121,6 +178,7 @@ impl LogStore {
             max_sources,
             level,
             lock: shared_lock(),
+            suppression: Arc::new(Mutex::new(BTreeMap::new())),
         })
     }
 
@@ -203,6 +261,7 @@ impl LogStore {
             LogContext {
                 run_id: None,
                 correlation_id: None,
+                node_path: None,
                 fields: json!({}),
             },
         )
@@ -219,18 +278,26 @@ impl LogStore {
         let LogContext {
             run_id,
             correlation_id,
+            node_path,
             fields,
         } = context;
         ensure!(valid_source(source), "invalid log source");
-        ensure!(source_valid(event_code), "invalid log event code");
+        ensure!(event_code_valid(event_code), "invalid log event code");
         for id in [run_id, correlation_id].into_iter().flatten() {
-            ensure!(
-                source_valid(id) && id.len() <= 64,
-                "invalid log correlation ID"
-            );
+            ensure!(token_valid(id, 64), "invalid log correlation ID");
         }
+        ensure!(
+            node_path.is_none_or(|path| ["isos", "eos", "egia"]
+                .into_iter()
+                .any(|core| event_policy::node_pointer(path, core))),
+            "invalid log node path"
+        );
         let object = fields.as_object().context("log fields must be an object")?;
         ensure!(object.len() <= 12, "too many log fields");
+        ensure!(
+            serde_json::to_vec(&fields)?.len() <= 4096,
+            "log fields too large"
+        );
         for (key, value) in object {
             ensure!(
                 source_valid(key) && key.len() <= 48,
@@ -247,7 +314,20 @@ impl LogStore {
             );
         }
         let rank = level_rank(level).context("invalid log level")?;
-        if rank < self.level {
+        if rank < self.level
+            && !matches!(
+                event_code,
+                "deployment_starting"
+                    | "deployment_ready"
+                    | "deployment_failed"
+                    | "deployment_stopped"
+                    | "child_restart_attempt"
+                    | "child_restart_ready"
+                    | "package_load_failed"
+                    | "package_verified"
+                    | "events_suppressed"
+            )
+        {
             return Ok(());
         }
         let _guard = self.lock.lock().unwrap();
@@ -257,17 +337,115 @@ impl LogStore {
         } else {
             message
         };
-        let mut line = serde_json::to_vec(
-            &json!({"timestamp":Utc::now().to_rfc3339_opts(SecondsFormat::Millis,true),"level":level,"source":source,"event_code":event_code,"message":message,"pid":std::process::id(),"run_id":run_id,"correlation_id":correlation_id,"fields":fields}),
-        )?;
+        let mut safe_message = message.to_owned();
+        let value = loop {
+            let candidate = json!({"timestamp":Utc::now().to_rfc3339_opts(SecondsFormat::Millis,true),"level":level,"source":source,
+                "core":if source == "eos" || source == "bridge" || source == "config" { "eos" } else if source == "egia" { "egia" } else { "isos" },
+                "node_path":node_path,"event_code":event_code,"message":safe_message,"pid":std::process::id(),
+                "run_id":run_id.unwrap_or(crate::manager::manager_session_id()),"correlation_id":correlation_id,"fields":fields});
+            if serde_json::to_vec(&candidate)?.len() < event_policy::MAX_STORED_LINE {
+                break candidate;
+            }
+            ensure!(
+                !safe_message.is_empty(),
+                "log event exceeds stored line limit"
+            );
+            safe_message.pop();
+        };
+        self.append_record(&path, source, &value)
+    }
+
+    fn append_record(&self, path: &Path, source: &str, value: &Value) -> Result<()> {
+        let mut line = serde_json::to_vec(value)?;
         line.push(b'\n');
-        if self.source_file_available(&path)? {
-            self.append_file(&path, &line)?;
+        ensure!(
+            line.len() <= event_policy::MAX_STORED_LINE,
+            "log event exceeds stored line limit"
+        );
+        let result = (|| {
+            if self.source_file_available(path)? {
+                self.append_file(path, &line)?;
+            }
+            if source != "events" {
+                self.append_file(&self.root.join("events.log"), &line)?;
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            saturating_increment(&WRITE_FAILED);
         }
-        if source != "events" {
-            self.append_file(&self.root.join("events.log"), &line)?;
+        result
+    }
+
+    pub fn append_selected(&self, value: &Value) -> Result<()> {
+        let source = value["source"].as_str().context("selected event source")?;
+        ensure!(
+            matches!(source, "eos" | "bridge" | "config" | "egia"),
+            "invalid selected source"
+        );
+        level_rank(value["level"].as_str().context("selected event level")?)
+            .context("selected event level")?;
+        let code = value["event_code"]
+            .as_str()
+            .context("selected event code")?;
+        let run_id = value["run_id"].as_str().context("selected event run")?;
+        let eligible = matches!(code, "egia_discovery_lost" | "egia_safety_rejected");
+        let terminal = code.ends_with("_stopped")
+            || code.ends_with("_start_failed")
+            || code.ends_with("_terminal")
+            || code == "egia_operation_unknown";
+        let mut summaries = Vec::new();
+        let mut suppress = false;
+        {
+            let mut table = self.suppression.lock().unwrap();
+            let now = Instant::now();
+            if eligible {
+                let key = format!(
+                    "{run_id}|{source}|{}|{code}",
+                    value["node_path"].as_str().unwrap_or("")
+                );
+                if let Some((at, count)) = table.get_mut(&key) {
+                    if now.duration_since(*at) < Duration::from_secs(60) {
+                        *count = count.saturating_add(1);
+                        suppress = true;
+                    } else {
+                        if *count > 0 {
+                            summaries.push((source.to_owned(), code.to_owned(), *count));
+                        }
+                        *at = now;
+                        *count = 0;
+                    }
+                } else if table.len() < 256 {
+                    table.insert(key, (now, 0));
+                }
+            }
+            if terminal {
+                for (key, (_, count)) in table.iter_mut() {
+                    if key.starts_with(&format!("{run_id}|")) && *count > 0 {
+                        let parts: Vec<_> = key.split('|').collect();
+                        summaries.push((parts[1].to_owned(), parts[3].to_owned(), *count));
+                        *count = 0;
+                    }
+                }
+            }
         }
-        Ok(())
+        for (suppressed_source, suppressed_event_code, count) in summaries {
+            let _ = self.append_event_context("isos", "info", "events_suppressed", "Repeated child events suppressed",
+                LogContext { run_id: Some(run_id), correlation_id: None, node_path: None,
+                    fields: json!({"suppressed_source":suppressed_source,"suppressed_event_code":suppressed_event_code,"count":count}) });
+        }
+        if suppress {
+            return Ok(());
+        }
+        let _guard = self.lock.lock().unwrap();
+        self.append_record(&self.path(source)?, source, value)
+    }
+
+    fn append_raw(&self, path: &Path, raw: &[u8]) {
+        let _guard = self.lock.lock().unwrap();
+        if self.append_file(path, raw).is_err() {
+            saturating_increment(&WRITE_FAILED);
+        }
     }
 
     pub fn read(&self, source: &str, cursor: Option<&str>, limit: usize) -> Result<Value> {
@@ -399,53 +577,110 @@ pub fn capture<R: std::io::Read + Send + 'static>(
     reader: R,
     store: LogStore,
     source: String,
-    _level: &'static str,
+    stream: &'static str,
+    run_id: String,
+    pid: u32,
+    admitted_nodes: Option<Arc<BTreeSet<String>>>,
 ) {
-    std::thread::spawn(move || capture_stream(reader, store, source));
+    std::thread::spawn(move || {
+        capture_stream(
+            reader,
+            store,
+            source,
+            stream,
+            &run_id,
+            pid,
+            admitted_nodes.as_deref(),
+        )
+    });
 }
 
-fn capture_stream<R: std::io::Read>(reader: R, store: LogStore, source: String) {
+fn capture_stream<R: std::io::Read>(
+    reader: R,
+    store: LogStore,
+    source: String,
+    stream: &str,
+    run_id: &str,
+    pid: u32,
+    admitted_nodes: Option<&BTreeSet<String>>,
+) {
     let mut reader = BufReader::new(reader);
+    let raw_dir = store.root.join("owner").join(&source);
+    let raw_path = raw_dir.join(format!("{stream}.log"));
+    let raw_enabled = private_dir(&store.root.join("owner"))
+        .and_then(|_| private_dir(&raw_dir))
+        .is_ok();
     loop {
         let mut raw = Vec::new();
         // Bound a child that writes a very long line without a newline.
         match Read::by_ref(&mut reader)
-            .take(8193)
+            .take((event_policy::MAX_RAW_LINE + 1) as u64)
             .read_until(b'\n', &mut raw)
         {
             Ok(0) | Err(_) => break,
             Ok(_) => {
+                if raw_enabled {
+                    store.append_raw(&raw_path, &raw);
+                }
                 if raw.last() != Some(&b'\n') {
                     // Drain the rest of an oversized line without buffering it.
                     loop {
                         let mut discard = Vec::new();
                         match Read::by_ref(&mut reader)
-                            .take(8193)
+                            .take((event_policy::MAX_RAW_LINE + 1) as u64)
                             .read_until(b'\n', &mut discard)
                         {
                             Ok(0) | Err(_) => break,
-                            Ok(_) if discard.last() == Some(&b'\n') => break,
-                            Ok(_) => {}
+                            Ok(_) if discard.last() == Some(&b'\n') => {
+                                if raw_enabled {
+                                    store.append_raw(&raw_path, &discard);
+                                }
+                                break;
+                            }
+                            Ok(_) => {
+                                if raw_enabled {
+                                    store.append_raw(&raw_path, &discard);
+                                }
+                            }
                         }
                     }
+                    reject("raw_oversize");
                     continue;
                 }
-                let Ok(message) = std::str::from_utf8(&raw) else {
-                    continue;
-                };
-                if let Ok(record) = serde_json::from_str::<Value>(message)
-                    && let (Some(severity), Some(body)) = (
-                        record.get("level").and_then(Value::as_str),
-                        record.get("message").and_then(Value::as_str),
-                    )
-                    && level_rank(severity).is_some()
+                if stream == "stderr"
+                    && matches!(source.as_str(), "eos" | "bridge" | "config" | "egia")
                 {
-                    let event_code = record
-                        .get("event_code")
-                        .and_then(Value::as_str)
-                        .filter(|code| source_valid(code))
-                        .unwrap_or("message");
-                    let _ = store.append_event(&source, severity, event_code, body);
+                    match event_policy::parse_child(&raw, &source, run_id, pid) {
+                        Ok(event)
+                            if event["node_path"].as_str().is_none_or(|path| {
+                                admitted_nodes.is_none_or(|nodes| nodes.contains(path))
+                            }) =>
+                        {
+                            let _ = store.append_selected(&event);
+                        }
+                        Ok(_) => reject("node_owner"),
+                        Err(error) => {
+                            let message = error.to_string();
+                            let reason = if message.contains("run mismatch") {
+                                "run_mismatch"
+                            } else if message.contains("source role") {
+                                "source_role"
+                            } else if message.contains("unregistered") {
+                                "event_code"
+                            } else if message.contains("node pointer") {
+                                "node_path"
+                            } else if message.contains("field") {
+                                "fields"
+                            } else if message.contains("message") {
+                                "message"
+                            } else if message.contains("line") {
+                                "line_limit"
+                            } else {
+                                "invalid_envelope"
+                            };
+                            reject(reason);
+                        }
+                    }
                 }
             }
         }
@@ -466,6 +701,21 @@ mod tests {
         };
         let store = LogStore::new(&paths, "default").unwrap();
         (temp, store)
+    }
+
+    #[test]
+    fn failed_store_initialization_is_visible_in_write_health() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("not-a-directory");
+        fs::write(&file, b"occupied").unwrap();
+        let paths = Paths {
+            config: temp.path().join("config"),
+            data: file,
+            runtime: temp.path().join("run"),
+        };
+        let before = counters().1;
+        assert!(LogStore::new(&paths, "default").is_err());
+        assert!(counters().1 > before);
     }
 
     #[test]
@@ -567,6 +817,7 @@ mod tests {
                 LogContext {
                     run_id: Some("manager-1"),
                     correlation_id: Some("request-2"),
+                    node_path: None,
                     fields: json!({"package_id":"island/mujoco-sim","package_version":"0.1.1"}),
                 },
             )
@@ -585,6 +836,7 @@ mod tests {
                     LogContext {
                         run_id: None,
                         correlation_id: None,
+                        node_path: None,
                         fields: json!({"secret":"line\nwith newline"})
                     }
                 )
@@ -600,6 +852,7 @@ mod tests {
                     LogContext {
                         run_id: Some("bad/id"),
                         correlation_id: None,
+                        node_path: None,
                         fields: json!({})
                     }
                 )
@@ -626,14 +879,121 @@ mod tests {
         let (_temp, store) = store();
         let mut input = b"routine progress\n{\"level\":\"warn\",\"message\":\"selected\",\"source\":\"forged\",\"event_code\":\"child_warning\"}\n".to_vec();
         input.extend_from_slice(&[b'x'; 9000]);
-        input.extend_from_slice(b"\n{\"level\":\"error\",\"message\":\"second\"}\n");
+        input.extend_from_slice(b"\n{\"timestamp\":\"2026-11-01T10:00:01.000Z\",\"level\":\"info\",\"source\":\"eos\",\"core\":\"eos\",\"event_code\":\"eos_ready\",\"run_id\":\"r1\",\"message\":\"EOS runtime ready\",\"fields\":{\"state\":\"ready\",\"node_count\":1}}\n");
         input.extend_from_slice(&[0xff, b'\n']);
-        capture_stream(&input[..], store.clone(), "eos".into());
+        capture_stream(
+            &input[..],
+            store.clone(),
+            "eos".into(),
+            "stderr",
+            "r1",
+            99,
+            None,
+        );
         let lines = store.read("eos", None, 10).unwrap();
-        assert_eq!(lines["lines"].as_array().unwrap().len(), 2);
+        assert_eq!(lines["lines"].as_array().unwrap().len(), 1);
         assert_eq!(lines["lines"][0]["source"], "eos");
-        assert_eq!(lines["lines"][0]["event_code"], "child_warning");
-        assert_eq!(lines["lines"][1]["message"], "second");
+        assert_eq!(lines["lines"][0]["event_code"], "eos_ready");
+        assert_eq!(lines["lines"][0]["pid"], 99);
+    }
+
+    #[test]
+    fn repeated_noncritical_child_event_has_bounded_terminal_summary() {
+        let (_temp, store) = store();
+        let warning = json!({"timestamp":"2026-11-01T10:00:01.000Z","level":"warn","source":"egia","core":"egia",
+            "node_path":null,"event_code":"egia_discovery_lost","run_id":"r1","correlation_id":null,
+            "message":"EOS discovery unavailable","fields":{"reason_code":"eos_unavailable"},"pid":42});
+        store.append_selected(&warning).unwrap();
+        store.append_selected(&warning).unwrap();
+        store.append_selected(&warning).unwrap();
+        let terminal = json!({"timestamp":"2026-11-01T10:00:02.000Z","level":"info","source":"egia","core":"egia",
+            "node_path":null,"event_code":"egia_stopped","run_id":"r1","correlation_id":null,
+            "message":"EGIA stopped","fields":{"state":"stopped"},"pid":42});
+        store.append_selected(&terminal).unwrap();
+        let lines = store.read("all", None, 10).unwrap();
+        let lines = lines["lines"].as_array().unwrap();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0]["event_code"], "egia_discovery_lost");
+        assert_eq!(lines[1]["event_code"], "events_suppressed");
+        assert_eq!(lines[1]["fields"]["count"], 2);
+        assert_eq!(lines[2]["event_code"], "egia_stopped");
+    }
+
+    #[test]
+    fn selected_child_cannot_claim_an_unadmitted_node() {
+        let (_temp, store) = store();
+        let event = b"{\"timestamp\":\"2026-11-01T10:00:01.000Z\",\"level\":\"info\",\"source\":\"eos\",\"core\":\"eos\",\"node_path\":\"/cores/eos/layers/process/groups/mujoco/nodes/sim\",\"event_code\":\"eos_backend_ready\",\"run_id\":\"r1\",\"message\":\"EOS backend child ready\",\"fields\":{\"state\":\"ready\"}}\n";
+        let admitted =
+            BTreeSet::from(["/cores/eos/layers/process/groups/mujoco/nodes/other".into()]);
+        capture_stream(
+            &event[..],
+            store.clone(),
+            "eos".into(),
+            "stderr",
+            "r1",
+            42,
+            Some(&admitted),
+        );
+        assert!(
+            store.read("eos", None, 10).unwrap()["lines"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(counters().0 > 0);
+        assert!(rejection_reasons()["node_owner"].as_u64().unwrap_or(0) > 0);
+    }
+
+    #[test]
+    fn stored_event_trims_utf8_at_whole_line_bound() {
+        let (_temp, store) = store();
+        store
+            .append_event("isos", "info", "message", &"界".repeat(4_000))
+            .unwrap();
+        let raw = fs::read(store.root().join("events.log")).unwrap();
+        assert!(raw.len() <= event_policy::MAX_STORED_LINE);
+        let text = std::str::from_utf8(&raw).unwrap();
+        assert!(text.ends_with('\n'));
+        assert_eq!(
+            serde_json::from_slice::<Value>(&raw).unwrap()["core"],
+            "isos"
+        );
+    }
+
+    #[test]
+    fn private_raw_child_log_rotates_without_entering_shared_stream() {
+        let (_temp, mut store) = store();
+        store.max_bytes = 100;
+        let input = format!(
+            "{}\n{}\n{}\n",
+            "x".repeat(80),
+            "y".repeat(80),
+            "z".repeat(80)
+        );
+        capture_stream(
+            input.as_bytes(),
+            store.clone(),
+            "ui".into(),
+            "stdout",
+            "m1",
+            42,
+            None,
+        );
+        assert!(store.root().join("owner/ui/stdout.log.1").is_file());
+        assert!(
+            store.read("all", None, 10).unwrap()["lines"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            fs::metadata(store.root().join("owner/ui/stdout.log"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
     }
 
     #[test]

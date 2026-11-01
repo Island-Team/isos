@@ -18,6 +18,7 @@ use std::{
     os::unix::{ffi::OsStrExt, fs::PermissionsExt, process::CommandExt},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
+    sync::Arc,
     thread,
     time::{Duration, Instant},
 };
@@ -31,6 +32,7 @@ pub(crate) struct PackageLoadFailure {
     pub id: String,
     pub version: String,
     pub stage: &'static str,
+    pub node_path: Option<String>,
     pub source: anyhow::Error,
 }
 
@@ -420,6 +422,9 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
                         id: package_id.to_owned(),
                         version: version.to_owned(),
                         stage: "backend",
+                        node_path: Some(format!(
+                            "/cores/{core_id}/layers/{layer_id}/groups/{group_id}/nodes/{key}"
+                        )),
                         source,
                     })?;
                     ensure!(
@@ -436,8 +441,8 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
         .get("eos")
         .and_then(|core| core.layers.get("hardware"))
     {
-        for group in hardware.groups.values() {
-            for node in group.nodes.values() {
+        for (group_id, group) in &hardware.groups {
+            for (node_id, node) in &group.nodes {
                 let Some(adapter) = &node.adapter else {
                     continue;
                 };
@@ -469,6 +474,9 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
                             id: package.0.to_owned(),
                             version: package.1.to_owned(),
                             stage: "adapter",
+                            node_path: Some(format!(
+                                "/cores/eos/layers/hardware/groups/{group_id}/nodes/{node_id}"
+                            )),
                             source,
                         })?;
                 let argument = format!("{family}={}@{digest}", library.display());
@@ -600,6 +608,7 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
                             )
                             .chain(args)
                             .collect();
+                            settings.role = Some("eos".into());
                         } else if key == "egia" && paths.is_some() {
                             ensure!(
                                 settings.role.as_deref().is_none_or(|role| role == "egia"),
@@ -622,6 +631,7 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
                                 std::iter::once(executable.to_string_lossy().into_owned())
                                     .chain(args)
                                     .collect();
+                            settings.role = Some("egia".into());
                             settings
                                 .env
                                 .extend(crate::generated_v2::egia_launch_env(&value)?);
@@ -1123,6 +1133,9 @@ pub struct Supervisor {
     running: BTreeMap<String, Running>,
     order: Vec<String>,
     logs: log_store::LogStore,
+    paths: Paths,
+    run_id: String,
+    admitted_nodes: Arc<BTreeSet<String>>,
 }
 
 impl Supervisor {
@@ -1158,11 +1171,44 @@ impl Supervisor {
     }
     pub fn new(paths: &Paths, deployment: &str) -> Result<Self> {
         validate_deployment_name(deployment)?;
+        let mut admitted_nodes = BTreeSet::new();
+        if let Ok(bytes) = fs::read(paths.node_graph_path(deployment))
+            && let Ok(graph) = serde_json::from_slice::<Value>(&bytes)
+        {
+            for core in ["eos", "egia"] {
+                if let Some(layers) = graph
+                    .pointer(&format!("/cores/{core}/layers"))
+                    .and_then(Value::as_object)
+                {
+                    for (layer, entry) in layers {
+                        if let Some(groups) = entry.get("groups").and_then(Value::as_object) {
+                            for (group, entry) in groups {
+                                if let Some(nodes) = entry.get("nodes").and_then(Value::as_object) {
+                                    for node in nodes.keys() {
+                                        admitted_nodes.insert(format!("/cores/{core}/layers/{layer}/groups/{group}/nodes/{node}"));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         Ok(Self {
             running: BTreeMap::new(),
             order: Vec::new(),
             logs: log_store::LogStore::new(paths, deployment)?,
+            paths: paths.clone(),
+            run_id: crate::manager::next_run_id(),
+            admitted_nodes: Arc::new(admitted_nodes),
         })
+    }
+
+    pub fn run_id(&self) -> &str {
+        &self.run_id
+    }
+    pub fn set_run_id(&mut self, run_id: String) {
+        self.run_id = run_id;
     }
 
     fn spawn(
@@ -1173,14 +1219,62 @@ impl Supervisor {
     ) -> Result<Child> {
         let mut command = Command::new(&spec.settings.command[0]);
         command.args(&spec.settings.command[1..]);
-        if spec.id == "eos" && spec.package.is_some() {
-            command.arg("--log-dir").arg(self.logs.root());
+        if matches!(spec.id.as_str(), "eos" | "bridge" | "config")
+            && spec.settings.role.as_deref() == Some("eos")
+        {
+            command.arg("--run-id").arg(&self.run_id);
+            if spec.id == "eos"
+                && let Some(package) = &spec.package
+            {
+                let verified = packages::verify(&self.paths, &package.id, &package.version)?;
+                let release = verified
+                    .receipt
+                    .release_sha256
+                    .as_deref()
+                    .context("verified release digest missing")?;
+                let payload = verified
+                    .receipt
+                    .payload_sha256
+                    .as_deref()
+                    .context("verified payload digest missing")?;
+                ensure!(
+                    release.len() == 64
+                        && release
+                            .bytes()
+                            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+                    "invalid release digest"
+                );
+                ensure!(
+                    payload.len() == 64
+                        && payload
+                            .bytes()
+                            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+                    "invalid payload digest"
+                );
+                let owner_dir = self.logs.root().join("owner/eos");
+                fs::create_dir_all(&owner_dir)?;
+                fs::set_permissions(
+                    self.logs.root().join("owner"),
+                    fs::Permissions::from_mode(0o700),
+                )?;
+                fs::set_permissions(&owner_dir, fs::Permissions::from_mode(0o700))?;
+                command
+                    .arg("--log-dir")
+                    .arg(owner_dir)
+                    .arg("--backend-release-sha256")
+                    .arg(release)
+                    .arg("--backend-payload-sha256")
+                    .arg(payload);
+            }
         }
         command.envs(&spec.settings.env);
         for source in secret_sources {
             command.env_remove(source);
         }
         command.envs(secrets);
+        if spec.id == "egia" && spec.settings.role.as_deref() == Some("egia") {
+            command.env("ISOS_RUN_ID", &self.run_id);
+        }
         if let Some(cwd) = &spec.settings.cwd {
             command.current_dir(cwd);
         }
@@ -1207,11 +1301,33 @@ impl Supervisor {
         let mut child = command
             .spawn()
             .with_context(|| format!("spawn {}", spec.id))?;
+        let pid = child.id();
+        let source = if matches!(spec.settings.role.as_deref(), Some("eos" | "egia")) {
+            spec.id.clone()
+        } else {
+            format!("unselected-{}", spec.id)
+        };
         if let Some(stdout) = child.stdout.take() {
-            log_store::capture(stdout, self.logs.clone(), spec.id.clone(), "info");
+            log_store::capture(
+                stdout,
+                self.logs.clone(),
+                source.clone(),
+                "stdout",
+                self.run_id.clone(),
+                pid,
+                Some(self.admitted_nodes.clone()),
+            );
         }
         if let Some(stderr) = child.stderr.take() {
-            log_store::capture(stderr, self.logs.clone(), spec.id.clone(), "warn");
+            log_store::capture(
+                stderr,
+                self.logs.clone(),
+                source,
+                "stderr",
+                self.run_id.clone(),
+                pid,
+                Some(self.admitted_nodes.clone()),
+            );
         }
         Ok(child)
     }
@@ -1245,7 +1361,7 @@ impl Supervisor {
         }
     }
 
-    fn wait_ready(spec: &ProcessSpec, child: &mut Child) -> Result<()> {
+    fn wait_ready(&self, spec: &ProcessSpec, child: &mut Child) -> Result<()> {
         let deadline = Instant::now() + Duration::from_millis(spec.settings.start_timeout_ms);
         let no_probe_grace = Instant::now() + Duration::from_millis(50);
         loop {
@@ -1263,7 +1379,22 @@ impl Supervisor {
             } else {
                 Instant::now() >= no_probe_grace
             };
-            if ready {
+            let owner_ready = if matches!(spec.settings.role.as_deref(), Some("eos" | "egia")) {
+                let expected = format!("{}_ready", spec.id);
+                self.logs
+                    .tail_filtered(&spec.id, 100, None)
+                    .ok()
+                    .is_some_and(|events| {
+                        events.iter().any(|event| {
+                            event["run_id"].as_str() == Some(self.run_id.as_str())
+                                && event["pid"].as_u64() == Some(child.id() as u64)
+                                && event["event_code"].as_str() == Some(expected.as_str())
+                        })
+                    })
+            } else {
+                true
+            };
+            if ready && owner_ready {
                 return Ok(());
             }
             ensure!(
@@ -1327,7 +1458,7 @@ impl Supervisor {
                     return Err(error);
                 }
             };
-            if let Err(error) = Self::wait_ready(spec, &mut child) {
+            if let Err(error) = self.wait_ready(spec, &mut child) {
                 terminate(&mut child);
                 self.rollback(&added);
                 return Err(error);
@@ -1413,6 +1544,19 @@ impl Supervisor {
                 Restart::Always => true,
             };
             if restart && process.restarts < process.spec.settings.max_restarts {
+                let correlation = crate::manager::next_correlation_id();
+                let _ = self.logs.append_event_context(
+                    "isos",
+                    "warn",
+                    "child_restart_attempt",
+                    "Managed child restart requested",
+                    log_store::LogContext {
+                        run_id: Some(&self.run_id),
+                        correlation_id: Some(&correlation),
+                        node_path: None,
+                        fields: serde_json::json!({"process_id":id}),
+                    },
+                );
                 thread::sleep(Duration::from_millis(100 * (1 << process.restarts.min(5))));
                 let restart_specs: Vec<_> = std::iter::once(process.spec.clone())
                     .chain(dependent_specs.iter().cloned())
@@ -1437,15 +1581,27 @@ impl Supervisor {
                         return Err(error);
                     }
                 };
-                if let Err(error) = Self::wait_ready(&process.spec, &mut child) {
+                if let Err(error) = self.wait_ready(&process.spec, &mut child) {
                     terminate(&mut child);
                     self.order.retain(|candidate| candidate != &id);
                     return Err(error);
                 }
                 process.child = child;
                 process.restarts += 1;
-                self.running.insert(id, process);
+                self.running.insert(id.clone(), process);
                 self.start_with_secrets(&dependent_specs, &plan)?;
+                let _ = self.logs.append_event_context(
+                    "isos",
+                    "info",
+                    "child_restart_ready",
+                    "Managed child restart ready",
+                    log_store::LogContext {
+                        run_id: Some(&self.run_id),
+                        correlation_id: Some(&correlation),
+                        node_path: None,
+                        fields: serde_json::json!({"process_id":id}),
+                    },
+                );
             } else {
                 self.order.retain(|candidate| candidate != &id);
             }
@@ -1613,6 +1769,103 @@ command = ["/bin/sleep", "1"]
     }
 
     #[test]
+    fn selected_real_child_binds_run_pid_and_stderr_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        let script = temp.path().join("selected-eos");
+        fs::write(&script, r#"#!/bin/sh
+run=''
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = '--run-id' ]; then run="$2"; shift 2; else shift; fi
+done
+printf '{"timestamp":"2026-11-01T10:00:01.000Z","level":"info","source":"eos","core":"eos","event_code":"eos_ready","run_id":"%s","message":"EOS runtime ready","fields":{"state":"ready","node_count":1}}\n' "$run" >&2
+printf '{"timestamp":"2026-11-01T10:00:01.000Z","level":"info","source":"eos","core":"eos","event_code":"eos_ready","run_id":"%s","message":"EOS runtime ready","fields":{"state":"ready","node_count":1}}\n' "$run"
+sleep 2
+"#).unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut spec = project(&graph(&serde_json::json!({"command":[script]}).to_string()))
+            .unwrap()
+            .remove(0);
+        spec.settings.role = Some("eos".into());
+        let mut supervisor = Supervisor::new(&paths, "default").unwrap();
+        let run_id = supervisor.run_id().to_owned();
+        supervisor.start(&[spec]).unwrap();
+        let pid = supervisor.status_snapshot()[0].pid;
+        let logs = log_store::LogStore::new(&paths, "default").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let line = loop {
+            let lines = logs.read("eos", None, 10).unwrap();
+            if let Some(line) = lines["lines"].as_array().unwrap().first() {
+                break line.clone();
+            }
+            assert!(
+                Instant::now() < deadline,
+                "selected child event did not arrive"
+            );
+            thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(line["run_id"], run_id);
+        assert_eq!(line["pid"], pid);
+        assert_eq!(
+            logs.read("eos", None, 10).unwrap()["lines"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(logs.root().join("owner/eos/stdout.log").is_file());
+        assert!(logs.root().join("owner/eos/stderr.log").is_file());
+        fs::remove_file(logs.root().join("events.log")).unwrap();
+        fs::create_dir(logs.root().join("events.log")).unwrap();
+        let mut later = line.clone();
+        later["event_code"] = serde_json::json!("eos_stopping");
+        later["message"] = serde_json::json!("EOS eos stopping");
+        later["fields"] = serde_json::json!({"state":"stopping"});
+        assert!(logs.append_selected(&later).is_err());
+        let stop_started = Instant::now();
+        supervisor.stop();
+        assert!(stop_started.elapsed() < Duration::from_secs(1));
+        assert!(log_store::counters().1 > 0);
+    }
+
+    #[test]
+    fn selected_egia_run_binding_overrides_authored_environment() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        let script = temp.path().join("selected-egia");
+        fs::write(&script, r#"#!/bin/sh
+printf '{"timestamp":"2026-11-01T10:00:01.000Z","level":"info","source":"egia","core":"egia","event_code":"egia_ready","run_id":"%s","message":"EGIA ready","fields":{"generation":1}}\n' "$ISOS_RUN_ID" >&2
+sleep 2
+"#).unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut spec = project(&graph(
+            &serde_json::json!({"command":[script],"env":{"ISOS_RUN_ID":"r-spoof"}}).to_string(),
+        ))
+        .unwrap()
+        .remove(0);
+        spec.id = "egia".into();
+        spec.path = "isos/process/component/egia".into();
+        spec.settings.role = Some("egia".into());
+        let mut supervisor = Supervisor::new(&paths, "default").unwrap();
+        let run_id = supervisor.run_id().to_owned();
+        supervisor.start(&[spec]).unwrap();
+        let lines = log_store::LogStore::new(&paths, "default")
+            .unwrap()
+            .read("egia", None, 10)
+            .unwrap();
+        assert_eq!(lines["lines"][0]["run_id"], run_id);
+        supervisor.stop();
+    }
+
+    #[test]
     fn waits_for_unix_listener_and_rolls_back_on_timeout() {
         let temp = tempfile::tempdir().unwrap();
         let paths = Paths {
@@ -1724,6 +1977,15 @@ command = ["/bin/sleep", "1"]
         supervisor.start(&specs).unwrap();
         thread::sleep(Duration::from_millis(140));
         assert_eq!(supervisor.status().unwrap()[0].restarts, 1);
+        let events = log_store::LogStore::new(&paths, "test")
+            .unwrap()
+            .read("all", None, 10)
+            .unwrap();
+        let events = events["lines"].as_array().unwrap();
+        assert_eq!(events[0]["event_code"], "child_restart_attempt");
+        assert_eq!(events[1]["event_code"], "child_restart_ready");
+        assert_eq!(events[0]["correlation_id"], events[1]["correlation_id"]);
+        assert_eq!(events[0]["run_id"], supervisor.run_id());
         thread::sleep(Duration::from_millis(140));
         assert!(supervisor.status().unwrap().is_empty());
     }

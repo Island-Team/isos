@@ -81,11 +81,28 @@ impl Frontend {
             });
         }
         let mut child = command.spawn()?;
+        let pid = child.id();
         if let Some(stdout) = child.stdout.take() {
-            log_store::capture(stdout, logs.clone(), "ui".into(), "info");
+            log_store::capture(
+                stdout,
+                logs.clone(),
+                "ui".into(),
+                "stdout",
+                crate::manager::manager_session_id().into(),
+                pid,
+                None,
+            );
         }
         if let Some(stderr) = child.stderr.take() {
-            log_store::capture(stderr, logs, "ui".into(), "warn");
+            log_store::capture(
+                stderr,
+                logs,
+                "ui".into(),
+                "stderr",
+                crate::manager::manager_session_id().into(),
+                pid,
+                None,
+            );
         }
         Ok(Self(child))
     }

@@ -14,6 +14,8 @@ mod core_setup;
 mod edge_admission;
 #[path = "app/entry.rs"]
 mod entry;
+#[path = "runtime/event_policy.rs"]
+mod event_policy;
 #[path = "app/foreground.rs"]
 mod foreground;
 #[path = "runtime/generated_v2.rs"]

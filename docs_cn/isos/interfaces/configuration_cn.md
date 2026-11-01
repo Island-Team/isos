@@ -62,28 +62,6 @@ P04 失败使用已有 schema-1 本地 API 封装：准入失败用 HTTP `422`�
 
 **P05 读取准入：**[读取器特性契约](reader-features_cn.md)规定精确的所选程序探测、完整类型与已验证包检查、必需特性映射、旧标量回退、结构化诊断及升级证据。Validate 和 Apply 检查草稿；Run 和 Restart 在替换子进程前检查保存字节及所选 P04 生成版本。包、图、程序或 EGIA 启动链变化使所选生成版本失效。安全的 `1.0.0` 图在显式迁移前保留原始字节。没有与图精确匹配的已验证发行版就不建议兼容升级。
 
-## 目标统一 JSONL 事件
+## 共享 JSONL 事件
 
-模块在首次就绪时写一条 `info`，随后只记录状态变化、警告和错误；周期健康检查只在变化时或有界汇总间隔记录。完整子进程输出由其所有者保存，IsOS 统一流只接收有界、已脱敏事件。日志写入不得阻塞执行器停止或进程退出。
-
-| 字段 | JSON 类型／单位 | 用途、默认值、校验与兼容 |
-| --- | --- | --- |
-| `timestamp` | RFC 3339 UTC 字符串／毫秒 | 必需事件时间；保留已有字段。 |
-| `level` | `trace`、`debug`、`info`、`warn`、`error` | 必需级别；保留现有过滤顺序。 |
-| `source` | 字符串／来源 ID | 必需，1–48 个 ASCII 字母、数字、`_` 或 `-`。 |
-| `core` | 字符串／核心 ID | 必需运行时所有者（`isos`、`eos` 或 `egia`）；MuJoCo 子进程事件使用 `eos`，`source:mujoco`。 |
-| `node_path` | 字符串或 null／规范路径 | 可选所属节点；全局事件为 null 或省略。 |
-| `event_code` | 字符串／机器码 | 必需稳定 snake_case，1–64 字符；旧读取器仍接受缺省。 |
-| `run_id` | 字符串／不透明 ID | 必需所有者会话身份；部署前用管理器会话 ID，部署后用部署运行 ID；旧 `log_append` 规范化时由 IsOS 补齐。 |
-| `correlation_id` | 字符串或 null／不透明 ID | 可选请求关联，不嵌入密钥或用户文本。 |
-| `message` | 字符串／UTF-8 字节 | 必需人类说明，最多 8192 字节，写前脱敏。 |
-| `fields` | 对象／有界元数据 | 可选，只含标量，最多 16 键和 4 KiB 编码大小；拒绝密钥、含凭证路径及无界负载。 |
-| `pid` | 整数或 null／进程 ID | 可选已有进程元数据。 |
-
-```json
-{"timestamp":"2026-11-01T10:00:00.000Z","level":"info","source":"eos","core":"eos","node_path":null,"event_code":"runtime_ready","run_id":"r-7c2a","correlation_id":null,"message":"EOS runtime ready","fields":{"state":"ready"},"pid":4242}
-```
-
-用 `isos logs all --level info` 或 `GET /api/isos/v1/logs?source=all&limit=100` 读取，随后用 `next_cursor` 轮询。每次读取最多 200 行或 64 KiB；`rotated:true` 表示游标对应文件已轮转，UI 要显示空档。当前默认值为每文件 256 KiB、两份备份、32 个来源文件、最低 `info`。超过来源文件上限的新来源仍写统一流。就绪日志不代表实时健康；`isos status --json` 才是当前状态依据。
-
-**目标接收算法：**校验来源、级别、长度；附上经过认证的所有者和运行上下文；删除密钥字段与凭证样式值；限制字段；在锁内向来源和统一流写一条 JSON 行并轮转；慢速 UI 读取不得阻塞。丢弃／拒绝事件增加可观察计数，警告限速以防递归。HTTP 与 CLI 在存储后过滤。已有 `log_append` 仍是仅所有者可访问的兼容入口；未来跨核心传输可新增字段，不要求旧调用方发送。
+[P06 共享事件契约](events_cn.md)持有精确信封、管理器会话与部署运行 ID、包来源、子进程接收、脱敏及高频抑制。IsOS 保留私有轮转分类文件和统一 `events.log`；[本地日志 API](local-api_cn.md)保留现有游标与过滤接口。实时就绪以 status 为准。

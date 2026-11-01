@@ -44,9 +44,20 @@ impl<S: Subscriber> Layer<S> for ManagerLayer {
         };
         event.record(&mut fields);
         let level = event.metadata().level().as_str().to_ascii_lowercase();
-        let _ = self
-            .0
-            .append_event("isos", &level, &fields.code, &fields.message);
+        // Tracing messages may contain error chains and paths. Only the
+        // internal code selects a reviewed, fixed shared-stream template.
+        let message = match fields.code.as_str() {
+            "manager_shutdown" => "IsOS manager shutdown requested",
+            "manager_stopped" => "IsOS manager stopped",
+            "manager_request_failed" => "IsOS manager request failed",
+            "manager_client_failed" => "IsOS manager client failed",
+            "manager_accept_failed" => "IsOS manager accept failed",
+            "deployment_supervisor_failed" => "Deployment supervisor failed",
+            "service_supervisor_failed" => "Service supervisor failed",
+            "workbench_failed" => "IsOS workbench failed",
+            _ => "IsOS manager event",
+        };
+        let _ = self.0.append_event("isos", &level, &fields.code, message);
     }
 }
 

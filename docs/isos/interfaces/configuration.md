@@ -62,28 +62,6 @@ P04 failures use the existing schema-1 local API envelope with `422` for admissi
 
 **P05 reader admission:** The [reader-feature contract](reader-features.md) defines exact selected-binary probes, full type and verified package checks, required feature mapping, scalar fallback, typed diagnostics and upgrade evidence. Validate and Apply check the draft; Run and Restart check saved bytes and the selected P04 generation before replacing children. A changed package, graph, executable or EGIA launch chain invalidates the selected generation. A safe `1.0.0` graph retains its original bytes until explicit migration. No compatible upgrade is suggested without one exact verified release matching the graph.
 
-## Target shared JSONL event
+## Shared JSONL event
 
-Each module logs one `info` event when it becomes ready, then state transitions, warnings and failures; periodic health produces a log only on change or a bounded summary interval. Full child output remains in its owner's log store. IsOS's unified stream receives bounded, sanitized events. Logging must not stall actuator stop or process shutdown.
-
-| Field | JSON type / unit | Purpose, default, validation, compatibility |
-| --- | --- | --- |
-| `timestamp` | RFC 3339 UTC string / ms | Required event time; preserve existing field. |
-| `level` | `trace`, `debug`, `info`, `warn`, `error` / — | Required severity; existing filter order stays. |
-| `source` | string / source ID | Required 1–48 ASCII letters, digits, `_` or `-`; identifies emitter. |
-| `core` | string / core ID | Required runtime owner (`isos`, `eos`, or `egia`); MuJoCo child events use `eos` with `source:mujoco`. |
-| `node_path` | string or null / canonical path | Optional owner node; null or absent for a global event. |
-| `event_code` | string / machine code | Required stable lowercase snake case, 1–64 characters; existing optional readers still accept it. |
-| `run_id` | string / opaque ID | Required owner session identity; IsOS uses a manager-session ID before deployment starts and a deployment-run ID thereafter, and attaches one when normalizing legacy `log_append`. |
-| `correlation_id` | string or null / opaque ID | Optional request correlation; no secret or user text embedded. |
-| `message` | string / UTF-8 bytes | Required human explanation, max 8192 bytes, redacted before write. |
-| `fields` | object / bounded metadata | Optional scalar values only, maximum 16 keys and 4 KiB encoded; deny secrets, paths with credentials, and unbounded payloads. |
-| `pid` | integer or null / process ID | Optional existing process metadata. |
-
-```json
-{"timestamp":"2026-11-01T10:00:00.000Z","level":"info","source":"eos","core":"eos","node_path":null,"event_code":"runtime_ready","run_id":"r-7c2a","correlation_id":null,"message":"EOS runtime ready","fields":{"state":"ready"},"pid":4242}
-```
-
-Read with `isos logs all --level info` or `GET /api/isos/v1/logs?source=all&limit=100`; use `next_cursor` to poll. One read is limited to 200 lines or 64 KiB; `rotated:true` means the cursor file was replaced and the UI must show that gap. Existing defaults are 256 KiB per file, two backups, 32 source files, and `info` minimum. New source files beyond that cap still appear in the unified stream. Never infer readiness from the startup log alone: `isos status --json` is authoritative live state.
-
-**Target ingestion algorithm:** validate source/level/length, attach the authenticated owner and run context, remove secret keys and credential-like values, bound fields, write one JSON line to source and unified streams, rotate under a lock, and return without blocking on a slow UI reader. A dropped or rejected event increments an observable counter; warning emission is rate-limited to avoid recursion. HTTP and CLI cursors apply display filtering after storage. Existing `log_append` remains a small owner-only compatibility entry point; future cross-core transport may add fields without requiring old callers to send them.
+The [P06 shared-event contract](events.md) owns the exact envelope, manager-session and deployment-run IDs, package provenance, child ingestion, sanitization and high-rate suppression. IsOS keeps private rotating source files and the unified `events.log`; the [local log API](local-api.md) retains its existing cursor and filter interface. Status remains authoritative for live readiness.
