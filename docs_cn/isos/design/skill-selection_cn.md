@@ -16,7 +16,11 @@ EOS 在目录变成可用前再次检查选中 manifest 与库内容。链接 pa
 
 ## 候选预检事务（目标设计）
 
-当前 `restart_processes_with_plan` 建立 `Supervisor` 与 R03 grant 后，先执行 `managers.remove(name)` 和 `active.supervisor.stop()`，EOS 随后才检查目录。新事务仅对非空选中 host 增加[私有候选预检](../interfaces/skill-selection_cn.md#候选-abi-预检目标设计尚未实现)。`preflight_packages` 仍负责图、P01/P04/P05 与选中进程规格。候选 `Supervisor` 拥有新 run ID 与 grant；探测期间不发布 run scope；探测自身不修改旧 manager 表项、子进程或日志范围。
+实现候选（2026-11-02）：`restart_processes_with_plan` 和首次 Run 现在创建尚未发布的候选 grant，调用所选 EOS 私有目录预检，解析封闭结果，并在发布 run scope 或停止旧子进程前复核选中字节及 grant。可检查的撤销路径和持久清理标记阻止清理不确定后的替换。实际启动时再次检查所选 EOS 程序、profile、选中文件、generation 和进程规格；EOS 独立重复准入。stub 进程测试覆盖清理环境、有效封闭拒绝、期限和进程组回收。18 个冻结用例仍是资格表；真实 EOS 双代重放和独立实现复核尚待完成。
+
+验证命令：`cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test --no-fail-fast`、`cargo build --all-targets`、`python3 tests/fixtures/skill_selection/preflight_cases.py`、`python3 tests/fixtures/skill_selection/check_cases.py`。通过的运行包含 213 个 Rust 单元测试、七个 CLI 指南测试、一个移除命令测试、九个 edge 测试及两个用例检查。完整输出在忽略的 `logs/test/20261102-r04-isos-candidate-preflight-impl/`。
+
+当前 `restart_processes_with_plan` 建立 `Supervisor` 与 R03 grant 后，先执行 `managers.remove(name)` 和 `active.supervisor.stop()`，EOS 随后才检查目录。新事务仅对非空选中 host 增加[私有候选预检](../interfaces/skill-selection_cn.md#候选-abi-预检isos-实现候选)。`preflight_packages` 仍负责图、P01/P04/P05 与选中进程规格。候选 `Supervisor` 拥有新 run ID 与 grant；探测期间不发布 run scope；探测自身不修改旧 manager 表项、子进程或日志范围。
 
 1. 在 deployment lock 下固定保存图字节和修订、选中 schema-2 leaf、manifest/generation 完整清单、精确选中 `aether-runtime` 文件及 feature、选中字节、P01 收据/发布/payload/库摘要、实际 `--node-types` 参数、secret 和进程规格。先按现状验证旧运行 grant，再准备候选 grant。`host-skill-abi-v2` feature 声明本身不是 ABI 准入。
 2. 用精确程序、EOS 私有预检参数、清理后的 manager 环境以及候选 verifier/选中文件启动探测。对进程组实施统一 90 秒墙钟期限、有界 stdout/stderr 收集和已确认回收。只解析一行封闭 JSON，逐项比对回显及有序库摘要。有效拒绝、无效输出、超时和清理不确定映射为四个固定 IsOS 代码；日志不出现原始输出或 guest 文本。

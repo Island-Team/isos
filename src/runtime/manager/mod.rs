@@ -154,12 +154,37 @@ fn log_prelaunch_failure(
                     .downcast_ref::<crate::control_grants::Diagnostic>()
                     .map(|d| (d.code, d.path.as_str()))
             })
+            .or_else(|| {
+                cause
+                    .downcast_ref::<crate::candidate_skill_preflight::Diagnostic>()
+                    .map(|d| (d.code, ""))
+            })
     });
     let mut fields = serde_json::Map::new();
     if let Some((code, path)) = diagnostic {
         fields.insert("diagnostic_code".into(), json!(code));
         if path.len() <= 256 && !path.chars().any(char::is_control) {
             fields.insert("diagnostic_path".into(), json!(path));
+        }
+    }
+    if let Some(probe) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<crate::candidate_skill_preflight::Diagnostic>())
+    {
+        fields.insert("active_revision".into(), json!(probe.meta.revision));
+        fields.insert("generation".into(), json!(probe.meta.generation));
+        fields.insert("candidate_run_id".into(), json!(probe.meta.run_id));
+        if let Some(stage) = probe.eos_stage {
+            fields.insert("eos_stage".into(), json!(stage));
+        }
+        if let Some(code) = probe.eos_code {
+            fields.insert("eos_code".into(), json!(code));
+        }
+        if let Some(id) = &probe.meta.package_id {
+            fields.insert("package_id".into(), json!(id));
+        }
+        if let Some(version) = &probe.meta.package_version {
+            fields.insert("package_version".into(), json!(version));
         }
     }
     let _ = logs.append_event_context(
@@ -307,6 +332,7 @@ fn restart_processes_with_plan(
     plan: &crate::generated_v2::SecretPlan,
     managed: bool,
 ) -> Result<Vec<String>> {
+    check_candidate_cleanup_marker(paths, name)?;
     if managed {
         crate::control_grants::validate_plan(specs)?;
     }
@@ -319,11 +345,24 @@ fn restart_processes_with_plan(
         .get(name)
         .map(|active| crate::generated_v2::secret_plan(&active.supervisor.specs()))
         .transpose()?;
+    let candidate_inputs = if managed {
+        crate::candidate_skill_preflight::Inputs::collect(paths, name, revision, specs)?
+    } else {
+        None
+    };
     let mut supervisor = process::Supervisor::new(paths, name)?;
     if managed {
         supervisor.prepare_control_grants(revision)?;
     }
     let candidate_run = supervisor.run_id().to_owned();
+    probe_candidate(
+        paths,
+        name,
+        revision,
+        specs,
+        candidate_inputs,
+        &mut supervisor,
+    )?;
     let previous = managers.remove(name).map(|mut active| {
         let old_specs = active.supervisor.specs();
         active.supervisor.stop();
@@ -426,6 +465,71 @@ fn restart_processes_with_plan(
     Ok(started)
 }
 
+fn check_candidate_cleanup_marker(paths: &config::Paths, name: &str) -> Result<()> {
+    ensure!(
+        !paths
+            .runtime
+            .join(format!("{name}.skill-candidate-cleanup-unconfirmed"))
+            .exists(),
+        "skill catalog preflight cleanup unconfirmed; repair private candidate state before retry"
+    );
+    Ok(())
+}
+
+fn probe_candidate(
+    paths: &config::Paths,
+    name: &str,
+    revision: &str,
+    specs: &[process::ProcessSpec],
+    inputs: Option<crate::candidate_skill_preflight::Inputs>,
+    supervisor: &mut process::Supervisor,
+) -> Result<()> {
+    let Some(inputs) = inputs else {
+        return Ok(());
+    };
+    let candidate_run = supervisor.run_id().to_owned();
+    let probe = supervisor.candidate_verifier().and_then(|verifier| {
+        crate::candidate_skill_preflight::run(&inputs, &candidate_run, &verifier)
+            .map_err(anyhow::Error::new)
+    });
+    let gate = probe.and_then(|()| {
+        let fresh = preflight_packages(
+            paths,
+            name,
+            &fs::read_to_string(paths.node_graph_path(name))?,
+            revision,
+        )?;
+        inputs.recheck(paths, name, &fresh)?;
+        supervisor.verify_control_grants(true)?;
+        ensure!(
+            format!("{specs:?}") == format!("{fresh:?}"),
+            "selected process specs changed"
+        );
+        Ok(())
+    });
+    if let Err(error) = gate {
+        let unconfirmed = error.chain().any(|cause| {
+            cause
+                .downcast_ref::<crate::candidate_skill_preflight::Diagnostic>()
+                .is_some_and(|d| d.code == "skill_catalog_preflight_cleanup_unconfirmed")
+        });
+        if supervisor.retire_candidate_grants().is_err() || unconfirmed {
+            let marker = paths
+                .runtime
+                .join(format!("{name}.skill-candidate-cleanup-unconfirmed"));
+            let _ = crate::config::atomic_write(&marker, b"candidate cleanup requires repair\n");
+            return Err(anyhow::Error::new(inputs.diagnostic(
+                &candidate_run,
+                "skill_catalog_preflight_cleanup_unconfirmed",
+                None,
+            )));
+        }
+        return Err(error);
+    }
+    supervisor.set_candidate_skill_inputs(inputs);
+    Ok(())
+}
+
 fn start_prepared_processes(
     paths: &config::Paths,
     managers: &mut Deployments,
@@ -435,6 +539,7 @@ fn start_prepared_processes(
     plan: &crate::generated_v2::SecretPlan,
     managed: bool,
 ) -> Result<(Vec<String>, String)> {
+    check_candidate_cleanup_marker(paths, name)?;
     if managed {
         crate::control_grants::validate_plan(specs)?;
     }
@@ -449,11 +554,24 @@ fn start_prepared_processes(
         );
         active.supervisor.verify_specs(specs)?;
     } else {
+        let candidate_inputs = if managed {
+            crate::candidate_skill_preflight::Inputs::collect(paths, name, revision, specs)?
+        } else {
+            None
+        };
         let supervisor = process::Supervisor::new(paths, name)?;
         let mut supervisor = supervisor;
         if managed {
             supervisor.prepare_control_grants(revision)?;
         }
+        probe_candidate(
+            paths,
+            name,
+            revision,
+            specs,
+            candidate_inputs,
+            &mut supervisor,
+        )?;
         publish_run_scope(&supervisor)?;
         log_deployment(
             paths,
@@ -889,6 +1007,16 @@ pub(crate) fn handle_client(
                                 .map(|diagnostic| json!({"diagnostics":[diagnostic]}))
                         })
                         .or_else(|| {
+                            cause
+                                .downcast_ref::<crate::candidate_skill_preflight::Diagnostic>()
+                                .map(|diagnostic| {
+                                    json!({"diagnostics":[{
+                                        "code":diagnostic.code,"stage":diagnostic.stage,
+                                    "path":"","message":diagnostic.message
+                                    }]})
+                                })
+                        })
+                        .or_else(|| {
                             cause.downcast_ref::<ScopePublishFailure>().map(|_| json!({
                                 "diagnostics":[{"path":"/run_id","code":"log_scope_publish_failed",
                                     "message":"Log scope publication failed"}]
@@ -1112,6 +1240,125 @@ mod restart_tests {
     use super::*;
     use std::net::Shutdown;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn rejected_candidate_preserves_old_pid_grants_and_run_scope() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = config::Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        paths.prepare().unwrap();
+        let old_script = temp.path().join("old.sh");
+        fs::write(&old_script, "#!/bin/sh\nexec sleep 10\n").unwrap();
+        fs::set_permissions(&old_script, fs::Permissions::from_mode(0o700)).unwrap();
+        let old_spec = process::ProcessSpec {
+            id: "old".into(),
+            path: "isos/process/component/old".into(),
+            settings: serde_json::from_value(
+                json!({"command":[old_script],"start_timeout_ms":1000}),
+            )
+            .unwrap(),
+            package: None,
+            fingerprint: None,
+        };
+        let revision = "c".repeat(64);
+        let mut old = process::Supervisor::new(&paths, "test").unwrap();
+        old.prepare_control_grants(&revision).unwrap();
+        old.publish_run_scope().unwrap();
+        old.start(&[old_spec]).unwrap();
+        let old_run = old.run_id().to_owned();
+        let old_pid = old.status().unwrap()[0].pid;
+        let old_grants = paths.runtime.join(format!("control-grants/test/{old_run}"));
+        let mut managers = Deployments::new();
+        managers.insert(
+            "test".into(),
+            ActiveDeployment {
+                active_revision: revision.clone(),
+                managed: true,
+                supervisor: old,
+                last_error: None,
+                expected_processes: 1,
+            },
+        );
+        let probe_script = temp.path().join("reject.sh");
+        fs::write(&probe_script, "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"ok\":false,\"stage\":\"selection\",\"code\":\"selection_invalid\"}'\nexit 1\n").unwrap();
+        fs::set_permissions(&probe_script, fs::Permissions::from_mode(0o700)).unwrap();
+        let inputs = crate::candidate_skill_preflight::Inputs::rejection_stub(probe_script);
+        let mut candidate = process::Supervisor::new(&paths, "test").unwrap();
+        candidate.prepare_control_grants(&revision).unwrap();
+        let candidate_grants = paths
+            .runtime
+            .join(format!("control-grants/test/{}", candidate.run_id()));
+        let error = probe_candidate(&paths, "test", &revision, &[], Some(inputs), &mut candidate)
+            .unwrap_err();
+        let diagnostic = error
+            .downcast_ref::<crate::candidate_skill_preflight::Diagnostic>()
+            .unwrap();
+        assert_eq!(diagnostic.code, "skill_catalog_preflight_rejected");
+        assert_eq!(diagnostic.eos_code, Some("selection_invalid"));
+        assert_eq!(diagnostic.meta.package_version.as_deref(), Some("1"));
+        assert!(!candidate_grants.exists());
+        assert!(old_grants.exists());
+        assert_eq!(
+            managers
+                .get_mut("test")
+                .unwrap()
+                .supervisor
+                .status()
+                .unwrap()[0]
+                .pid,
+            old_pid
+        );
+        assert_eq!(managers["test"].supervisor.run_id(), old_run);
+        assert_eq!(
+            log_store::LogStore::new(&paths, "test")
+                .unwrap()
+                .run_identity()
+                .0
+                .as_deref(),
+            Some(old_run.as_str())
+        );
+        managers.get_mut("test").unwrap().supervisor.stop();
+    }
+
+    #[test]
+    fn uncertain_candidate_grant_cleanup_blocks_another_replacement() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = config::Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        paths.prepare().unwrap();
+        let script = temp.path().join("tamper.sh");
+        fs::write(&script, "#!/bin/sh\n/bin/chmod 644 \"$EOS_CONTROL_GRANTS_FILE\"\nprintf '%s\\n' '{\"schema_version\":1,\"ok\":false,\"stage\":\"selection\",\"code\":\"selection_invalid\"}'\nexit 1\n").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        let inputs = crate::candidate_skill_preflight::Inputs::rejection_stub(script);
+        let mut candidate = process::Supervisor::new(&paths, "test").unwrap();
+        candidate.prepare_control_grants(&"c".repeat(64)).unwrap();
+        let verifier = candidate.candidate_verifier().unwrap();
+        let error = probe_candidate(
+            &paths,
+            "test",
+            &"c".repeat(64),
+            &[],
+            Some(inputs),
+            &mut candidate,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<crate::candidate_skill_preflight::Diagnostic>()
+                .unwrap()
+                .code,
+            "skill_catalog_preflight_cleanup_unconfirmed"
+        );
+        assert!(check_candidate_cleanup_marker(&paths, "test").is_err());
+        fs::set_permissions(&verifier, fs::Permissions::from_mode(0o600)).unwrap();
+        candidate.retire_candidate_grants().unwrap();
+    }
 
     #[test]
     fn writable_selected_skill_rejects_restart_before_old_process_stops() {

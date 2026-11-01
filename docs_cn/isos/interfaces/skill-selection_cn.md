@@ -33,11 +33,11 @@ IsOS 拥有并发布同时含已有 `env_from` 和新 `skill_libraries` 的 `@v0
 
 `active_revision` 等于保存图字节及 P04 manifest 的 `revision`，不同于 EOS projection 摘要。文件不含 `generation`，因为 P04 generation 本身包含最终文件哈希；leaf 路径和 manifest 提供 generation。空列表不生成该文件，选中 leaf 中意外出现该文件应失败。只有列表非空时，选中的 `aether-runtime --capabilities` 必须声明精确 `host-skill-abi-v2`；缺失则在 Apply、Run/Restart 停止旧子进程或执行 guest 前返回 P05 `reader_feature_unsupported`。IsOS 只向选中的 EOS 子进程注入 `EOS_SKILL_SELECTION_FILE=<选中文件绝对路径>`，其他子进程清除继承值；作者设置的冲突值或保留参数在停止旧运行前失败。R03 的角色 grant 独立存在。
 
-Run/Restart 在停止旧子进程之前重新检查保存图、V2 selection 与 marker、完整 manifest、P01 pin、库摘要和 EOS feature。当前 IsOS 路径仍在 EOS 检查候选 ABI 前停止旧子进程；下节是待实现的替换设计。缺失、变更、未列出、不安全或 revision 错误的选择失败，并保留当前 PID、run ID、active revision 与 grant。G03 和旧 flat 快照不能启用该选择。相同图 revision 的包或二进制变更需要再次 Apply 来选择新 generation，再显式 Restart 才生效。自动 EOS 子进程重启沿用同一次运行的文件和 grant；Stop 在子进程回收后撤销 R03 grant。
+Run/Restart 在停止旧子进程之前重新检查保存图、V2 selection 与 marker、完整 manifest、P01 pin、库摘要和 EOS feature。IsOS 实现候选现在于停止旧子进程前检查所选 ABI；独立实现复核和真实 EOS 重放尚待完成。缺失、变更、未列出、不安全或 revision 错误的选择失败，并保留当前 PID、run ID、active revision 与 grant。G03 和旧 flat 快照不能启用该选择。相同图 revision 的包或二进制变更需要再次 Apply 来选择新 generation，再显式 Restart 才生效。自动 EOS 子进程重启沿用同一次运行的文件和 grant；Stop 在子进程回收后撤销 R03 grant。
 
 EOS 在 worker 查询前独立验证 manifest、文件、revision、摘要和路径。对于链接包，EOS 以 nofollow 打开精确文件，从同一打开句柄计算摘要并复制到 EOS 私有只读暂存文件；受限 worker 只加载该副本。无效 ABI、描述符或不支持的已声明 callback 类别在 handler 调用前失败；handler 运行时请求未声明 primitive 则由 Broker 在 Dispatcher release 前拒绝。IsOS 与 EOS 的两次检查均不可省略。
 
-## 候选 ABI 预检（目标设计，尚未实现）
+## 候选 ABI 预检（IsOS 实现候选）
 
 IsOS deployment manager 是调用方，选中的 EOS `aether-runtime` 是被调用方与 ABI 检查所有者。传输是 manager 直接子进程和 stdout 上一行 JSON。非空受监管技能选择完成 P01/P04/P05、进程规格检查后，必须在 `managers.remove(name)`、停止旧子进程、发布候选 run scope 或 `deployment_starting` 前执行。空选择沿用现有路径，不获得可执行 host 目录；未经验证的包、图或能力不能绕过此门槛。
 
