@@ -110,6 +110,8 @@ IsOS reads [config/isos.toml](../../../config/isos.toml) from its source checkou
 | `paths.ui_dist` | path string | Prebuilt IsosUI `dist/local` bundle with manifest; relative to IsOS checkout | `ISOSUI_DIST_DIR` |
 | `paths.aether_bin_dir` | path string | One prebuilt Aether Rust executable directory; relative to IsOS checkout | `ISOS_AETHER_BIN_DIR` |
 | `paths.egia_bin_dir` | path string | One EGIA launcher directory containing `egia-config` and `egia`; relative to IsOS checkout | `ISOS_EGIA_BIN_DIR` |
+| `paths.egia_defaults_dir` (P04 target) | path string | Complete selected installed EGIA `etc/egia` tree, required when EGIA is enabled; relative to IsOS checkout, then content verified and copied into the selected generation | `ISOS_EGIA_DEFAULTS_DIR` |
+| `paths.egia_factory_defaults_dir` (P04 target) | path string | EGIA's selected installed `share/defaults/egia` tree, required when EGIA is enabled and verified against the actual launcher fallback; relative to IsOS checkout | `ISOS_EGIA_FACTORY_DEFAULTS_DIR` |
 | `paths.mujoco_root` | path string | Optional MuJoCo runtime root; relative to IsOS checkout | `MUJOCO_ROOT` |
 | `deployment.name` | slug string | Default graph/log namespace; validated deployment name | `ISOS_DEPLOYMENT` |
 | `logging.max_bytes` | integer bytes | Rotation threshold, 65,536–100,000,000; default 262,144 | `ISOS_LOG_MAX_BYTES` |

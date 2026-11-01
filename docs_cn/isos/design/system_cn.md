@@ -65,7 +65,17 @@ G01–G02 读取切片只准入精确注册的旧类型身份，按 JSON 指针�
 
 新写入器以 `data/generated/<deployment>/<saved-revision>/` 作为 `0.1.0` 的不可变查找键；Run 和 Restart 校验其清单，并将经验证的 `eos/graph.json` 代入 EOS runtime 与 config-server 的 `--profile` 启动参数，不修改保存的 `settings.args`。它们不跟随可变的 `current` 指针或旧平面生成目录。旧平面的 `core-setup/launch-inputs.json` 只为 `1.0.0` 兼容保留。Init 和缺失图 GET 生成 `0.1.0` 初始图；修改新版本的 PUT 和 CLI Apply 使用相同的修订比较交换引擎。按归属方分区的校验器使用 IsOS 自有进程定义、EOS setup 投影、EGIA setup 与 IsOS 整图连线校验，不把 IsOS `@v0.1` 节点交给 EOS 整图 profile 校验。
 
-Run 和 Restart 还会将每个已保存的生成文件与根据精确已保存图重新执行的归属方 render 比较。即使文件和清单摘要一起被修改，也会拒绝启动。重新构建核心程序后，快照中的启动输入会过期。`isos init` 报告过期的输入并保留不可变快照；须恢复固定的程序，或创建新的图修订并 Apply。对未修改图字节刷新快照所需的独立生成身份留待 P04/P05。
+Run 和 Restart 还会将每个已保存的生成文件与根据精确已保存图重新执行的归属方 render 比较。即使文件和清单摘要一起被修改，也会拒绝启动。重新构建核心程序后，快照中的启动输入会过期。`isos init` 报告过期的输入并保留不可变快照。P04 目标增加独立生成身份，使显式且经过修订检查的 Apply 能在图字节不变时选择新的已验证输入；字段与诊断由[配置契约](../interfaces/configuration_cn.md#p04-生成配置与启动预检目标)归属。
+
+### P04 生成配置设计（目标）
+
+当前 `core_setup` 适配器调用产生 EOS `graph.json` 和 EGIA 的三个托管覆盖文件，却不复制 EGIA 其他启动文件。EGIA 读取器会从配置根目录加载模型、提示、任务、安全闸及模式／配置文件，还可能合并已安装的工厂回退配置。P04 选择一个已安装 EGIA 发行版，在不跟随链接的情况下遍历已配置的 `etc/egia` 和 `share/defaults/egia` 目录。它复制组件默认文件，仅覆盖三个由 EGIA 归属方渲染的文件；工厂目录作为列入清单、启动前复查的输入，其选定路径须与启动程序实际回退路径相同。它检查有效启动文件集合，在发布前拒绝冲突、缺失、来源变更及路径逃逸。在 EOS 发布完整 gRPC 网关之前，同 schema 的 EGIA 桩适配器足以测试此边界；本工作不宣称 EGIA 已能启动就绪。
+
+生成输入是规范排序的清单，包含精确保存图字节、所选程序路径与摘要、P01 已验证软件包收据、EGIA 默认摘要及最终归属方渲染文件摘要。摘要命名 `data/generated/<name>/v2/<revision>/` 下的不可变末级目录。原子 `selection.json` 为已保存修订选择一个目录。图字节和输入清单不变时 Apply 幂等；已安装输入改变时，须显式 Apply 才选择新的目录，旧目录保留。旧版平面与 G03 仅修订快照仍可读取，无需迁移。生成输出不写入源码仓库。
+
+Validate 只在内存构造候选字节。Apply 取得最终锁后重查精确修订、已安装输入和归属方渲染，写入私有暂存文件与清单、同步并重命名末级目录，最后才修改选择记录。Run 和 Restart 校验所选目录、重新执行归属方渲染、检查已安装输入未变，并且只在目标子进程即将启动时解析所需密钥引用。预检失败返回脱敏错误码，保持活动状态和已选生成版本。EGIA 同时通过 `EGIA_ETC` 和 `--etc` 接收选中的 `egia/` 根目录；外部工厂回退配置不得改变有效值。P05 单独负责实际图／类型／功能支持集合的比较和兼容发行版建议，不属于 P04 文件完整性范围。
+
+P04 契约冻结了[19 个机器可检查用例](../../../tests/fixtures/generated_config_preflight/README_cn.md)。仅设计阶段的基线通过 `python3 -m json.tool tests/fixtures/generated_config_preflight/cases.json`、`cargo fmt --check`、`cargo clippy --all-targets --no-default-features -- -D warnings` 和 `cargo test --no-default-features`（102 个单元、5 个 CLI、1 个已移除命令、9 个连线测试）。完整本机输出与命令位于忽略的 `logs/test/20261101-p04-contract-design/`。这些夹具不宣称 P04 已实现或 EGIA 运行时已就绪。
 
 G03 实现证据（2026-11-01）：使用 `/home/ashex/projects/Island-eos/target/debug` 中的 EOS `fb57a0c5` 调试程序，以及 `logs/test/2026-11-01-g03/` 下的新 `ISOS_HOME` 目录，`cargo fmt --all -- --check`、`cargo clippy --all-targets --no-default-features -- -D warnings` 和 `cargo test --all-targets` 均通过（87 个单元测试及 5 个 CLI 测试）。CLI 重放执行 `isos config init`，预览已保存的 1.0 图（`can_apply:true`），用两个摘要提交，随后 `isos run` 在迁移后的活动修订号下启动 EOS、bridge 和 config；`isos version check --json` 显示 EOS 就绪。重复提交过期来源失败，保存字节不变。HTTP 重放依次调用 `GET /api/isos/v1/node-graph`、POST `/node-graph/migration/preview`、POST `/node-graph/migration/apply` 及重复的过期 POST：首次提交返回 0.1，重复请求返回 409，前后 SHA-256 相同。回归测试覆盖同时篡改投影和清单、跨 core 输入的精确路径、未知 core／旧 UI／类型位置拒绝、PUT 缺失修订号、精确软件包及适配器 pin 保留、Init 不可变行为及已保存 0.1 图的可编辑性。完整命令与输出位于 `logs/test/2026-11-01-g03/`。
 

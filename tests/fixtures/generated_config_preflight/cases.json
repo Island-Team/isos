@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "owner": "isos",
+  "slice": "P04",
+  "required_egia_files": [
+    "egia/egia.toml",
+    "egia/modes.toml",
+    "egia/profiles/isos.toml",
+    "egia/models.toml",
+    "egia/prompts.toml",
+    "egia/missions.toml",
+    "egia/safety/gate.toml",
+    "egia/opt/sandbox.toml"
+  ],
+  "cases": [
+    {"id":"clean_home_stub", "operation":"apply_run", "mutation":"none", "expected":"selected_schema_2_generation", "active_unchanged_on_failure":true},
+    {"id":"same_inputs_idempotent", "operation":"apply", "mutation":"repeat_same_revision", "expected":"same_generation_and_bytes"},
+    {"id":"changed_binary_explicit_apply", "operation":"apply", "mutation":"replace_selected_binary", "expected":"new_generation_same_revision_old_leaf_unchanged"},
+    {"id":"changed_defaults_explicit_apply", "operation":"apply", "mutation":"replace_installed_models", "expected":"new_generation_same_revision_old_leaf_unchanged"},
+    {"id":"missing_prompts", "operation":"apply", "mutation":"remove_installed_prompts", "expected_code":"generated_missing_input", "expected_stage":"defaults", "expected_path":"", "active_unchanged_on_failure":true},
+    {"id":"missing_missions", "operation":"apply", "mutation":"remove_installed_missions", "expected_code":"generated_missing_input", "expected_stage":"defaults", "expected_path":"", "active_unchanged_on_failure":true},
+    {"id":"missing_safety_gate", "operation":"apply", "mutation":"remove_installed_safety_gate", "expected_code":"generated_missing_input", "expected_stage":"defaults", "expected_path":"", "active_unchanged_on_failure":true},
+    {"id":"factory_fallback_mismatch", "operation":"apply", "mutation":"configured_factory_root_differs_from_launcher", "expected_code":"generated_invalid_default", "expected_stage":"defaults", "expected_path":"", "active_unchanged_on_failure":true},
+    {"id":"factory_default_changed", "operation":"run_restart", "mutation":"change_installed_factory_default_after_apply", "expected_code":"generated_manifest_mismatch", "expected_stage":"snapshot", "expected_path":"", "active_unchanged_on_failure":true},
+    {"id":"missing_isos_profile", "operation":"apply", "mutation":"remove_rendered_isos_profile", "expected_code":"generated_missing_input", "expected_stage":"render", "expected_path":"", "active_unchanged_on_failure":true},
+    {"id":"default_symlink", "operation":"apply", "mutation":"symlink_installed_models_outside", "expected_code":"generated_unsafe_path", "expected_stage":"defaults", "expected_path":"", "active_unchanged_on_failure":true},
+    {"id":"overlay_escape", "operation":"apply", "mutation":"stub_renders_dotdot_path", "expected_code":"generated_unsafe_path", "expected_stage":"render", "expected_path":"", "active_unchanged_on_failure":true},
+    {"id":"owner_rejection", "operation":"apply", "mutation":"stub_rejects_graph", "expected_code":"generated_owner_rejected", "expected_stage":"render", "expected_path":"/cores/egia", "active_unchanged_on_failure":true},
+    {"id":"receipt_tamper", "operation":"run_restart", "mutation":"change_pinned_receipt_after_apply", "expected_code":"package_changed", "expected_stage":"manifest", "expected_path":"/cores/eos/layers/process/groups/mujoco/nodes/sim/package", "active_unchanged_on_failure":true},
+    {"id":"manifest_file_tamper", "operation":"run_restart", "mutation":"change_generated_file_only", "expected_code":"generated_manifest_mismatch", "expected_stage":"snapshot", "expected_path":"", "active_unchanged_on_failure":true},
+    {"id":"paired_manifest_tamper", "operation":"run_restart", "mutation":"change_generated_file_and_its_manifest_digest", "expected_code":"generated_render_mismatch", "expected_stage":"snapshot", "expected_path":"", "active_unchanged_on_failure":true},
+    {"id":"stale_selection", "operation":"run_restart", "mutation":"select_different_graph_revision", "expected_code":"generated_revision_mismatch", "expected_stage":"graph", "expected_path":"", "active_unchanged_on_failure":true},
+    {"id":"missing_child_secret", "operation":"run_restart", "mutation":"unset_required_env_from_source", "expected_code":"generated_missing_secret", "expected_stage":"spawn", "expected_path":"", "active_unchanged_on_failure":true},
+    {"id":"legacy_read_only", "operation":"run", "mutation":"safe_legacy_flat_snapshot", "expected":"legacy_path_without_rewrite"}
+  ]
+}
