@@ -317,10 +317,12 @@ class GeneratedConfigReplay(unittest.TestCase):
         revision, first_generation, first_leaf = self.case.selected()
         first_manifest = (first_leaf / "manifest.json").read_bytes()
         graph_bytes = self.case.graph_path.read_bytes()
+        self.case.start_server()
 
         models = component / "models.toml"
         models.write_text("enabled = false\n")
-        self.case.apply()
+        status, reply = self.case.http_apply(json.loads(graph_bytes))
+        self.assertEqual(status, 200, reply)
         default_revision, default_generation, default_leaf = self.case.selected()
         self.assertEqual(default_revision, revision)
         self.assertNotEqual(default_generation, first_generation)
@@ -329,7 +331,8 @@ class GeneratedConfigReplay(unittest.TestCase):
 
         executable = self.case.root / "egia-install/bin/egia"
         executable.write_text("#!/bin/sh\n# changed verified executable\nexit 0\n")
-        self.case.apply()
+        status, reply = self.case.http_apply(json.loads(graph_bytes))
+        self.assertEqual(status, 200, reply)
         binary_revision, binary_generation, binary_leaf = self.case.selected()
         self.assertEqual(binary_revision, revision)
         self.assertNotIn(binary_generation, (first_generation, default_generation))
