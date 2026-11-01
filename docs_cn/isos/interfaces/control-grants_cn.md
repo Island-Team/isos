@@ -40,4 +40,4 @@ EOS 仅在**同时**收到所选 IsOS `v2/<revision>/<generation>/eos/graph.json
 
 发布验证时，使用干净的 `ISOS_HOME`、实际所选 EOS 和受监管 EGIA/bridge stub 重放[固定用例](../../../tests/fixtures/control_grants/README_cn.md)。检查文件权限、各子进程环境隔离、预检拒绝后的活动 PID 不变、运行轮换、同运行自动重启恢复、新运行旧授权拒绝、就绪前失败和脱敏日志。完整输出保存于 `logs/test/<run-id>/`；运行 IsOS 格式、严格 Clippy、测试与构建，以及 EOS R03 边界重放。授权测试不能证明 MuJoCo 实体运动；R05/R06 负责其 epoch fence 和 stop/reap 证据。
 
-使用 mock CXX 底盘绑定、IsOS `5c1cb278` 和 EOS 运行时代码 `607eb0a93824c9488d17d38c9785c44f87ca4934` 的本地 EOS/IsOS 重放已通过：已选 V2、私有授权包及按接收方传递、真实 gRPC 运动/Get、错误角色和过期修订拒绝、显式轮换、旧授权拒绝和停止后撤销。精确环境、命令和结果见[设计证据](../design/control-grants_cn.md#集成边界与测试)及忽略的 `logs/test/20261102-r03-cross-repo/mock-base-grpc-rotation.log`。R03 关闭前仍需合并已审查的 PR；MuJoCo 实体验证属于 R05/R06。
+使用 mock CXX 底盘绑定、IsOS `5c1cb278` 和 EOS 运行时代码 `607eb0a93824c9488d17d38c9785c44f87ca4934` 的本地 EOS/IsOS 重放已通过：已选 V2、私有授权包及按接收方传递、真实 gRPC 运动/Get、错误角色和过期修订拒绝、EGIA 与操作员授权各自轮换、旧授权拒绝和停止后撤销。精确环境、命令和结果见[设计证据](../design/control-grants_cn.md#集成边界与测试)及忽略的 `logs/test/20261102-r03-cross-repo/mock-base-grpc-pairwise.log`。R03 关闭前仍需合并已审查的 PR；MuJoCo 实体验证属于 R05/R06。
