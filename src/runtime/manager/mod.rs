@@ -1154,6 +1154,45 @@ pub(crate) fn bind_daemon(paths: &config::Paths) -> Result<UnixListener> {
     Ok(listener)
 }
 
+fn poll_deployments(paths: &config::Paths, managers: &mut Deployments) {
+    for (name, active) in managers.iter_mut() {
+        // A completed external Stop intentionally removes every child.  Its
+        // live terminal result is authoritative for the attached run loop;
+        // empty process snapshots must not be reclassified as provider loss.
+        if active.supervisor.terminal().is_some() {
+            continue;
+        }
+        if let Err(error) = active.supervisor.poll() {
+            if active.last_error.is_none() {
+                log_deployment(
+                    paths,
+                    name,
+                    active.supervisor.run_id(),
+                    "deployment_failed",
+                    "error",
+                );
+            }
+            active.last_error = Some(error.to_string());
+            tracing::error!(
+                event_code = "deployment_supervisor_failed",
+                "process supervisor: {error:#}"
+            );
+            eprintln!("process supervisor: {error:#}");
+        } else if active.supervisor.status_snapshot().len() < active.expected_processes
+            && active.last_error.is_none()
+        {
+            log_deployment(
+                paths,
+                name,
+                active.supervisor.run_id(),
+                "deployment_failed",
+                "error",
+            );
+            active.last_error = Some("a managed process exited".into());
+        }
+    }
+}
+
 pub(crate) fn daemon(
     paths: &config::Paths,
     deployment: &str,
@@ -1166,36 +1205,7 @@ pub(crate) fn daemon(
     let mut service_manager = services::ServiceManager::new(paths, deployment)?;
     println!("IsOS API listening on {}", paths.socket().display());
     while !INTERRUPTED.load(Ordering::SeqCst) {
-        for (name, active) in managers.iter_mut() {
-            if let Err(error) = active.supervisor.poll() {
-                if active.last_error.is_none() {
-                    log_deployment(
-                        paths,
-                        name,
-                        active.supervisor.run_id(),
-                        "deployment_failed",
-                        "error",
-                    );
-                }
-                active.last_error = Some(error.to_string());
-                tracing::error!(
-                    event_code = "deployment_supervisor_failed",
-                    "process supervisor: {error:#}"
-                );
-                eprintln!("process supervisor: {error:#}");
-            } else if active.supervisor.status_snapshot().len() < active.expected_processes
-                && active.last_error.is_none()
-            {
-                log_deployment(
-                    paths,
-                    name,
-                    active.supervisor.run_id(),
-                    "deployment_failed",
-                    "error",
-                );
-                active.last_error = Some("a managed process exited".into());
-            }
-        }
+        poll_deployments(paths, &mut managers);
         if let Err(error) = service_manager.poll() {
             tracing::error!(
                 event_code = "service_supervisor_failed",
@@ -1381,6 +1391,27 @@ mod restart_tests {
         .unwrap();
         assert_eq!(first["stopped"], json!(["stub"]));
         assert_eq!(first["terminal"]["outcome"], "confirmed");
+        // This is the daemon tick that an attached `isos run` can observe
+        // immediately after another client stops its deployment.
+        poll_deployments(&paths, &mut managers);
+        assert!(managers["test"].last_error.is_none());
+        let attached_status = api_call(
+            &paths,
+            &mut managers,
+            &mut services,
+            request("deployment_status"),
+        )
+        .unwrap();
+        assert_eq!(attached_status["state"], "stopped");
+        assert_eq!(attached_status["terminal"], first["terminal"]);
+        let logs = log_store::LogStore::new(&paths, "test").unwrap();
+        assert!(
+            logs.read("all", None, 100).unwrap()["lines"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|line| line["event_code"] != "deployment_failed")
+        );
         let second = api_call(
             &paths,
             &mut managers,
@@ -1410,6 +1441,44 @@ mod restart_tests {
         assert_eq!(status["state"], "degraded");
         assert_eq!(status["terminal"]["outcome"], "unknown");
         assert_eq!(status["terminal"]["reason_code"], "stop_interrupted");
+    }
+
+    #[test]
+    fn unexpected_provider_exit_still_fails_daemon_poll() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = config::Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        let spec = process::ProcessSpec {
+            id: "stub".into(),
+            path: "isos/process/component/stub".into(),
+            settings: serde_json::from_value(json!({"command":["/bin/sleep","0.4"]})).unwrap(),
+            package: None,
+            fingerprint: None,
+        };
+        let mut managers = Deployments::new();
+        restart_processes(&paths, &mut managers, "provider-exit", "a", &[spec]).unwrap();
+        std::thread::sleep(Duration::from_millis(450));
+        poll_deployments(&paths, &mut managers);
+        assert!(managers["provider-exit"].last_error.is_some());
+        assert!(managers["provider-exit"].supervisor.terminal().is_none());
+        let logs = log_store::LogStore::new(&paths, "provider-exit").unwrap();
+        assert!(
+            logs.read("all", None, 100).unwrap()["lines"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|line| line["event_code"] == "deployment_failed")
+        );
+        let (_, terminal) = stop_active(
+            &paths,
+            "provider-exit",
+            managers.get_mut("provider-exit").unwrap(),
+            false,
+        );
+        assert_eq!(terminal.outcome, "unknown");
     }
 
     #[test]
