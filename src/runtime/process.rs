@@ -893,7 +893,10 @@ pub fn catalog_base() -> Result<Value> {
 /// Installed releases outside this graph cannot contribute selector metadata.
 pub fn catalog_for_option_graph(paths: &Paths, graph: &Value) -> Result<Value> {
     if graph["version"] != "0.1.0" {
-        return catalog();
+        // Historical graphs expose only the three read-only collections from
+        // EOS's built-in registry. Unrelated installed releases cannot change
+        // those collections or make inspection fail on duplicate type IDs.
+        return catalog_base();
     }
     let mut sidecar = None;
     if let Some(nodes) = graph

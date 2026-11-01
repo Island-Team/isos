@@ -75,6 +75,26 @@ class NodeOptionsReplay(unittest.TestCase):
                           for key in ("code", "path", "stage")},
                          {"code": code, "path": path, "stage": stage})
 
+    def link_second_verified_release(self):
+        second = self.case.root / "bundle-second"
+        shutil.copytree(self.case.bundle, second)
+        descriptor = json.loads((second / "backend-v2.json").read_text())
+        descriptor["package"]["version"] = "0.1.2"
+        (second / "backend-v2.json").write_text(json.dumps(descriptor))
+        release = json.loads((second / "release.json").read_text())
+        release["version"] = "0.1.2"
+        release["release_url"] = release["release_url"].replace("v0.1.1", "v0.1.2")
+        for asset in release["assets"]:
+            asset["name"] = asset["name"].replace("v0.1.1", "v0.1.2")
+            asset["url"] = asset["url"].replace("v0.1.1", "v0.1.2")
+        for node in release["node_contributions"]["node_sets"][0]["nodes"]:
+            adapter = node["profile"].get("adapter")
+            if adapter and adapter.get("package", {}).get("id") == "island/mujoco-sim":
+                adapter["package"]["version"] = "0.1.2"
+        (second / "release.json").write_text(json.dumps(release))
+        self.case.command("pkg", "link", "island/mujoco-sim", "0.1.2", second,
+                          "--manifest", second / "release.json")
+
     def test_real_catalog_rows_get_revision_and_no_write(self):
         initial, graph = self.preview()
         data = self.options(graph)
@@ -171,24 +191,7 @@ class NodeOptionsReplay(unittest.TestCase):
 
     def test_second_verified_release_cannot_change_exact_process_options(self):
         initial, graph = self.case.init_link_preview()
-        second = self.case.root / "bundle-second"
-        shutil.copytree(self.case.bundle, second)
-        descriptor = json.loads((second / "backend-v2.json").read_text())
-        descriptor["package"]["version"] = "0.1.2"
-        (second / "backend-v2.json").write_text(json.dumps(descriptor))
-        release = json.loads((second / "release.json").read_text())
-        release["version"] = "0.1.2"
-        release["release_url"] = release["release_url"].replace("v0.1.1", "v0.1.2")
-        for asset in release["assets"]:
-            asset["name"] = asset["name"].replace("v0.1.1", "v0.1.2")
-            asset["url"] = asset["url"].replace("v0.1.1", "v0.1.2")
-        for node in release["node_contributions"]["node_sets"][0]["nodes"]:
-            adapter = node["profile"].get("adapter")
-            if adapter and adapter.get("package", {}).get("id") == "island/mujoco-sim":
-                adapter["package"]["version"] = "0.1.2"
-        (second / "release.json").write_text(json.dumps(release))
-        self.case.command("pkg", "link", "island/mujoco-sim", "0.1.2", second,
-                          "--manifest", second / "release.json")
+        self.link_second_verified_release()
         self.case.start_server()
         baseline = self.options(graph)["setting_options"]
         self.assertEqual(baseline, EXPECTED["expected"]["data"]["setting_options"])
@@ -311,7 +314,7 @@ sys.exit(result.returncode)
         self.assertEqual(options["data"]["graph_revision"], graph["data"]["revision"])
         legacy = (ROOT / "tests/fixtures/graph_compat/legacy_1_0_0.json").read_bytes()
         self.case.graph_path.write_bytes(legacy)
-        applied = self.case.home / "generated/default/core-setup/launch-inputs.json"
+        applied = self.case.home / "data/generated/default/core-setup/launch-inputs.json"
         applied.parent.mkdir(parents=True, exist_ok=True)
         applied.write_text("{}")
         status, graph = self.case.api("node-graph")
@@ -323,6 +326,37 @@ sys.exit(result.returncode)
         self.assertEqual(options["data"]["read_only"], graph["data"]["read_only"])
         self.assertEqual(options["data"]["setting_options"], [])
         self.assertEqual(self.case.graph_path.read_bytes(), legacy)
+
+    def test_two_installed_releases_leave_safe_legacy_get_read_only(self):
+        self.case.init_link_preview()
+        legacy = (ROOT / "tests/fixtures/graph_compat/legacy_1_0_0.json").read_bytes()
+        self.case.graph_path.write_bytes(legacy)
+        self.case.start_server()
+        applied = self.case.home / "data/generated/default/core-setup/launch-inputs.json"
+        applied.parent.mkdir(parents=True, exist_ok=True)
+        applied.write_text("{}")
+        status, before = self.case.api("node-options")
+        self.assertEqual(status, 200, before)
+        baseline = {key: before["data"][key] for key in
+                    ("adapter_families", "primitive_bindings", "targets")}
+        self.assertTrue(all(isinstance(value, list) for value in baseline.values()))
+        self.assertEqual(before["data"]["setting_options"], [])
+        self.assertTrue(before["data"]["read_only"])
+        status_before = self.case.status()
+        self.link_second_verified_release()
+        status, after = self.case.api("node-options")
+        self.assertEqual(status, 200, after)
+        self.assertEqual({key: after["data"][key] for key in baseline}, baseline)
+        self.assertEqual(after["data"]["setting_options"], [])
+        self.assertTrue(after["data"]["read_only"])
+        status, saved = self.case.api("node-graph")
+        self.assertEqual(status, 200, saved)
+        self.assertEqual(saved["data"]["revision"], digest(legacy))
+        self.assertEqual(after["data"]["graph_revision"], digest(legacy))
+        self.assertEqual(self.case.graph_path.read_bytes(), legacy)
+        status_after = self.case.status()
+        for key in ("saved_revision", "active_revision", "state", "processes"):
+            self.assertEqual(status_after[key], status_before[key])
 
 
 if __name__ == "__main__":
