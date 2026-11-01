@@ -794,7 +794,9 @@ mod tests {
         let paths = paths(temp.path());
         paths.prepare().unwrap();
         let graph = json!({"version":"0.1.0","robot":{},"cores":{}});
-        let graph_revision = revision(&serde_json::to_vec_pretty(&graph).unwrap());
+        let graph_bytes = serde_json::to_vec_pretty(&graph).unwrap();
+        let graph_revision = revision(&graph_bytes);
+        config::atomic_write(&paths.node_graph_path("default"), &graph_bytes).unwrap();
         let expected = vec![
             (
                 PathBuf::from("eos/graph.json"),
