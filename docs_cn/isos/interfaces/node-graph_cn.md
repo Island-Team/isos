@@ -79,7 +79,7 @@ IsOS 将已验证的可执行文件、场景路径和 MuJoCo 库路径传给 EOS
 | `node.label`、`node.description` | 字符串／— | 操作员可读实例标题与功能 | 必需；旧实例可有空说明，新实例说明不可空 | 保留原说明 |
 | `node.package`、`node.adapter.package` | `{id,version}`／精确版本 | IsOS 解析贡献类型或适配器 | 包贡献类型／适配器必需；ID 为 `namespace/name`，版本为数字 `x.y.z` | 改版本需 Apply |
 | `node.settings` | 对象／类型专用 | 类型所有者声明设置，IsOS 校验包选择器 | 无设置时空对象；未知设置按类型契约拒绝 | 可选新设置须有默认值 |
-| `node.inputs` | 端口名到来源或来源数组／— | 注册表校验有类型连接 | 无输入时空对象；来源解析到兼容输出且基数匹配 | 可选边元数据见下表 |
+| `node.inputs` | 端口名到来源或来源数组／— | 注册表校验有类型连接 | 无输入时空对象；来源解析到注册 `data_type` ID 完全相同的输出，且基数匹配；schema `x-unit` 注解不允许隐式换算 | 可选边元数据见下表 |
 | `node.references` | 规范路径字符串数组／— | 所有者声明非数据依赖 | 默认空；按类型要求存在且唯一 | 新引用不得增加执行器旁路 |
 | `node.adapter`、`capabilities`、`health_timing`、`observation`、`movement`、`frame_id`、`joint_names` | 类型专用对象／数组／字符串 | EOS 硬件配置 | 由 [EOS 硬件接口](https://github.com/Island-Team/Island-eos)（`docs/eos/interfaces/hardware.md`）定义；IsOS 不臆造硬件含义 | EOS 定义兼容默认值 |
 

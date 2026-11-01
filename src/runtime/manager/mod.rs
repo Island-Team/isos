@@ -11,8 +11,11 @@ use std::{
         fs::PermissionsExt,
         net::{UnixListener, UnixStream},
     },
-    sync::atomic::Ordering,
-    time::Duration,
+    sync::{
+        OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 mod protocol;
@@ -24,6 +27,56 @@ pub(crate) struct ActiveDeployment {
     last_error: Option<String>,
 }
 pub(crate) type Deployments = BTreeMap<String, ActiveDeployment>;
+
+pub(crate) fn manager_session_id() -> &'static str {
+    static SESSION: OnceLock<String> = OnceLock::new();
+    SESSION.get_or_init(|| {
+        format!(
+            "m{}-{:x}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        )
+    })
+}
+
+pub(crate) fn next_correlation_id() -> String {
+    static NEXT_CORRELATION: AtomicU64 = AtomicU64::new(1);
+    format!("p{}", NEXT_CORRELATION.fetch_add(1, Ordering::Relaxed))
+}
+
+fn log_package_load_failure(paths: &config::Paths, name: &str, error: &anyhow::Error) {
+    let Some(failure) = error.downcast_ref::<process::PackageLoadFailure>() else {
+        return;
+    };
+    if let Ok(logs) = log_store::LogStore::new(paths, name) {
+        let correlation = next_correlation_id();
+        let _ = logs.append_event_context(
+            "packages", "error", "package_load_failed",
+            "Deployment package load failed before launch",
+            log_store::LogContext {
+                run_id: Some(manager_session_id()),
+                correlation_id: Some(&correlation),
+                fields: json!({"package_id":failure.id,"package_version":failure.version,"stage":failure.stage}),
+            },
+        );
+    }
+}
+
+fn preflight_packages(
+    paths: &config::Paths,
+    name: &str,
+    source: &str,
+) -> Result<Vec<process::ProcessSpec>> {
+    let specs = process::project_with_packages(paths, source).inspect_err(|error| {
+        log_package_load_failure(paths, name, error);
+    })?;
+    core_setup::verify_launch_inputs(paths, name)?;
+    preflight::verify_processes(paths, &specs)?;
+    Ok(specs)
+}
 
 pub(crate) fn restart_processes(
     paths: &config::Paths,
@@ -215,8 +268,8 @@ pub(crate) fn api_call(
         }
         "deployment_restart" => {
             let path = paths.node_graph_path(&name);
-            process::validate_full_graph(&path)?;
             let source = fs::read_to_string(&path)?;
+            process::validate_full_graph(&path)?;
             let revision = starter::revision(&path)?;
             if let Some(expected) = request.revision.as_deref() {
                 ensure!(
@@ -224,9 +277,7 @@ pub(crate) fn api_call(
                     "saved graph revision changed; reload before restart"
                 );
             }
-            let specs = process::project_with_packages(paths, &source)?;
-            core_setup::verify_launch_inputs(paths, &name)?;
-            preflight::verify_processes(paths, &specs)?;
+            let specs = preflight_packages(paths, &name, &source)?;
             core_setup::prepare_run(paths, &name, &revision)?;
             ensure!(
                 starter::revision(&path)? == revision,
@@ -237,8 +288,8 @@ pub(crate) fn api_call(
         }
         "deployment_start" => {
             let path = paths.node_graph_path(&name);
-            process::validate_full_graph(&path)?;
             let source = fs::read_to_string(&path)?;
+            process::validate_full_graph(&path)?;
             let revision = starter::revision(&path)?;
             if let Some(expected) = request.revision.as_deref() {
                 ensure!(
@@ -246,9 +297,7 @@ pub(crate) fn api_call(
                     "saved graph revision changed; reload before run"
                 );
             }
-            let specs = process::project_with_packages(paths, &source)?;
-            core_setup::verify_launch_inputs(paths, &name)?;
-            preflight::verify_processes(paths, &specs)?;
+            let specs = preflight_packages(paths, &name, &source)?;
             core_setup::prepare_run(paths, &name, &revision)?;
             ensure!(
                 starter::revision(&path)? == revision,
@@ -587,6 +636,41 @@ pub(crate) fn service_call(
 #[cfg(test)]
 mod restart_tests {
     use super::*;
+
+    #[test]
+    fn typed_package_load_failure_records_exact_pin_and_session() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = config::Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        let failure = anyhow::Error::new(process::PackageLoadFailure {
+            id: "island/mujoco-sim".into(),
+            version: "0.1.1".into(),
+            stage: "backend",
+            source: anyhow::anyhow!("private path /tmp/secret"),
+        });
+        log_package_load_failure(&paths, "default", &failure);
+        log_package_load_failure(
+            &paths,
+            "default",
+            &anyhow::anyhow!("unrelated EOS binary missing"),
+        );
+        let lines = log_store::LogStore::new(&paths, "default")
+            .unwrap()
+            .read("packages", None, 10)
+            .unwrap();
+        assert_eq!(lines["lines"].as_array().unwrap().len(), 1);
+        let line = &lines["lines"][0];
+        assert_eq!(line["event_code"], "package_load_failed");
+        assert_eq!(line["fields"]["package_id"], "island/mujoco-sim");
+        assert_eq!(line["fields"]["package_version"], "0.1.1");
+        assert_eq!(line["fields"]["stage"], "backend");
+        assert_eq!(line["run_id"], manager_session_id());
+        assert!(line["correlation_id"].as_str().is_some());
+        assert!(!line.to_string().contains("/tmp/secret"));
+    }
 
     #[test]
     fn successful_graph_apply_clears_previous_setup_failure() {
