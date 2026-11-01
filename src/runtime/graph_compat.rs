@@ -123,6 +123,10 @@ fn diagnostic(path: String, code: &'static str, message: String) -> Diagnostic {
     }
 }
 
+fn pointer_segment(segment: &str) -> String {
+    segment.replace('~', "~0").replace('/', "~1")
+}
+
 /// Inspect a legacy graph without ever replacing its saved value or revision.
 pub fn legacy_projection(
     graph: &Value,
@@ -156,14 +160,16 @@ pub fn legacy_projection(
             {
                 for (node_id, node) in group["nodes"].as_object().expect("proposal checked nodes") {
                     let path = format!(
-                        "/cores/{core_id}/layers/{layer_id}/groups/{group_id}/nodes/{node_id}"
+                        "/cores/{}/layers/{}/groups/{}/nodes/{}",
+                        pointer_segment(core_id),
+                        pointer_segment(layer_id),
+                        pointer_segment(group_id),
+                        pointer_segment(node_id)
                     );
                     let source_type = node["node_type"].as_str().unwrap_or("");
-                    let candidate_type = proposal
-                        .graph
-                        .pointer(&format!("{path}/node_type"))
-                        .and_then(Value::as_str)
-                        .unwrap_or(source_type);
+                    let candidate_type = proposal.graph["cores"][core_id]["layers"][layer_id]
+                        ["groups"][group_id]["nodes"][node_id]["node_type"]
+                        .as_str().unwrap_or(source_type);
                     if let Some((expected_core, expected_layer, expected_group)) =
                         target_placement(candidate_type)
                         && (core_id.as_str(), layer_id.as_str(), group_id.as_str())
@@ -217,8 +223,8 @@ pub fn legacy_projection(
                     }
                     mappings.push(json!({"path":format!("{path}/node_type"),
                         "source_type":source_type,"candidate_type":candidate_type}));
-                    let projected_node =
-                        projected.pointer_mut(&path).expect("projected node exists");
+                    let projected_node = &mut projected["cores"][core_id]["layers"][layer_id]["groups"]
+                        [group_id]["nodes"][node_id];
                     let object = projected_node.as_object_mut().ok_or_else(|| {
                         diagnostic(
                             path.clone(),
@@ -629,6 +635,31 @@ mod tests {
         assert_eq!(a.defaults, b.defaults);
         assert_eq!(a.display_descriptions, b.display_descriptions);
         assert_ne!(a.source_revision, b.source_revision);
+    }
+
+    #[test]
+    fn legacy_projection_escapes_pointer_segments_without_panicking() {
+        let mut graph = parse(LEGACY).unwrap().value;
+        let nodes = graph["cores"]["eos"]["layers"]["dispatcher"]["groups"]["control"]["nodes"]
+            .as_object_mut()
+            .unwrap();
+        let mut node = nodes.remove("command").unwrap();
+        node["id"] = json!("command/~");
+        nodes.insert("command/~".into(), node);
+        let projection = legacy_projection(&graph, "revision", None)
+            .unwrap()
+            .unwrap();
+        let pointer = "/cores/eos/layers/dispatcher/groups/control/nodes/command~1~0/node_type";
+        assert_eq!(
+            projection.graph.pointer(pointer),
+            Some(&json!("eos.dispatcher.control@v1.0"))
+        );
+        assert!(
+            projection
+                .mappings
+                .iter()
+                .any(|mapping| mapping["path"] == pointer)
+        );
     }
 
     #[test]
