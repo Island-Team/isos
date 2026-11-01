@@ -68,17 +68,42 @@
       }
     },
     {
-      "id": "partial-descriptor-before-receipt",
+      "id": "partial-descriptor-direct-link",
       "mutation": {
         "op": "remove-descriptor-field-before-link",
         "path": "/device_catalog"
       },
       "expected": {
         "status": 422,
+        "operation": "POST /api/isos/v1/packages/link",
         "diagnostic": {
           "code": "mujoco_catalog_incomplete",
-          "path": "/cores/eos/layers/process/groups/mujoco/nodes/simulator/package",
+          "path": "",
           "stage": "descriptor"
+        },
+        "receipt_published": false
+      },
+      "invariants": {
+        "saved_bytes_unchanged": true,
+        "saved_revision_unchanged": true,
+        "active_revision_unchanged": true,
+        "children_unchanged": true
+      }
+    },
+    {
+      "id": "sealed-descriptor-tamper-after-options",
+      "mutation": {
+        "op": "modify-linked-descriptor-after-POST-options",
+        "path": "backend-v2.json",
+        "change": "remove /device_catalog"
+      },
+      "expected": {
+        "status": 422,
+        "operation": "PUT /api/isos/v1/node-graph",
+        "diagnostic": {
+          "code": "package_changed",
+          "path": "/cores/eos/layers/process/groups/mujoco/nodes/simulator/package",
+          "stage": "payload"
         }
       },
       "invariants": {
@@ -260,6 +285,30 @@
           "path": "/cores/eos/layers/process/groups/mujoco/nodes/simulator/package",
           "stage": "admission"
         }
+      },
+      "invariants": {
+        "saved_bytes_unchanged": true,
+        "saved_revision_unchanged": true,
+        "active_revision_unchanged": true,
+        "children_unchanged": true
+      }
+    },
+    {
+      "id": "path-like-selected-scene-id",
+      "mutation": {
+        "op": "replace",
+        "path": "/cores/eos/layers/process/groups/mujoco/nodes/simulator/settings/scene",
+        "value": "/tmp/secret.xml"
+      },
+      "expected": {
+        "status": 422,
+        "operation": "POST /api/isos/v1/node-options and PUT /api/isos/v1/node-graph",
+        "diagnostic": {
+          "code": "node_option_invalid_id",
+          "path": "/cores/eos/layers/process/groups/mujoco/nodes/simulator/settings/scene",
+          "stage": "admission"
+        },
+        "selected_value_not_echoed": true
       },
       "invariants": {
         "saved_bytes_unchanged": true,

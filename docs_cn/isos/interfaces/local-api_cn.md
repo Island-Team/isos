@@ -132,7 +132,7 @@ IsOS 在 `aether-profile setup --json` 或 `egia-config setup --json` 上发送 
 
 ## 发行目标：设置选项——尚未实现
 
-[P03 归属方契约](node-options_cn.md)定义新增 `setting_options` 分组、EOS 适配器嵌套选择器、精确固定版本解析、稳定的不可用原因及 Apply 前复查。[冻结夹具](../../../tests/fixtures/node_options/README.md)取代先前仅作说明的 `warehouse` 响应；该 ID 不在已验证的 MuJoCo `0.1.1` 目录中。原有三个响应集合保留。选择器响应不能授权 Apply。
+[P03 归属方契约](node-options_cn.md)定义新增 `setting_options` 分组、保存字节 `graph_revision` 关联、EOS 适配器嵌套选择器、稳定 ID 语法、精确固定版本解析、不可用原因及 Apply 前复查。[冻结夹具](../../../tests/fixtures/node_options/README.md)取代先前仅作说明的 `warehouse` 响应；该 ID 不在已验证的 MuJoCo `0.1.1` 目录中。原有三个响应集合保留。选择器响应不能授权 Apply。
 
 ## 支持版本身份
 

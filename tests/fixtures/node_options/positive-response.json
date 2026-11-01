@@ -126,7 +126,9 @@
             }
           ]
         }
-      ]
+      ],
+      "graph_revision": null,
+      "read_only": false
     },
     "error": null
   },

@@ -6,12 +6,14 @@
 
 ## 输入与输出
 
-`GET` 使用已保存图的原始字节；无图时使用可编辑的 `0.1.0` 初始草稿。`POST` 接收 `{"schema_version":1,"graph":{...}}`，不写入。两者按所提交图的版本和精确注册类型 ID 解析，不规范化或迁移保存字节。有效的 `0.1.0` 草稿可含不可用选项；接口仍返回 HTTP 200，便于编辑器修复。未知图版本、未知类型或无效选择器声明返回 HTTP 422，`data.diagnostics` 指向 `/version`、受影响的 `/node_type` 或注册设置路径。API JSON／schema 版本错误返回 HTTP 400。安全的 `1.0.0` 图保留原有三个响应集合；其确实注册的旧选择器可只读展示，但 P03 不虚构 `0.1.0` MuJoCo 目录，也不修改旧图字节。
+`GET` 使用已保存图的原始字节；无图时使用可编辑的 `0.1.0` 初始草稿。`POST` 接收 `{"schema_version":1,"graph":{...}}`，不写入。两者按所提交图的版本和精确注册类型 ID 解析，不规范化或迁移保存字节。有效的 `0.1.0` 草稿可含不可用选项；接口仍返回 HTTP 200，便于编辑器修复。未知图版本、未知类型或无效选择器声明返回 HTTP 422：分别以 `unsupported_graph_version` 指向 `/version`、`unsupported_node_type` 指向受影响的 `/node_type`，或以 P03 `node_option_selector_invalid` 指向注册设置 JSON Pointer。选择器错误的 `stage:"admission"`，不得信任未知提供者／资源组合。API JSON／schema 版本错误返回 HTTP 400。安全的 `1.0.0` 图保留原有三个响应集合；其确实注册的旧选择器可只读展示，但 P03 不虚构 `0.1.0` MuJoCo 目录，也不修改旧图字节。
 
-`data` 保留 `adapter_families`、`primitive_bindings`、`targets`，新增 `setting_options`；前三者的现有形状和旧版含义不变。新集合按 **`(node_path, setting)` 成对**分组，每个现存节点上受支持的选择器恰有一组。分组按 UTF-8 `node_path`、再按 `setting` 升序；候选项（含合成的已选值）按稳定 `value` 的 UTF-8 字节序排列。不得有重复分组或重复候选 ID。`node_path` 是不带前导斜杠的 `core/layer/group/node` 四段路径。公开的 `setting` 是 `scene` 等注册键，或明确由 IsOS 定义的嵌套键 `adapter.settings.device_id`、`adapter.settings.simulator_node`。诊断 JSON Pointer 使用 `/cores/<core>/layers/<layer>/groups/<group>/nodes/<node>`，每段均按 RFC 6901 转义。
+`data` 保留 `adapter_families`、`primitive_bindings`、`targets`，新增 `setting_options`、`graph_revision` 和 `read_only`。`GET` 的 `graph_revision` 是精确保存字节的 SHA-256（无图时为 `""`），`read_only` 与 `GET /node-graph` 一致；客户端比较两个 GET 修订号，不同则丢弃选项响应。`POST` 处理解析后的草稿而非保存字节，因此 `graph_revision:null`；新 `0.1.0` 草稿的 `read_only:false`，客户端只接受该草稿最后一次未完成 POST 的响应。已应用的安全旧图 GET 为 `read_only:true`。前三者的现有形状和旧版含义不变；新集合按 **`(node_path, setting)` 成对**分组，每个现存节点上受支持的选择器恰有一组。分组按 UTF-8 `node_path`、再按 `setting` 升序；候选项（含合成的已选值）按稳定 `value` 的 UTF-8 字节序排列。不得有重复分组或重复候选 ID。`node_path` 是不带前导斜杠的 `core/layer/group/node` 四段路径。公开的 `setting` 是 `scene` 等注册键，或明确由 IsOS 定义的嵌套键 `adapter.settings.device_id`、`adapter.settings.simulator_node`。诊断 JSON Pointer 使用 `/cores/<core>/layers/<layer>/groups/<group>/nodes/<node>`，每段均按 RFC 6901 转义。
 
 | 字段 | JSON 类型／单位 | 用途与校验 |
 | --- | --- | --- |
+| `graph_revision` | 字符串或 null／SHA-256 | GET 返回精确保存字节修订，无图时为空字符串，POST 草稿为 null；与 `GET /node-graph` 关联。 |
+| `read_only` | 布尔值／— | GET 表示保存图是否只读；POST 新草稿为 false，安全旧图检查为 true。 |
 | `setting_options` | 数组／— | 图中完整且有序的选择器分组；无选择器时为 `[]`。 |
 | `setting_options[].node_path` | 字符串／四段路径 | 精确实例身份；四段均不可空。 |
 | `setting_options[].setting` | 字符串／点分设置键 | 精确注册或内建选择器身份；必需。 |
@@ -21,10 +23,10 @@
 | `options[].label` | 字符串／展示文本 | 已验证描述文件的非空名称，或经过转义且限制长度的已保存 ID。 |
 | `options[].description` | 字符串／展示文本 | 已验证描述文件的非空说明，或长度受限的修复说明。 |
 | `options[].available` | 布尔值／— | 资源在当前草稿上下文及精确固定版本下是否合格；不表示其他图字段均有效。 |
-| `options[].reason_code` | 字符串或 null／— | 不可用时稳定的 P01／P02 代码；可用时为 null。 |
+| `options[].reason_code` | 字符串或 null／— | 不可用时稳定的 P01／P02 代码，或 EOS 适配器未编译时的 P03 `adapter_unavailable`；可用时为 null。 |
 | `options[].reason` | 字符串或 null／展示文本 | 不可用时经过清理的修复动作；可用时为 null。不得含本地路径、XML、环境值或收据正文。 |
 
-即使包缺失、变化或只有旧描述文件，仍展示不可用的已选 ID。合成行保持精确 `value`，用经过转义且限长的标签、`description:"Saved value is not in the verified catalog"`、`available:false` 和原因代码。文件名、绝对路径、可执行程序路径、`MUJOCO_ROOT` 值及软件包 sidecar 都不能作为选项 ID。缺失或格式错误的已选值仍须由图校验拒绝；非字符串值不得强制转换成 ID。选项行只可缓存到产生它的精确草稿请求。客户端在发送更新的草稿请求后丢弃旧响应；GET 响应属于 `GET /node-graph` 给出的保存修订。Apply 输入不接收选项响应或客户端缓存。
+P03 稳定选项 ID 为 1–128 个 ASCII 字节，匹配 `^[a-z0-9]+(?:-[a-z0-9]+)*$`；未来提供者若需其他 ID，须显式扩展契约。符合此语法但不在已验证目录中的非空已选 ID，即使包缺失、变化或只有旧描述文件仍保持可见。`/tmp/secret.xml` 等格式错误的已选值在其精确设置 JSON Pointer 返回 HTTP 422、`node_option_invalid_id`、`stage:"admission"`，不回显为合成选项。合成行保持精确 `value`，用经过转义且限长的标签、`description:"Saved value is not in the verified catalog"`、`available:false` 和原因代码。文件名、绝对路径、可执行程序路径、`MUJOCO_ROOT` 值及软件包 sidecar 都不能作为选项 ID。缺失或格式错误的已选值仍须由图校验拒绝；非字符串值不得强制转换成 ID。选项行只可缓存到产生它的精确草稿请求。客户端在发送更新的草稿请求后丢弃旧响应；GET 响应属于 `GET /node-graph` 给出的保存修订。Apply 输入不接收选项响应或客户端缓存。
 
 ## 提供者与 MuJoCo 选择器
 
@@ -34,19 +36,21 @@
 
 对于 `adapter.type:"mujoco-v2"` 的 EOS 通用 `eos.hardware.camera@v0.1`、`eos.hardware.base@v0.1`、`eos.hardware.manipulator@v0.1` 节点，IsOS 增加两个内建选择器分组：`adapter.settings.device_id` 与 `adapter.settings.simulator_node`。提供者是已验证的精确 `node.adapter.package`，并须与引用的 MuJoCo 进程 `node.package` 相同。进程引用由 `adapter.settings.backend` 指定，且须指向 `references` 中的节点；该进程的 `settings.scene` 决定场景适用性。候选项来自相应硬件类别的 `device_catalog[]`，使用稳定 `id`、`label`、`description`；若 `scene_ids` 不含当前场景则不可用。两组提供相同的候选 ID；编辑器选择时同时写入两个字段。外部包不能重定义这些 EOS 类型、位置、适配器 ABI 或安全路线。即使两个 ID 都存在，`device_id` 与 `simulator_node` 不等也在通用节点的 `/adapter/settings/device_id` 指针拒绝 Apply。
 
-精确固定版本缺失、未经验证或变化时，其选项不可用；已链接载荷变化优先报告 P01 `package_changed`。缺失的场景或设备以合成不可用行出现。改变场景或固定版本后，须从该草稿重新计算全部依赖设备行。主机 MuJoCo 库缺失时，目录行必须以 `mujoco_library_unavailable` 标为不可用，但不会把包路径变成选项值。EOS 未编译的适配器沿用现有 adapter-family 原因并保持不可用，包声明不能使其通过 Apply。每行可按 P01 收据、P02 描述文件、场景／设备适用性、运行库、EOS 适配器能力顺序说明首个阻塞原因；Apply 仍返回权威图诊断。
+精确固定版本缺失、未经验证或变化时，其选项不可用；已链接载荷变化优先报告 P01 `package_changed`。缺失的场景或设备以合成不可用行出现。改变场景或固定版本后，须从该草稿重新计算全部依赖设备行。主机 MuJoCo 库缺失时，目录行必须以 `mujoco_library_unavailable` 标为不可用，但不会把包路径变成选项值。EOS 未编译的适配器以 `reason_code:"adapter_unavailable"` 和现有经过清理的 adapter-family 原因保持不可用，包声明不能使其通过 Apply。Apply 在通用节点的 `/adapter/type`、`stage:"admission"` 返回 `adapter_unavailable`。每行可按 P01 收据、P02 描述文件、场景／设备适用性、运行库、EOS 适配器能力顺序说明首个阻塞原因；Apply 仍返回权威图诊断。
 
 ## Apply 与可观察错误
 
-`POST /node-options` 不要求保存图修订；`PUT /node-graph` 与 CLI Apply 必须提供。IsOS 在图锁内比较调用方期望的保存字节 SHA-256，然后在发布前重新执行 P01 精确固定版本验证、P02 目录和所选 ID 检查、通用适配器双字段／引用检查、归属方验证及生成配置预检。最终锁内重读软件包。过期选项响应不能授权旧选择；过期图修订返回 HTTP 409，沿用 `error:"node graph revision changed; reload before applying"`。包变化或所选值无效返回 HTTP 422，附 `data.diagnostics:[{code,path,message,id,version,stage}]`。Validate 在常规 `valid:false` 响应中返回同一诊断。拒绝时不改变保存字节、保存修订、活动修订或子进程。Run 与 Restart 在替换子进程前重复软件包及选择检查。
+`POST /node-options` 不要求保存图修订；`PUT /node-graph` 与 CLI Apply 必须提供。IsOS 在图锁内比较调用方期望的保存字节 SHA-256，然后在发布前重新执行 P01 精确固定版本验证、P02 目录和所选 ID 检查、通用适配器双字段／引用检查、归属方验证及生成配置预检。最终锁内重读软件包。过期选项响应不能授权旧选择；GET 客户端比较 `graph_revision` 与图响应，POST 客户端丢弃被更新请求取代的响应；过期图修订返回 HTTP 409，沿用 `error:"node graph revision changed; reload before applying"`。包变化或所选值无效返回 HTTP 422，附 `data.diagnostics:[{code,path,message,id,version,stage}]`。Validate 在常规 `valid:false` 响应中返回同一诊断。拒绝时不改变保存字节、保存修订、活动修订或子进程。Run 与 Restart 在替换子进程前重复软件包及选择检查。
 
-| Apply 条件 | 精确 `code`／`stage` | 精确图 JSON Pointer |
+| 直接链接或 Apply 条件 | 精确 `code`／`stage` | 精确 JSON Pointer |
 | --- | --- | --- |
 | 精确进程固定版本 `island/mujoco-sim@0.1.1` 缺失 | `package_missing_file`／`manifest` | `/cores/eos/layers/process/groups/mujoco/nodes/simulator/package` |
 | 已链接进程载荷或场景变化 | `package_changed`／`payload` | `/cores/eos/layers/process/groups/mujoco/nodes/simulator/package` |
-| 部分目标描述文件 | `mujoco_catalog_incomplete`／`descriptor` | `/cores/eos/layers/process/groups/mujoco/nodes/simulator/package` |
+| 直接链接软件包时目标描述文件不完整 | `mujoco_catalog_incomplete`／`descriptor` | `""`（无图路径，不发布收据） |
 | 选项视图过期后所选场景未知 | `mujoco_scene_unavailable`／`admission` | `/cores/eos/layers/process/groups/mujoco/nodes/simulator/settings/scene` |
 | 设备未知、类别错误、场景不适用、双字段不等、与进程不同但独立验证过的适配器固定版本或 backend 引用错误 | `mujoco_device_unavailable`／`admission` | `/cores/eos/layers/hardware/groups/<kind>/nodes/<id>/adapter/settings/device_id` |
+| 所选场景 ID 为路径等非法格式 | `node_option_invalid_id`／`admission` | `/cores/eos/layers/process/groups/mujoco/nodes/simulator/settings/scene` |
+| EOS 通用适配器未编译 | `adapter_unavailable`／`admission` | `/cores/eos/layers/hardware/groups/<kind>/nodes/<id>/adapter/type` |
 | 主机运行库缺失 | `mujoco_library_unavailable`／`admission` | `/cores/eos/layers/process/groups/mujoco/nodes/simulator/package` |
 
 适配器指针的 `kind` 与实例 `id` 使用实际值；[P02 契约](mujoco-catalog_cn.md#稳定诊断)还冻结场景／profile／摘要／设备故障，[P01](package-verification_cn.md)拥有收据诊断。若进程与适配器固定版本同时损坏，以 P01 的规范首个固定版本为准；选项接口的结果不能掩盖它。[P03 夹具](../../../tests/fixtures/node_options/README.md)冻结正例行、过期与负例、精确代码／路径／阶段及不写入不变量。

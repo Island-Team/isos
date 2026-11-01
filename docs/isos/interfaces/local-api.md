@@ -132,7 +132,7 @@ Build EOS, EGIA, and IsosUI in their owning repositories and configure their pat
 
 ## Release target: setting options — not implemented
 
-The [P03 owner contract](node-options.md) defines the additive `setting_options` groups, nested EOS adapter selectors, exact-pin resolution, stable availability reasons, and Apply-time recheck. Its [frozen fixtures](../../../tests/fixtures/node_options/README.md) replace the earlier illustrative `warehouse` response; that ID is not in the verified MuJoCo `0.1.1` catalog. The existing three response collections remain. A selector response never authorizes Apply.
+The [P03 owner contract](node-options.md) defines the additive `setting_options` groups, saved-byte `graph_revision` correlation, nested EOS adapter selectors, stable ID syntax, exact-pin resolution, availability reasons, and Apply-time recheck. Its [frozen fixtures](../../../tests/fixtures/node_options/README.md) replace the earlier illustrative `warehouse` response; that ID is not in the verified MuJoCo `0.1.1` catalog. The existing three response collections remain. A selector response never authorizes Apply.
 
 ## Supported-version identity
 
