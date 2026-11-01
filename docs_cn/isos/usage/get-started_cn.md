@@ -64,3 +64,7 @@ isos config migrate --revision <saved-sha256> --proposed-revision <preview-sha25
 ## P07：查看首条事件和后续日志
 
 首次准入运行前，使用 `isos logs all --current --level info --lines 100` 或 `GET /api/isos/v1/logs?view=current&source=all&level=info`。管理器会话范围会固定首条软件包或 Apply 故障。运行准入后，同一请求改为返回该部署运行的首条就绪或故障事件；即使来源／级别／节点／关联筛选不匹配，锚点仍独立显示。锚点待定时轮询 `next_cursor`。停止或失败后仍查看最后准入运行的终结日志；新运行准入时旧游标返回 `log_run_changed`。轮转保留期间游标连续；过期、收集中断或锚点不可用时显示 `diagnostics`，然后继续使用新游标。每次先查 `isos status --json` 的实时状态；日志页只解释历史。遇到 `run_id_state:unavailable` 或 `log_scope_unavailable` 时显示有类型故障，不能呈现管理器会话页。详见[当前运行日志游标契约](../interfaces/log-cursors_cn.md)。
+
+## R06 依赖停止目标
+
+**目标设计，尚未实现。** 执行 `isos deployment stop`、附着运行的 `isos run` Ctrl+C 或 `isos stop` 后，先用 `isos status --json` 检查保留的 `terminal.outcome` 及运行 ID，再用 `isos logs all --current` 查同一运行的终结事件。`confirmed` 要求 EOS 归属方证明底盘与机械臂停止及仿真器回收；空进程列表或 PID 消失不足够。`unknown` 使部署维持降级，并阻止 Restart，直到归属方评审的恢复路径证明安全 fence。[依赖停止契约](../interfaces/dependent-stop_cn.md)规定原因码、期限配置与拟议的 EOS 收据依赖。EOS 收据形状和期限仍待独立 R06 归属评审；当前程序不能据此认定目标已合格。

@@ -1,0 +1,7 @@
+# R06 IsOS dependent stop cases
+
+[中文](README_cn.md) · [Owner contract](../../../docs/isos/interfaces/dependent-stop.md) · [Design](../../../docs/isos/design/dependent-stop.md)
+
+**Design-only inventory.** `cases.json` freezes 22 expected outcomes for stub and real-owner implementation tests. `python3 tests/fixtures/dependent_stop/check_cases.py` checks shape and safety-sensitive expectations; it does not run a process or prove a physical stop. The implementation must bind the proposed EOS terminal receipt to selected child, run ID and observed PID after the EOS owner agrees its exact R06 contract. The `eos_receipt` tokens in this fixture are test scenarios, not EOS wire fields.
+
+Replay clean and negative cases through one fresh `ISOS_HOME`: direct CLI, HTTP and owner socket Stop, attached Ctrl+C, Restart/rollback, provider crash, manager shutdown, event rotation and failure. Capture process-group members and the actual EOS/MuJoCo child/socket before and after; compare run IDs and grants without printing grant values. Preserve complete output under ignored `logs/test/<run-id>/`. Unknown stop must block a new candidate and cannot become `deployment_stopped` because a PID disappeared. The final real-owner replay requires EOS and the pinned MuJoCo `0.1.1` package in both scenes; the stub may test ordering but cannot close the R06 gate.

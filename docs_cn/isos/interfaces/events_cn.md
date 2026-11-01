@@ -1,5 +1,7 @@
 # 共享部署事件
 
+**R06 目标，尚未实现：** [IsOS 依赖停止契约](dependent-stop_cn.md#状态事件和错误)新增 `deployment_stopping` 与 `deployment_stop_unconfirmed`，使用同一运行关联及固定终结结果。经评审的 EOS 归属方收据仍是独立跨归属方前提；当前 P06 的普通 `eos_stopped` 行本身不能证明双实体停止。
+
 [English](../../../docs/isos/interfaces/events.md) · [配置与日志存储](configuration_cn.md) · [本地日志 API](local-api_cn.md) · [首次使用](../usage/get-started_cn.md) · [P06 任务](../../../../Island-eos/docs/island/implementation-todo.md)
 
 **P06 已实现契约。** IsOS 持有管理器会话、部署运行身份、私有分类日志、统一 `events.log` 与所选子进程事件接收。EOS 和 EGIA 持有各自事件的含义。IsosUI 读取 IsOS 事件流；不能仅凭事件推断实时健康。P06 增加共享的已脱敏 JSON Lines（JSONL）信封，P07 增加跨轮转的游标留存与首事件导航。

@@ -6,4 +6,6 @@ The saved `.nodes.json` graph is the only deployment path. An optional user unit
 
 The R03 [managed control-grant contract](interfaces/control-grants.md) and [launch design](design/control-grants.md) record the qualified IsOS issuance and EOS handoff after merged owner PRs and a clean-home replay. The broader I4 lifecycle gate and R05/R06 physical simulator qualification remain open.
 
+The R06 [dependent stop owner contract](interfaces/dependent-stop.md) and [design](design/dependent-stop.md) are target-only until the EOS terminal receipt and bounded stop path pass owner review and real MuJoCo qualification.
+
 [中文](../../docs_cn/isos/README_cn.md)

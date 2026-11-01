@@ -27,8 +27,8 @@ The API binds only to `127.0.0.1` and serves no frontend files. IsosUI calls it 
 | `GET /api/isos/v1/backends` | `{backends:[{id,version,linked,scenes,devices,ready,issues}]}` | Installed/linked v2 backend choices and prerequisite checks. |
 | `POST /api/isos/v1/packages/link` | `{id,version,path,manifest?}` | Link a local bundle; `manifest` is an optional absolute v4 release JSON path. If omitted, IsOS reads `<path>/release.json` when present. |
 | `GET /api/isos/v1/setup-status` | `{ready,issues,graph_revision,backends,process}` | Home setup summary. |
-| `POST /api/isos/v1/process-control` | `{schema_version:1,operation,revision?}` | `run`, `start`, `stop`, or `restart`. The optional revision prevents acting on a stale editor view. |
-| `GET /api/isos/v1/process-status` | `{saved_revision,active_revision,state,last_error,package,processes,run_id,log_ingest_rejected,log_ingest_rejected_by_reason,log_write_failed}` | Pinned package, direct-child and P06 log-health status. |
+| `POST /api/isos/v1/process-control` | `{schema_version:1,operation,revision?}` | `run`, `start`, `stop`, or `restart`. The optional revision prevents acting on a stale editor view. R06 target adds a stop `terminal` outcome; see [dependent stop](dependent-stop.md). |
+| `GET /api/isos/v1/process-status` | `{saved_revision,active_revision,state,last_error,package,processes,run_id,log_ingest_rejected,log_ingest_rejected_by_reason,log_write_failed}` | Pinned package, direct-child and P06 log-health status. R06 target adds retained `terminal`; see [dependent stop](dependent-stop.md). |
 | `GET /api/isos/v1/logs?source=all&cursor=...&limit=100&level=info` | `{lines:[{timestamp,level,source,event_code,message,pid}],next_cursor,rotated}` | Read the unified rotating JSON stream, filtering entries at or above `level`. At most 200 lines or 64 KiB per call. `cursor` is opaque; `rotated` signals a replaced file. |
 | `GET /api/isos/v1/version` | `{api_schema_version,isos_version}` | Workbench compatibility check. |
 
