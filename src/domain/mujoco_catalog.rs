@@ -634,13 +634,14 @@ pub fn validate_graph(paths: &Paths, graph: &Value) -> Result<()> {
             ));
         }
         if graph["version"] == "0.1.0" {
-            let adapter_compiled = process::catalog()?["adapter_families"]
-                .as_array()
-                .is_some_and(|families| {
-                    families
-                        .iter()
-                        .any(|family| family["id"] == "mujoco-v2" && family["compiled"] == true)
-                });
+            let adapter_compiled =
+                process::catalog_for_option_graph(paths, graph)?["adapter_families"]
+                    .as_array()
+                    .is_some_and(|families| {
+                        families
+                            .iter()
+                            .any(|family| family["id"] == "mujoco-v2" && family["compiled"] == true)
+                    });
             if !adapter_compiled {
                 return Err(Issue::admission("adapter_unavailable").into_error(
                     id,

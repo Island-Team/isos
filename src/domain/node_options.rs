@@ -204,6 +204,28 @@ fn reason(code: &str) -> String {
     .to_owned()
 }
 
+fn check_selectors(definition: &Value, node: &Value, pointer: &str) -> Result<()> {
+    if let Some(settings) = definition["settings"].as_array() {
+        for setting in settings {
+            if let Some(selector) = setting.get("selector") {
+                let name = setting["name"].as_str().unwrap_or("");
+                let allowed = node["node_type"] == "eos.process.mujoco@v0.1"
+                    && name == "scene"
+                    && selector
+                        == &json!({"provider":"package","resource":"scene","package_from":"node.package"});
+                if !allowed {
+                    return Err(option_error(
+                        "node_option_selector_invalid",
+                        format!("{pointer}/settings/{}", pointer_segment(name)),
+                        node,
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Project selectors from the current exact draft and exact verified package pins.
 pub fn compose_with_paths(paths: &Paths, graph: &Value, catalog: &Value) -> Result<Value> {
     if let Some(diagnostic) = graph_compat::admission_diagnostic(graph, Some(catalog)) {
@@ -249,46 +271,51 @@ pub fn compose_with_paths(paths: &Paths, graph: &Value, catalog: &Value) -> Resu
             if let Some(definition) = catalog["types"]
                 .as_array()
                 .and_then(|types| types.iter().find(|entry| entry["id"] == node["node_type"]))
-                && let Some(settings) = definition["settings"].as_array()
             {
-                for setting in settings {
-                    if let Some(selector) = setting.get("selector") {
-                        let name = setting["name"].as_str().unwrap_or("");
-                        let allowed = node["node_type"] == "eos.process.mujoco@v0.1"
-                            && name == "scene"
-                            && selector
-                                == &json!({"provider":"package","resource":"scene","package_from":"node.package"});
-                        if !allowed {
-                            return Err(option_error(
-                                "node_option_selector_invalid",
-                                format!("{pointer}/settings/{}", pointer_segment(name)),
-                                node,
-                            ));
-                        }
-                    }
-                }
+                check_selectors(definition, node, &pointer)?;
             }
             if node["node_type"] == "eos.process.mujoco@v0.1" {
                 let scene = selected(node, "scene", &format!("{pointer}/settings/scene"))?;
                 let id = node["package"]["id"].as_str().unwrap_or("");
                 let version = node["package"]["version"].as_str().unwrap_or("");
                 let (rows, absent) = match packages::verify(paths, id, version) {
-                    Ok(verified) => match mujoco_catalog::inspect_verified(&verified) {
-                        Ok(found) if found.mode == mujoco_catalog::Mode::Target => {
-                            let library =
-                                mujoco_catalog::check_library(&found, node["settings"].get("env"))
-                                    .err()
-                                    .map(|issue| issue.code);
-                            let rows = found.descriptor.scenes.iter().map(|entry| {
+                    Ok(verified) => {
+                        let declaration = verified.release.node_contributions.as_ref().and_then(
+                            |contributions| {
+                                contributions
+                                    .node_types
+                                    .iter()
+                                    .find(|entry| entry["id"] == "eos.process.mujoco@v0.1")
+                            },
+                        );
+                        if let Some(declaration) = declaration {
+                            check_selectors(declaration, node, &pointer)?;
+                        } else {
+                            return Err(option_error(
+                                "node_option_selector_invalid",
+                                format!("{pointer}/settings/scene"),
+                                node,
+                            ));
+                        }
+                        match mujoco_catalog::inspect_verified(&verified) {
+                            Ok(found) if found.mode == mujoco_catalog::Mode::Target => {
+                                let library = mujoco_catalog::check_library(
+                                    &found,
+                                    node["settings"].get("env"),
+                                )
+                                .err()
+                                .map(|issue| issue.code);
+                                let rows = found.descriptor.scenes.iter().map(|entry| {
                                 let code = library;
                                 json!({"value":entry.id,"label":entry.label,"description":entry.description,
                                     "available":code.is_none(),"reason_code":code,"reason":code.map(reason)})
                             }).collect();
-                            (rows, "mujoco_scene_unavailable")
+                                (rows, "mujoco_scene_unavailable")
+                            }
+                            Ok(_) => (Vec::new(), "mujoco_catalog_incomplete"),
+                            Err(issue) => (Vec::new(), issue.code),
                         }
-                        Ok(_) => (Vec::new(), "mujoco_catalog_incomplete"),
-                        Err(issue) => (Vec::new(), issue.code),
-                    },
+                    }
                     Err(error) => {
                         let code = error
                             .chain()
@@ -381,7 +408,16 @@ pub fn compose_with_paths(paths: &Paths, graph: &Value, catalog: &Value) -> Resu
 }
 
 pub fn for_graph(paths: &Paths, graph: &Value) -> Result<Value> {
-    compose_with_paths(paths, graph, &process::catalog()?)
+    if let Some(diagnostic) = graph_compat::version_diagnostic(graph) {
+        anyhow::bail!(diagnostic);
+    }
+    if graph["version"] == "0.1.0"
+        && let Some(diagnostic) = graph_compat::admission_diagnostic(graph, None)
+    {
+        anyhow::bail!(diagnostic);
+    }
+    let catalog = process::catalog_for_option_graph(paths, graph)?;
+    compose_with_paths(paths, graph, &catalog)
 }
 
 #[cfg(test)]
