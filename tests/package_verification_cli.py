@@ -231,6 +231,22 @@ class PackageVerificationReplay(unittest.TestCase):
             self.assertRegex(receipt[field], r"^[0-9a-f]{64}$")
         self.assertEqual(receipt["asset_sha256"] is None, source_kind == "local_link")
 
+    def test_cli_list_marks_legacy_and_corrupt_links_unavailable(self):
+        (self.case.bundle / "release.json").unlink(missing_ok=True)
+        self.case.run("pkg", "link", *PIN.values(), self.case.bundle)
+        listed = json.loads(self.case.run("pkg", "list", "--json").stdout)
+        self.assertEqual(listed[0]["status"], "unverified_legacy_link")
+        self.assertFalse(listed[0]["available"])
+        self.assertIn("unverified_legacy_link", self.case.run("pkg", "list").stdout)
+        self.case.run("pkg", "remove", *PIN.values())
+        self.case.link()
+        sidecar = self.case.stored() / "node-types.json"
+        sidecar.write_bytes(b"{}")
+        listed = json.loads(self.case.run("pkg", "list", "--json").stdout)
+        self.assertEqual(listed[0]["status"], "unavailable")
+        self.assertFalse(listed[0]["available"])
+        self.assertNotIn(str(self.case.root), listed[0]["reason"])
+
     def test_cli_link_and_archive_do_not_activate_deployment(self):
         before = self.case.init()
         self.case.link()
