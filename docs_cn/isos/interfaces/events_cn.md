@@ -28,7 +28,7 @@ IsOS 发行版在目标 `src/runtime/event_policy.rs` 中携带经过审核的�
 
 ### R04 原生技能子进程事件——目标，尚未准入
 
-此 IsOS 策略变更依赖 EOS SkillService 精确提交 `ab46b35e0b41c2e4dcfaeb1966169c0bf03213cb` 与 [EOS 归属事件契约](../../../../Island-eos/docs/eos/interfaces/events.md)。当前 IsOS 代码仍拒绝下面两个事件码。实现只能把它们加入所选 `eos` runtime 角色，并先核对现有直接子进程管道、活动运行和观察到的 PID。图声明、包描述符、技能 guest、capability 回复、旧套接字 append、bridge、config 与 EGIA 子进程均不能授权此事件码。其余 P06 角色和字段规则不变。
+此 IsOS 策略变更依赖 EOS SkillService 精确提交 `192fbfa6fbed1e9b6a20dd8dc95501625b02d081` 与 [EOS 归属事件契约](../../../../Island-eos/docs/eos/interfaces/events.md)。当前 IsOS 代码仍拒绝下面两个事件码。实现只能把它们加入所选 `eos` runtime 角色，并先核对现有直接子进程管道、活动运行和观察到的 PID。图声明、包描述符、技能 guest、capability 回复、旧套接字 append、bridge、config 与 EGIA 子进程均不能授权此事件码。其余 P06 角色和字段规则不变。
 
 | 事件码 | 精确信封与字段 | 准入规则 |
 | --- | --- | --- |

@@ -20,7 +20,7 @@ API、CLI 与 Unix 管理器在工作前选定部署和请求关联。启动前�
 
 ### R04 所选技能事件准入设计
 
-本设计基于 IsOS `df481774` 与 EOS SkillService 精确提交 `ab46b35e0b41c2e4dcfaeb1966169c0bf03213cb`；当前收集器仍拒绝两个技能码。[归属接口](../interfaces/events_cn.md#r04-原生技能子进程事件目标尚未准入)与[冻结夹具](../../../tests/fixtures/r04_skill_events/README_cn.md)规定实现边界。只扩展编译进 IsOS 的 `eos` runtime 事件码分支与专用字段校验器。保留 P06 角色表、顶层解析、活动运行核对、已准入节点核对、观察到的 PID 注入、旧套接字规范化、大小界限以及 EGIA／bridge／config 策略。图或子进程描述符都是数据，不能成为事件策略来源。
+本设计基于 IsOS `df481774` 与 EOS SkillService 精确提交 `192fbfa6fbed1e9b6a20dd8dc95501625b02d081`；当前收集器仍拒绝两个技能码。此 EOS 提交在 JSONL 发布前将未回收的 guest 成功结果转为失败，因此下述 completed／succeeded 配对仍然精确。[归属接口](../interfaces/events_cn.md#r04-原生技能子进程事件目标尚未准入)与[冻结夹具](../../../tests/fixtures/r04_skill_events/README_cn.md)规定实现边界。只扩展编译进 IsOS 的 `eos` runtime 事件码分支与专用字段校验器。保留 P06 角色表、顶层解析、活动运行核对、已准入节点核对、观察到的 PID 注入、旧套接字规范化、大小界限以及 EGIA／bridge／config 策略。图或子进程描述符都是数据，不能成为事件策略来源。
 
 两个日志写入之前先校验完整的事件码专属字段：精确字段集、阶段／级别／原因配对及固定消息。在 Supervisor 边界把 `package_id` 与 `package_version` 核对为已准入 P04 generation 中的一项所选 P01 技能 pin；空选择不能发出 `eos_skill_execution`。所选技能版本超过 EOS 96／64 字节限制或版本语法无效时，候选部署预检必须在停止旧部署**之前**拒绝；该预检仍属于另一个 IsOS 实现切片。`worker_reaped:true` 不表示物理停止已确认。即使随后出现 `eos_stopped`，未确认停止事件仍是失败标记。
 

@@ -1,6 +1,6 @@
 {
   "schema": "isos-r04-skill-events-design-v1",
-  "eos_sha": "ab46b35e0b41c2e4dcfaeb1966169c0bf03213cb",
+  "eos_sha": "192fbfa6fbed1e9b6a20dd8dc95501625b02d081",
   "failed_reasons": [
     "worker.cancelled",
     "worker.deadline",

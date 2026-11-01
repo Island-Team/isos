@@ -28,7 +28,7 @@ The IsOS release carries a reviewed, versioned role policy in its target `src/ru
 
 ### R04 native skill child events — target, pending admission
 
-The R04 IsOS policy change depends on EOS SkillService commit `ab46b35e0b41c2e4dcfaeb1966169c0bf03213cb` and the [EOS owner event contract](../../../../Island-eos/docs/eos/interfaces/events.md). Current IsOS code still rejects the two codes below. Implementation must add only these exact codes to the selected `eos` runtime role, after the existing selected-child pipe, active-run and observed-PID checks. A graph declaration, package descriptor, skill guest, capability response, legacy socket append, bridge, config or EGIA child cannot authorize either code. All other P06 role entries and field validators keep their existing meanings.
+The R04 IsOS policy change depends on EOS SkillService commit `192fbfa6fbed1e9b6a20dd8dc95501625b02d081` and the [EOS owner event contract](../../../../Island-eos/docs/eos/interfaces/events.md). Current IsOS code still rejects the two codes below. Implementation must add only these exact codes to the selected `eos` runtime role, after the existing selected-child pipe, active-run and observed-PID checks. A graph declaration, package descriptor, skill guest, capability response, legacy socket append, bridge, config or EGIA child cannot authorize either code. All other P06 role entries and field validators keep their existing meanings.
 
 | Code | Exact admitted stored/raw envelope and typed fields | Policy |
 | --- | --- | --- |

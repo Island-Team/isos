@@ -9,7 +9,7 @@ from pathlib import Path
 
 cases = json.loads((Path(__file__).parent / "cases.json").read_text())
 assert cases["schema"] == "isos-r04-skill-events-design-v1"
-assert cases["eos_sha"] == "ab46b35e0b41c2e4dcfaeb1966169c0bf03213cb"
+assert cases["eos_sha"] == "192fbfa6fbed1e9b6a20dd8dc95501625b02d081"
 assert len(cases["failed_reasons"]) == len(set(cases["failed_reasons"]))
 assert len(cases["child_cases"]) == 30
 assert len(cases["cursor_cases"]) == 10
