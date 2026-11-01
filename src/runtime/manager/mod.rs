@@ -1,6 +1,6 @@
 use crate::foreground::INTERRUPTED;
 use crate::{
-    config, core_setup, graph_compat, graph_migration, http, log_store, preflight, process,
+    config, core_setup, graph_compat, graph_migration, http, log_store, process, reader_features,
     services, starter,
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -84,9 +84,9 @@ fn preflight_packages(
         let generated = selected.join("eos/graph.json");
         process::use_generated_eos_profile(&mut specs, &generated)?;
         process::use_generated_egia_config(&mut specs, &selected.join("egia"))?;
-        preflight::verify_new_graph_readers(&specs)?;
     }
-    preflight::verify_processes(paths, &specs)?;
+    let catalog = process::catalog_for_graph(paths, &graph)?;
+    reader_features::check(paths, &graph, &specs, &catalog)?;
     Ok(specs)
 }
 

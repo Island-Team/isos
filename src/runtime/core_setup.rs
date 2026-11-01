@@ -172,6 +172,13 @@ fn request(
 }
 
 fn invoke(program: &Path, request: &Value) -> Result<Value> {
+    let identity = request["op"] == "identity";
+    let reply_limit = if identity { 64 * 1024 } else { MAX_REPLY };
+    let timeout = if identity {
+        Duration::from_secs(5)
+    } else {
+        TIMEOUT
+    };
     let mut child = Command::new(program)
         .args(["setup", "--json"])
         .stdin(Stdio::piped())
@@ -189,7 +196,7 @@ fn invoke(program: &Path, request: &Value) -> Result<Value> {
     let reader = thread::spawn(move || {
         let mut data = Vec::new();
         stdout
-            .take((MAX_REPLY + 1) as u64)
+            .take((reply_limit + 1) as u64)
             .read_to_end(&mut data)
             .map(|_| data)
     });
@@ -203,10 +210,10 @@ fn invoke(program: &Path, request: &Value) -> Result<Value> {
         if let Some(status) = child.try_wait()? {
             break status;
         }
-        if started.elapsed() > TIMEOUT {
+        if started.elapsed() > timeout {
             let _ = child.kill();
             let _ = child.wait();
-            bail!("setup adapter timed out after 10 seconds");
+            bail!("setup adapter timed out");
         }
         thread::sleep(Duration::from_millis(10));
     };
@@ -220,13 +227,17 @@ fn invoke(program: &Path, request: &Value) -> Result<Value> {
         .join()
         .map_err(|_| anyhow::anyhow!("setup adapter stderr reader failed"))??;
     ensure!(
-        output.len() <= MAX_REPLY,
-        "setup adapter response exceeds 4 MiB"
+        output.len() <= reply_limit,
+        "setup adapter response exceeds limit"
     );
     ensure!(
         status.success(),
         "setup adapter failed: {}",
-        String::from_utf8_lossy(&stderr)
+        if identity {
+            "check the selected build".into()
+        } else {
+            String::from_utf8_lossy(&stderr)
+        }
     );
     let reply: Value = serde_json::from_slice(&output).context("parse setup adapter response")?;
     let typed: SetupReply = serde_json::from_value(reply.clone())

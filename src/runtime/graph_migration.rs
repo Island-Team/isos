@@ -4,10 +4,10 @@ use crate::{
     config::{self, Paths},
     core_setup, edge_admission,
     graph_compat::{self, Diagnostic, SavedGraph},
-    lock, mujoco_catalog, packages, preflight, process,
+    lock, mujoco_catalog, packages, process, reader_features,
 };
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
 const TYPE_MAP: &[(&str, &str)] = &[
@@ -141,7 +141,7 @@ fn generated_prepare_error(error: anyhow::Error) -> Diagnostic {
         let mut result = diagnostic(&generated.path, generated.code, generated.message);
         result
             .context
-            .insert("stage".into(), generated.stage.into());
+            .insert("stage".into(), Value::String(generated.stage.into()));
         return result;
     }
     let mut result = diagnostic(
@@ -149,7 +149,9 @@ fn generated_prepare_error(error: anyhow::Error) -> Diagnostic {
         "generated_owner_rejected",
         "Restore the selected owner and correct the graph",
     );
-    result.context.insert("stage".into(), "render".into());
+    result
+        .context
+        .insert("stage".into(), Value::String("render".into()));
     result
 }
 
@@ -172,9 +174,9 @@ pub(crate) fn package_diagnostic(error: &anyhow::Error) -> Diagnostic {
         .find_map(|cause| cause.downcast_ref::<packages::PackageFailure>())
     {
         let mut context = BTreeMap::new();
-        context.insert("id".into(), failure.id.clone());
-        context.insert("version".into(), failure.version.clone());
-        context.insert("stage".into(), failure.stage.into());
+        context.insert("id".into(), Value::String(failure.id.clone()));
+        context.insert("version".into(), Value::String(failure.version.clone()));
+        context.insert("stage".into(), Value::String(failure.stage.into()));
         return Diagnostic {
             path: failure.path.clone(),
             code: failure.code,
@@ -216,7 +218,7 @@ fn edge_diagnostic(edge: edge_admission::Diagnostic) -> Diagnostic {
         ("target_data_type", edge.target_data_type),
     ] {
         if let Some(value) = value {
-            context.insert(key.into(), value);
+            context.insert(key.into(), json!(value));
         }
     }
     Diagnostic {
@@ -539,11 +541,7 @@ pub fn prepare(paths: &Paths, name: &str, proposal: &Proposal) -> Result<Prepare
         .map_err(|error| diagnostic("/", "invalid_graph", error.to_string()))?;
     let specs = process::project_with_packages(paths, &source)
         .map_err(|error| package_or_owner_diagnostic(&error, "/"))?;
-    preflight::verify_processes(paths, &specs).map_err(|error| {
-        diagnostic("/cores/isos", "owner_reader_unavailable", error.to_string())
-    })?;
-    preflight::verify_new_graph_readers(&specs)
-        .map_err(|error| diagnostic("/cores/eos", "owner_reader_unavailable", error.to_string()))?;
+    reader_features::check(paths, &proposal.graph, &specs, &catalog)?;
     crate::generated_v2::check_defaults(&proposal.graph)
         .map_err(|error| generated_prepare_error(error.into()))?;
     for role in ["eos", "egia"] {

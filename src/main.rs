@@ -46,6 +46,8 @@ mod packages;
 mod preflight;
 #[path = "runtime/process.rs"]
 mod process;
+#[path = "runtime/reader_features.rs"]
+mod reader_features;
 #[path = "runtime/readiness.rs"]
 mod readiness;
 #[path = "domain/release.rs"]
