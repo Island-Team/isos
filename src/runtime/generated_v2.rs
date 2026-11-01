@@ -398,14 +398,7 @@ fn defaults(graph: &Value) -> Result<Defaults, Diagnostic> {
         .map(PathBuf::from)
         .or_else(|| bin.parent().map(Path::to_path_buf))
         .ok_or_else(|| missing("binary"))?;
-    let expected_factory = prefix.join("share/defaults/egia");
-    if factory != expected_factory {
-        return Err(failure(
-            "generated_invalid_default",
-            "defaults",
-            "Select the factory defaults used by the EGIA launcher",
-        ));
-    }
+    validate_factory_root(&factory, &prefix)?;
     let (mut component_entries, component_files) = walk_tree(&component, "component")?;
     for required in REQUIRED_EGIA
         .iter()
@@ -427,6 +420,17 @@ fn defaults(graph: &Value) -> Result<Defaults, Diagnostic> {
         component_entries,
         component_files,
     ))
+}
+
+fn validate_factory_root(factory: &Path, prefix: &Path) -> Result<(), Diagnostic> {
+    if factory != prefix.join("share/defaults/egia") {
+        return Err(failure(
+            "generated_invalid_default",
+            "defaults",
+            "Select the factory defaults used by the EGIA launcher",
+        ));
+    }
+    Ok(())
 }
 pub fn check_defaults(graph: &Value) -> Result<(), Diagnostic> {
     defaults(graph).map(|_| ())
@@ -1336,6 +1340,21 @@ mod tests {
         assert_eq!(
             (error.code, error.stage),
             ("generated_unsafe_path", "defaults")
+        );
+    }
+
+    #[test]
+    fn factory_default_root_must_match_selected_launcher_prefix() {
+        let prefix = Path::new("/opt/selected-egia");
+        assert!(
+            validate_factory_root(Path::new("/opt/selected-egia/share/defaults/egia"), prefix)
+                .is_ok()
+        );
+        let error = validate_factory_root(Path::new("/opt/other-egia/share/defaults/egia"), prefix)
+            .unwrap_err();
+        assert_eq!(
+            (error.code, error.stage, error.path.as_str()),
+            ("generated_invalid_default", "defaults", "")
         );
     }
 
