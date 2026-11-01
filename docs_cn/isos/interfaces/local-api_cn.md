@@ -12,7 +12,7 @@ API 只绑定 `127.0.0.1`，不提供前端文件。IsosUI 通过地址和端口
 | --- | --- | --- |
 | `GET /api/isos/v1/node-graph` | `{revision,graph}` | 读取唯一已保存图；无图时返回可编辑空 v1 草稿。 |
 | `PUT /api/isos/v1/node-graph` | `{schema_version:1,revision,graph}` | 校验并应用图；修订过期返回 409。 |
-| `POST /api/isos/v1/node-graph/validate` | `{schema_version:1,graph}` → `{valid,diagnostics}` | 只校验注册表和软件包，不应用。 |
+| `POST /api/isos/v1/node-graph/validate` | `{schema_version:1,graph}` → `{valid,diagnostics}` | 只校验注册表和软件包，不应用。注册端口类型不匹配时返回 `edge_type_mismatch`，包含来源、目标、输入和指向输入来源的 JSON 指针路径。 |
 | `GET /api/isos/v1/node-types` | `{types:[...]}` | 由 `aether-profile` 提供节点类型目录。 |
 | `GET /api/isos/v1/core-setup/{role}/catalog` | 含 `catalog` 的配置响应 | 查询已配置的 `eos` 或 `egia` 适配器，不启动核心运行时。 |
 | `POST /api/isos/v1/core-setup/{role}/validate` | `{schema_version:1,graph,revision?}` → 配置响应 | 按核心规则校验编辑草稿，不保存。 |
@@ -30,6 +30,8 @@ API 只绑定 `127.0.0.1`，不提供前端文件。IsosUI 通过地址和端口
 | `GET /api/isos/v1/logs?source=all&cursor=...&limit=100&level=info` | `{lines:[{timestamp,level,source,event_code,message,pid}],next_cursor,rotated}` | 读取统一轮转 JSON 日志，并按 `level` 过滤。每次最多 200 行或 64 KiB；文件轮转时 `rotated` 为 true。 |
 | `GET /api/isos/v1/version` | `{api_schema_version,isos_version}` | 工作台兼容性检查。 |
 
+草稿的注册端口类型不匹配时，校验在正常的 schema-1 成功封套中返回 `{"valid":false,"diagnostics":[{"path":"/cores/eos/layers/control/groups/manual/nodes/target/inputs/status/0","code":"edge_type_mismatch","message":"eos/control/manual/source.out (base_observation) cannot feed eos/control/manual/target.status (status); compare the registered data type and its unit schema","source":"eos/control/manual/source","target":"eos/control/manual/target","input":"status"}]}`。`path` 是指向出错输入来源的 JSON 指针（单个来源对象也以 `/0` 标识），`source` 与 `target` 是四段规范路径。数据类型 ID 必须精确一致。单位由注册数据类型 schema 的 `x-unit` 字段注解提供，用于展示；字段值单位校验仍属目标工作，不会推断单位换算。其他校验失败当前仍返回通用的 `/` 路径和 `invalid_graph` 代码。Apply 对同样的不匹配返回 HTTP 422，不修改已保存图。
+
 进程管理器在启动前重新校验已保存图和精确版本的软件包。EOS 将 MuJoCo 作为直接子进程启动，并在停止获准的执行器后终止它。图布局属于编辑器；HTTP 图只包含运行配置和有类型连接。
 
 ### 按需核心配置适配器
@@ -46,7 +48,7 @@ Unix 套接字每行接收一个 JSON 请求：`{schema_version:1,op,deployment?
 
 `manager_shutdown` 停止所有图子进程和独立服务，然后结束 API、界面及管理器。`deployment_stop` 只影响指定部署。`services_list`、`services_validate`、`services_status`、`services_start`、`services_stop`、`services_restart` 和 `services_logs` 操作[独立服务定义](services_cn.md)；启动、停止、重启和日志请求需要 `service_id`，日志可带不透明的 `cursor` 及 1–200 的 `limit`。可执行文件摘要不同的 CLI 仍可请求关停，但不能启动或重启部署和服务。`isos status --json` 汇总部署状态、管理器身份和服务状态；`isos version check` 报告已配置核心、图和运行状态的就绪情况。
 
-日志 `source` 可为 `all`、`isos`、`services`、`service-gateway` 等服务来源、`packages`、`graph`、`ui`、`eos`、`egia`、`mujoco`、`bridge`、`config` 或通过校验的子进程 ID。`limit` 范围为 1–200，默认为 100；省略 `source` 时使用 `[logging].default_source`（默认 `all`）。每行包含 RFC 3339 UTC `timestamp`、`level`、`source`、`message`，并可包含 `event_code` 和 `pid`。IsOS 记录自身诊断及选定的结构化子进程事件，不镜像普通标准输出或标准错误。即使当前文件已读完，`next_cursor` 仍为字符串，后续可用它继续轮询。日志目录权限为 `0700`、普通文件为 `0600`；达到 `[logging].max_bytes`（默认 256 KiB）后轮转，保留 `[logging].backups`（默认 2）份。日志源文件数量由 `[logging].max_sources` 限制（默认 32）；达到上限后，新来源只写入统一事件流，仍可按来源筛选。
+日志 `source` 可为 `all`、`isos`、`services`、`service-gateway` 等服务来源、`packages`、`graph`、`ui`、`eos`、`egia`、`mujoco`、`bridge`、`config` 或通过校验的子进程 ID。`limit` 范围为 1–200，默认为 100；省略 `source` 时使用 `[logging].default_source`（默认 `all`）。每行包含 RFC 3339 UTC `timestamp`、`level`、`source`、`message`、`event_code` 和 `pid`；内部软件包事件还包含可为 null 的 `run_id`、`correlation_id` 和有界的 `fields`。HTTP 安装／链接成功事件记录 `fields.package_id`、`package_version`、`source_kind` 以及收据中可用的 `source_commit`／`asset_sha256`；没有发行清单的链接使用 `package_linked`，而非 `package_verified`。失败事件记录请求的精确包身份，不写入原始错误或本地路径。当前 MuJoCo 后端和可加载适配器的解析失败发出 `package_load_failed`，记录精确固定包及 `backend` 或 `adapter` 阶段，`run_id` 表示管理器会话，`correlation_id` 标识单次失败；图 sidecar 准入和无关的程序故障仍使用通用诊断。这些 ID 用于关联日志，不表示运行中的图修订。IsOS 记录自身诊断及选定的结构化子进程事件，不镜像普通标准输出或标准错误。即使当前文件已读完，`next_cursor` 仍为字符串，后续可用它继续轮询。日志目录权限为 `0700`、普通文件为 `0600`；达到 `[logging].max_bytes`（默认 256 KiB）后轮转，保留 `[logging].backups`（默认 2）份。日志源文件数量由 `[logging].max_sources` 限制（默认 32）；达到上限后，新来源只写入统一事件流，仍可按来源筛选。
 
 `[logging].level` 按 `trace < debug < info < warn < error` 记录达到阈值的文件事件，默认为 `info`。HTTP 的 `level` 参数和 UI 选择器只过滤显示，不改变写入。终端状态和命令错误不受影响。`isos logs [source] --level warn` 读取同一日志库。
 

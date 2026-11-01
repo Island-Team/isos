@@ -18,6 +18,12 @@ const DEFAULT_BACKUPS: u8 = 2;
 const DEFAULT_MAX_SOURCES: u16 = 32;
 const MAX_READ_BYTES: u64 = 65_536;
 
+pub struct LogContext<'a> {
+    pub run_id: Option<&'a str>,
+    pub correlation_id: Option<&'a str>,
+    pub fields: Value,
+}
+
 #[derive(Clone)]
 pub struct LogStore {
     root: PathBuf,
@@ -189,8 +195,57 @@ impl LogStore {
         event_code: &str,
         message: &str,
     ) -> Result<()> {
+        self.append_event_context(
+            source,
+            level,
+            event_code,
+            message,
+            LogContext {
+                run_id: None,
+                correlation_id: None,
+                fields: json!({}),
+            },
+        )
+    }
+
+    pub fn append_event_context(
+        &self,
+        source: &str,
+        level: &str,
+        event_code: &str,
+        message: &str,
+        context: LogContext<'_>,
+    ) -> Result<()> {
+        let LogContext {
+            run_id,
+            correlation_id,
+            fields,
+        } = context;
         ensure!(valid_source(source), "invalid log source");
         ensure!(source_valid(event_code), "invalid log event code");
+        for id in [run_id, correlation_id].into_iter().flatten() {
+            ensure!(
+                source_valid(id) && id.len() <= 64,
+                "invalid log correlation ID"
+            );
+        }
+        let object = fields.as_object().context("log fields must be an object")?;
+        ensure!(object.len() <= 12, "too many log fields");
+        for (key, value) in object {
+            ensure!(
+                source_valid(key) && key.len() <= 48,
+                "invalid log field name"
+            );
+            ensure!(
+                value.is_null()
+                    || value.is_boolean()
+                    || value.is_number()
+                    || value
+                        .as_str()
+                        .is_some_and(|s| s.len() <= 256 && !s.chars().any(char::is_control)),
+                "invalid log field value"
+            );
+        }
         let rank = level_rank(level).context("invalid log level")?;
         if rank < self.level {
             return Ok(());
@@ -203,7 +258,7 @@ impl LogStore {
             message
         };
         let mut line = serde_json::to_vec(
-            &json!({"timestamp":Utc::now().to_rfc3339_opts(SecondsFormat::Millis,true),"level":level,"source":source,"event_code":event_code,"message":message,"pid":std::process::id()}),
+            &json!({"timestamp":Utc::now().to_rfc3339_opts(SecondsFormat::Millis,true),"level":level,"source":source,"event_code":event_code,"message":message,"pid":std::process::id(),"run_id":run_id,"correlation_id":correlation_id,"fields":fields}),
         )?;
         line.push(b'\n');
         if self.source_file_available(&path)? {
@@ -498,6 +553,58 @@ mod tests {
         let services = store.read("services", None, 10).unwrap();
         assert_eq!(services["lines"].as_array().unwrap().len(), 1);
         assert_eq!(services["lines"][0]["event_code"], "child_exited");
+    }
+
+    #[test]
+    fn context_fields_are_bounded_and_preserve_correlation() {
+        let (_temp, store) = store();
+        store
+            .append_event_context(
+                "packages",
+                "error",
+                "package_preflight_failed",
+                "Admission failed",
+                LogContext {
+                    run_id: Some("manager-1"),
+                    correlation_id: Some("request-2"),
+                    fields: json!({"package_id":"island/mujoco-sim","package_version":"0.1.1"}),
+                },
+            )
+            .unwrap();
+        let line = &store.read("packages", None, 1).unwrap()["lines"][0];
+        assert_eq!(line["run_id"], "manager-1");
+        assert_eq!(line["correlation_id"], "request-2");
+        assert_eq!(line["fields"]["package_id"], "island/mujoco-sim");
+        assert!(
+            store
+                .append_event_context(
+                    "packages",
+                    "info",
+                    "bad",
+                    "bad",
+                    LogContext {
+                        run_id: None,
+                        correlation_id: None,
+                        fields: json!({"secret":"line\nwith newline"})
+                    }
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .append_event_context(
+                    "packages",
+                    "info",
+                    "bad",
+                    "bad",
+                    LogContext {
+                        run_id: Some("bad/id"),
+                        correlation_id: None,
+                        fields: json!({})
+                    }
+                )
+                .is_err()
+        );
     }
 
     #[test]

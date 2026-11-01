@@ -23,6 +23,30 @@ const MAX_GRAPH_BYTES: u64 = 1024 * 1024;
 const MAX_COMMAND_ARGS: usize = 64;
 const MAX_RESTARTS: u32 = 10;
 
+#[derive(Debug)]
+pub(crate) struct PackageLoadFailure {
+    pub id: String,
+    pub version: String,
+    pub stage: &'static str,
+    pub source: anyhow::Error,
+}
+
+impl std::fmt::Display for PackageLoadFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "package {}@{} {} load failed: {}",
+            self.id, self.version, self.stage, self.source
+        )
+    }
+}
+
+impl std::error::Error for PackageLoadFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source.as_ref())
+    }
+}
+
 fn canonical_node_path(path: &str) -> String {
     let parts: Vec<_> = path.split('/').collect();
     if parts.len() == 8
@@ -305,7 +329,13 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
                         version,
                         &settings.scene,
                         &settings.env,
-                    )?;
+                    )
+                    .map_err(|source| PackageLoadFailure {
+                        id: package_id.to_owned(),
+                        version: version.to_owned(),
+                        stage: "backend",
+                        source,
+                    })?;
                     ensure!(
                         backends.insert(path, (resolved, settings.socket)).is_none(),
                         "duplicate backend path"
@@ -348,7 +378,13 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
                     .with_context(|| format!("{}: loadable adapter requires a package", node.id))?;
                 let paths = paths.context("loadable adapter requires IsOS package resolver")?;
                 let (library, digest) =
-                    packages::verified_adapter_library(paths, package.0, package.1, family)?;
+                    packages::verified_adapter_library(paths, package.0, package.1, family)
+                        .map_err(|source| PackageLoadFailure {
+                            id: package.0.to_owned(),
+                            version: package.1.to_owned(),
+                            stage: "adapter",
+                            source,
+                        })?;
                 let argument = format!("{family}={}@{digest}", library.display());
                 if let Some(previous) =
                     adapter_libraries.insert(family.to_owned(), argument.clone())
@@ -1211,6 +1247,23 @@ mod tests {
     use super::*;
     use std::os::unix::net::UnixListener;
     use std::sync::mpsc;
+
+    #[test]
+    fn backend_resolution_failure_carries_exact_package_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        paths.prepare().unwrap();
+        let graph = serde_json::json!({"version":"1.0.0","robot":{"id":"r","name":"R"},"cores":{"eos":{"layers":{"process":{"groups":{"mujoco":{"nodes":{"sim":{"id":"sim","node_type":"eos.process.mujoco@v1.0","package":{"id":"island/mujoco-sim","version":"0.1.1"},"settings":{"scene":"default","socket":paths.runtime.join("mujoco.sock")}}}}}}}}}}).to_string();
+        let error = project_with_packages(&paths, &graph).unwrap_err();
+        let failure = error.downcast_ref::<PackageLoadFailure>().unwrap();
+        assert_eq!(failure.id, "island/mujoco-sim");
+        assert_eq!(failure.version, "0.1.1");
+        assert_eq!(failure.stage, "backend");
+    }
 
     fn graph(settings: &str) -> String {
         let settings: Value = serde_json::from_str(settings).unwrap();

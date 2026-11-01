@@ -69,6 +69,29 @@ fn record(app: &App, source: &str, message: &str) {
         let _ = logs.append(source, "info", message);
     }
 }
+fn record_package(
+    app: &App,
+    level: &str,
+    code: &str,
+    id: &str,
+    version: &str,
+    source_kind: &str,
+    path: Option<&std::path::Path>,
+) {
+    if let Ok(logs) = LogStore::new(&app.paths, &app.deployment) {
+        let receipt = path
+            .and_then(|path| fs::read(path.join("receipt.json")).ok())
+            .and_then(|bytes| serde_json::from_slice::<packages::Receipt>(&bytes).ok());
+        let correlation = crate::manager::next_correlation_id();
+        let _ = logs.append_event_context("packages", level, code,
+            if level == "error" { "Package verification or installation failed" } else if code == "package_verified" { "Verified package release recorded" } else { "Local package link recorded without a release manifest" },
+            crate::log_store::LogContext { run_id: Some(crate::manager::manager_session_id()), correlation_id: Some(&correlation),
+            fields: json!({"package_id":id,"package_version":version,
+                "source_commit":receipt.as_ref().and_then(|receipt| receipt.source_commit.as_deref()),
+                "asset_sha256":receipt.as_ref().and_then(|receipt| receipt.asset_sha256.as_deref()),
+                "source_kind":source_kind}) });
+    }
+}
 fn authorized(
     _state: &App,
     headers: &HeaderMap,
@@ -171,6 +194,104 @@ async fn version(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
 fn revision(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
+
+fn edge_diagnostics(graph: &Value, catalog: &Value) -> Vec<Value> {
+    if graph["version"] != "1.0.0" {
+        return Vec::new();
+    }
+    let Some(types) = catalog["types"].as_array() else {
+        return Vec::new();
+    };
+    let definitions: std::collections::BTreeMap<&str, &Value> = types
+        .iter()
+        .filter_map(|definition| Some((definition["id"].as_str()?, definition)))
+        .collect();
+    let mut nodes = std::collections::BTreeMap::new();
+    let Some(cores) = graph["cores"].as_object() else {
+        return Vec::new();
+    };
+    for (core_id, core) in cores {
+        let Some(layers) = core["layers"].as_object() else {
+            continue;
+        };
+        for (layer_id, layer) in layers {
+            let Some(groups) = layer["groups"].as_object() else {
+                continue;
+            };
+            for (group_id, group) in groups {
+                let Some(entries) = group["nodes"].as_object() else {
+                    continue;
+                };
+                for (node_id, node) in entries {
+                    nodes.insert(format!("{core_id}/{layer_id}/{group_id}/{node_id}"), node);
+                }
+            }
+        }
+    }
+    let mut diagnostics = Vec::new();
+    for (path, node) in &nodes {
+        let Some(definition) = node["node_type"]
+            .as_str()
+            .and_then(|id| definitions.get(id))
+        else {
+            continue;
+        };
+        let Some(inputs) = node["inputs"].as_object() else {
+            continue;
+        };
+        for (input_name, source_value) in inputs {
+            let Some(input_type) = definition["inputs"]
+                .as_array()
+                .and_then(|ports| {
+                    ports
+                        .iter()
+                        .find(|port| port["name"] == input_name.as_str())
+                })
+                .and_then(|port| port["data_type"].as_str())
+            else {
+                continue;
+            };
+            let sources: Vec<&Value> = source_value
+                .as_array()
+                .map_or_else(|| vec![source_value], |values| values.iter().collect());
+            for (index, source) in sources.iter().enumerate() {
+                let Some(source_path) = source["node"].as_str() else {
+                    continue;
+                };
+                let Some(source_node) = nodes.get(source_path) else {
+                    continue;
+                };
+                let Some(source_definition) = source_node["node_type"]
+                    .as_str()
+                    .and_then(|id| definitions.get(id))
+                else {
+                    continue;
+                };
+                let Some(output_name) = source["output"].as_str() else {
+                    continue;
+                };
+                let Some(output_type) = source_definition["outputs"]
+                    .as_array()
+                    .and_then(|ports| ports.iter().find(|port| port["name"] == output_name))
+                    .and_then(|port| port["data_type"].as_str())
+                else {
+                    continue;
+                };
+                if input_type != output_type {
+                    diagnostics.push(json!({
+                        "path":format!("/cores/{}/layers/{}/groups/{}/nodes/{}/inputs/{input_name}/{index}",
+                            path.split('/').next().unwrap_or(""), path.split('/').nth(1).unwrap_or(""),
+                            path.split('/').nth(2).unwrap_or(""), path.split('/').nth(3).unwrap_or("")),
+                        "code":"edge_type_mismatch",
+                        "message":format!("{source_path}.{output_name} ({output_type}) cannot feed {path}.{input_name} ({input_type}); compare the registered data type and its unit schema"),
+                        "source":source_path,"target":path,"input":input_name
+                    }));
+                }
+            }
+        }
+    }
+    diagnostics
+}
 async fn node_graph(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
     authorized(&app, &headers)?;
     process::validate_deployment_name(&app.deployment)
@@ -207,11 +328,18 @@ async fn validate_node_graph(
     if edit.schema_version != 1 {
         return Err(err(StatusCode::BAD_REQUEST, "API schema_version must be 1"));
     }
-    let diagnostics: Vec<Value> = process::validate_value(&app.paths, &edit.graph)
-        .err()
-        .map(|error| json!({"path":"/","code":"invalid_graph","message":error.to_string()}))
-        .into_iter()
-        .collect();
+    let edge_diagnostics = process::catalog()
+        .map(|catalog| edge_diagnostics(&edit.graph, &catalog))
+        .unwrap_or_default();
+    let diagnostics: Vec<Value> = if edge_diagnostics.is_empty() {
+        process::validate_value(&app.paths, &edit.graph)
+            .err()
+            .map(|error| json!({"path":"/","code":"invalid_graph","message":error.to_string()}))
+            .into_iter()
+            .collect()
+    } else {
+        edge_diagnostics
+    };
     ok(json!({"valid":diagnostics.is_empty(),"diagnostics":diagnostics}))
 }
 
@@ -227,6 +355,16 @@ async fn apply_node_graph(
         return Err(err(StatusCode::BAD_REQUEST, "API schema_version must be 1"));
     }
     let graph = edit.graph;
+    if let Ok(catalog) = process::catalog()
+        && let Some(diagnostic) = edge_diagnostics(&graph, &catalog).into_iter().next()
+    {
+        return Err(err(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            diagnostic["message"]
+                .as_str()
+                .unwrap_or("edge type mismatch"),
+        ));
+    }
     process::validate_value(&app.paths, &graph)
         .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
     let bytes = serde_json::to_vec_pretty(&graph)
@@ -452,8 +590,10 @@ async fn package_install(
     authorized(&app, &headers)?;
     packages::package_path(&app.paths, &request.id, &request.version)
         .map_err(|error| err(StatusCode::BAD_REQUEST, error))?;
+    let id = request.id.clone();
+    let version = request.version.clone();
     let paths = app.paths.clone();
-    let installed = tokio::task::spawn_blocking(move || -> Result<PathBuf> {
+    let result = tokio::task::spawn_blocking(move || -> Result<PathBuf> {
         let release = packages::catalog_release(&request.id, &request.version)?;
         anyhow::ensure!(
             release.id == request.id && release.version == request.version,
@@ -462,9 +602,31 @@ async fn package_install(
         packages::install(&paths, &release, false, None)
     })
     .await
-    .map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR, error))?
-    .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
-    record(&app, "packages", "Installed package from catalog");
+    .map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR, error))?;
+    let installed = match result {
+        Ok(path) => path,
+        Err(error) => {
+            record_package(
+                &app,
+                "error",
+                "package_install_failed",
+                &id,
+                &version,
+                "registry",
+                None,
+            );
+            return Err(err(StatusCode::UNPROCESSABLE_ENTITY, error));
+        }
+    };
+    record_package(
+        &app,
+        "info",
+        "package_verified",
+        &id,
+        &version,
+        "registry",
+        Some(&installed),
+    );
     ok(
         json!({"path":installed,"installed":packages::list(&app.paths).map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR,error))?}),
     )
@@ -494,8 +656,10 @@ async fn package_link(
             "package manifest path must be absolute",
         ));
     }
+    let id = request.id.clone();
+    let version = request.version.clone();
     let paths = app.paths.clone();
-    let linked = tokio::task::spawn_blocking(move || {
+    let result = tokio::task::spawn_blocking(move || {
         packages::link_with_manifest(
             &paths,
             &request.id,
@@ -505,9 +669,35 @@ async fn package_link(
         )
     })
     .await
-    .map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR, error))?
-    .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
-    record(&app, "packages", "Linked local package");
+    .map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR, error))?;
+    let linked = match result {
+        Ok(path) => path,
+        Err(error) => {
+            record_package(
+                &app,
+                "error",
+                "package_link_failed",
+                &id,
+                &version,
+                "local_link",
+                None,
+            );
+            return Err(err(StatusCode::UNPROCESSABLE_ENTITY, error));
+        }
+    };
+    record_package(
+        &app,
+        "info",
+        if linked.join("release.json").is_file() {
+            "package_verified"
+        } else {
+            "package_linked"
+        },
+        &id,
+        &version,
+        "local_link",
+        Some(&linked),
+    );
     ok(
         json!({"path":linked,"installed":packages::list(&app.paths).map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR,error))?}),
     )
@@ -777,6 +967,32 @@ mod tests {
     use axum::body::to_bytes;
     use tower::ServiceExt;
 
+    #[test]
+    fn edge_diagnostic_names_the_wire_and_registered_data_types() {
+        let graph = json!({"version":"1.0.0","cores":{"eos":{"layers":{"control":{"groups":{"manual":{"nodes":{"target":{"node_type":"target","inputs":{"status":{"node":"eos/control/manual/source","output":"out"}}},"source":{"node_type":"source"}}}}}}}}});
+        let catalog = json!({"types":[
+            {"id":"target","inputs":[{"name":"status","data_type":"status"}]},
+            {"id":"source","outputs":[{"name":"out","data_type":"base_observation"}]}
+        ]});
+        let diagnostics = edge_diagnostics(&graph, &catalog);
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0]["code"], "edge_type_mismatch");
+        assert_eq!(
+            diagnostics[0]["path"],
+            "/cores/eos/layers/control/groups/manual/nodes/target/inputs/status/0"
+        );
+        assert_eq!(diagnostics[0]["source"], "eos/control/manual/source");
+        assert!(
+            diagnostics[0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("base_observation")
+        );
+        let mut future = graph;
+        future["version"] = json!("9.0.0");
+        assert!(edge_diagnostics(&future, &catalog).is_empty());
+    }
+
     #[tokio::test]
     async fn core_setup_api_rejects_unknown_role_and_missing_graph() {
         for (route, expected) in [
@@ -1037,11 +1253,32 @@ mod tests {
             .header(header::HOST, "127.0.0.1:16000")
             .body(Body::empty())
             .unwrap();
-        let response = router(app).oneshot(request).await.unwrap();
+        let response = router(app.clone()).oneshot(request).await.unwrap();
         let bytes = to_bytes(response.into_body(), 1_000_000).await.unwrap();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["data"]["installed"][0]["version"], "1.0.0");
         assert_eq!(body["data"]["installed"].as_array().unwrap().len(), 1);
+        let lines = LogStore::new(&app.paths, "default")
+            .unwrap()
+            .read("packages", None, 10)
+            .unwrap();
+        assert_eq!(lines["lines"][0]["event_code"], "package_linked");
+        assert_eq!(
+            lines["lines"][0]["fields"]["package_id"],
+            "island/mujoco-sim"
+        );
+        assert_eq!(lines["lines"][0]["fields"]["package_version"], "1.0.0");
+        assert_eq!(lines["lines"][0]["fields"]["source_kind"], "local_link");
+        assert_eq!(lines["lines"][1]["event_code"], "package_link_failed");
+        assert_eq!(
+            lines["lines"][1]["fields"]["package_id"],
+            "island/mujoco-sim"
+        );
+        assert_eq!(
+            lines["lines"][1]["run_id"],
+            crate::manager::manager_session_id()
+        );
+        assert!(lines["lines"][1]["correlation_id"].as_str().is_some());
     }
 
     #[tokio::test]
