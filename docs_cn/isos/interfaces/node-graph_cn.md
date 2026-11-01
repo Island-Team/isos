@@ -139,3 +139,13 @@ Run 和 Restart 会将已保存的生成字节与从精确已保存图重新执�
 在归属方投影前，IsOS 会在 `/cores/<core>` 以 `unsupported_core` 拒绝 `eos`、`isos`、`egia` 之外的任何 `0.1.0` core 键。每个节点须匹配精确批准的目标类型身份及其注册的 `core/layer/group` 位置；错误在节点 `/node_type` 返回 `unsupported_node_type` 或 `invalid_node_placement`。旧版 IsOS／IsosUI Vision 身份与未映射的 EOS 控制身份不能进入新图，即使旧版目录仍列出它们。
 
 `0.1.0` 校验握手按归属方分区。IsOS 解析并校验完整图，包括精确节点路径、引用、软件包 pin 和全部跨 core 连线；其自有 registry 校验 `isos.process.component@v0.1` 和其他 IsOS 类型。IsOS 聚合目录合并这些自有定义、EOS 定义及已验证的软件包 contribution。对于 `0.1.0`，IsOS 把完整图交给 EOS setup Validate/Render，由 EOS 仅投影并校验 `eos` core；EGIA setup 校验自己的子树。IsOS **不会**对 `0.1.0` 使用旧整图 `aether-profile validate --file`，否则会错误要求 EOS 拥有 IsOS 进程类型。旧 `1.0.0` 保留既有整图校验。在 G06 之前，建议 `0.1.0` 图中的任意跨 core 边或引用都在精确路径阻塞迁移、Apply 和 Run，包括从旧图保留的连线。启用的归属方 adapter 必须声明 `0.1.0`、成功 Validate/Render，且已启动的 EOS runtime 能读取生成投影，IsOS 才发布图。
+
+## G06 整图连线准入——目标契约
+
+对于 `0.1.0`，IsOS 在迁移提交、Validate、Apply、Run 或 Restart 前，依据整张图中通过版本准入的目录解析每个 `inputs` 来源及 `references` 项。校验来源和目标路径及注册位置、输出与输入名称、精确数据类型 ID（包括唯一注册的 `x-unit` 模式）、基数和重复来源、声明的传输方式、必需输入及环路。类型描述缺失或有歧义时拒绝准入；不能根据后缀或端口名相近推断兼容。来源对象使用其实际 JSON Pointer；来源数组使用数字索引。诊断包含该指针、`source`、`target`、`input`、稳定错误码，以及可取得的声明类型／单位。引用是依赖，不是数据连线或命令权限。IsOS 另行校验进程 `depends_on`，包括环路及停止顺序。
+
+每条准入连线有一种路由类别。`eos_local` 两端属于 EOS，只有 EOS 声明已编译路由时才可交付；`egia_local` 由 EGIA 管理；`service_bridge` 要求精确注册的桥接端点组合与传输方式（相机 gate 的 preview 到兼容 Vision 输入是首个候选）；其余准入的描述性连线均为 `design_only`。未声明的跨 core 连线即使数据类型相同也无效。跨 core 引用必须有归属方声明的依赖或服务用途，不能建立执行器路由。IsOS 向检查器返回类别及 `routed` 状态。`design_only` 始终显示未路由，不能显示为健康。G06 校验声明；R01/A04 实现实时交付与队列计数。
+
+`priority` 是 `-20..19` 内的可选整数，适用的已路由证据连线默认零。`frequency_hz` 是以 Hz 为单位且严格大于零的可选有限数值；缺失表示无频率上限。两者仅允许在归属方声明的已路由证据连线上。固定安全、执行器、结果、健康、锁存及停止路径拒绝任一字段，不能限流或静默丢弃。命令形状端口和通用软件包贡献不能建立第二条执行器路径；必须保留精确 Dispatcher 绑定。IsOS 只校验声明，不调度也不宣称实时健康。EOS 的[归属方连线契约](https://github.com/Island-Team/Island-eos/blob/refactor%28v2%29/runtime-main/docs_cn/eos/interfaces/hardware_cn.md#g06-类型化连线准入)独立校验其 EOS 投影；IsOS 必须在归属方 setup 渲染或图写入之前拒绝整图违规。
+
+固定的 G06 测试样例应包含有效 EOS 本地观测、两端类型注册后的声明式服务桥、EGIA 本地描述性连线，以及没有 QoS 字段的旧图。负面样例须给出错误类型／单位、未知端口／路径、位置、基数、传输、跨 core 桥、环路、优先级越界、非有限／零频率、固定或未路由连线上的 QoS、执行器绕行的精确来源指针。每次拒绝都保持已保存字节和活动修订不变。同一样例应经 HTTP Validate 和 Apply、CLI Apply 及迁移预检得到相同连线诊断；Run 与 Restart 在启动子进程前拒绝被篡改的已保存图。

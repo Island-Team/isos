@@ -34,6 +34,8 @@ API 只绑定 `127.0.0.1`，不提供前端文件。IsosUI 通过地址和端口
 
 草稿的注册端口类型不匹配时，校验在正常的 schema-1 成功封套中返回 `{"valid":false,"diagnostics":[{"path":"/cores/eos/layers/control/groups/manual/nodes/target/inputs/status/0","code":"edge_type_mismatch","message":"eos/control/manual/source.out (base_observation) cannot feed eos/control/manual/target.status (status); compare the registered data type and its unit schema","source":"eos/control/manual/source","target":"eos/control/manual/target","input":"status"}]}`。`path` 是指向出错输入来源的 JSON 指针（单个来源对象也以 `/0` 标识），`source` 与 `target` 是四段规范路径。数据类型 ID 必须精确一致。单位由注册数据类型 schema 的 `x-unit` 字段注解提供，用于展示；字段值单位校验仍属目标工作，不会推断单位换算。其他校验失败当前仍返回通用的 `/` 路径和 `invalid_graph` 代码。Apply 对同样的不匹配返回 HTTP 422，不修改已保存图。
 
+**G06 目标响应扩展。** 对有效的 `0.1.0` 草稿，Validate 增加 `edges:[{path,source,target,input,route_class,routed}]`，按来源的实际 JSON Pointer 排序。`route_class` 为 `eos_local`、`egia_local`、`service_bridge` 或 `design_only`；`routed` 表示归属方声明交付路由，不表示运行中的节点健康。无效连线返回 `valid:false` 与精确路径诊断，不声称部分路由列表。新图中单个来源对象使用对象指针，不虚构 `/0`；数组来源使用数字索引。Apply、迁移预检、Run 与 Restart 使用同一连线准入，拒绝时保持已保存字节及活动修订不变。既有 schema-1 封套和旧版 `1.0.0` 响应保持兼容。
+
 ### 首个兼容读取切片——已实现
 
 `GET /node-graph` 保留 schema-1 封装，返回 `data:{revision,graph,read_only,diagnostics}`。修订号是精确已保存字节的 SHA-256。安全且已应用的 `1.0.0` 图在显式迁移前为只读；未应用的旧初始图仍可编辑。缺失图返回可编辑的 `0.1.0` 草稿，`revision:""`；Init 仅在文件不存在时创建并保存相同的新版本初始图。对于句法正确但未知的版本（如 `2.0.0`），返回原始图、原始字节修订号、`read_only:true` 及 `/version` 的 `unsupported_graph_version` 诊断。无效或超限文件返回 HTTP 422。GET 不改写已保存字节。
