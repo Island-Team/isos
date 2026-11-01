@@ -25,6 +25,8 @@ IsOS 拥有并发布同时含已有 `env_from` 和新 `skill_libraries` 的 `@v0
 
 非空列表使 Apply 在不可变 P04 `v2/<active_revision>/<generation>/` leaf 中增加 IsOS 编写的 `isos/skill-selection.json`；schema-2 `manifest.json.files` 恰好列出该文件一次，`manifest.json.packages` 列出相关 pin。文件为 `0600`，父目录为 `0700`。紧凑、排序后的 JSON 字段恰好为 `schema_version:1`、`active_revision` 和 `libraries`。每个条目恰好含 `package_id`、`package_version`、`package_root`、`payload_root`、`receipt_sha256`、`release_sha256`、`payload_sha256`、`library` 与 `library_sha256`；所有摘要为 64 位小写十六进制 SHA-256。`package_root` 是 P01 私有元数据 store 的绝对路径；`payload_root` 是 P01 已验证 payload 的绝对路径，链接包可位于外部。它们只能由 IsOS 的已验证句柄产生，不能由图或浏览器提供。
 
+完整序列化文件最多 65,536 字节（64 KiB），与 EOS 的有界选择读取器一致。已验证链接包路径过长等情况导致文件超限时，IsOS 在 Apply 发布或 Run/Restart 替换前于 EOS 的 `settings.skill_libraries` 指针拒绝。
+
 `active_revision` 等于保存图字节及 P04 manifest 的 `revision`，不同于 EOS projection 摘要。文件不含 `generation`，因为 P04 generation 本身包含最终文件哈希；leaf 路径和 manifest 提供 generation。空列表不生成该文件，选中 leaf 中意外出现该文件应失败。只有列表非空时，选中的 `aether-runtime --capabilities` 必须声明精确 `host-skill-abi-v2`；缺失则在 Apply、Run/Restart 停止旧子进程或执行 guest 前返回 P05 `reader_feature_unsupported`。IsOS 只向选中的 EOS 子进程注入 `EOS_SKILL_SELECTION_FILE=<选中文件绝对路径>`，其他子进程清除继承值；作者设置的冲突值或保留参数在停止旧运行前失败。R03 的角色 grant 独立存在。
 
 Run/Restart 在停止旧子进程之前重新检查保存图、V2 selection 与 marker、完整 manifest、P01 pin、库摘要和 EOS feature。缺失、变更、未列出、不安全或 revision 错误的选择失败，并保留当前 PID、run ID、active revision 与 grant。G03 和旧 flat 快照不能启用该选择。相同图 revision 的包或二进制变更需要再次 Apply 来选择新 generation，再显式 Restart 才生效。自动 EOS 子进程重启沿用同一次运行的文件和 grant；Stop 在子进程回收后撤销 R03 grant。

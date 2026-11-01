@@ -25,6 +25,8 @@ IsOS owns and publishes the `@v0.1` component descriptor with both its existing 
 
 For a nonempty list, Apply adds one IsOS-authored `isos/skill-selection.json` to the immutable P04 `v2/<active_revision>/<generation>/` leaf. Its exact SHA-256 appears once in schema-2 `manifest.json.files`; its selected packages appear in `manifest.json.packages`. The file is private `0600` beneath `0700` parents. Its compact sorted JSON fields are exactly:
 
+The complete serialized file is at most 65,536 bytes (64 KiB), matching EOS's bounded selection reader. IsOS rejects a larger rendered file at the EOS `settings.skill_libraries` pointer before Apply publication or Run/Restart replacement, including when long verified linked-package paths cause the excess.
+
 ```json
 {
   "schema_version": 1,

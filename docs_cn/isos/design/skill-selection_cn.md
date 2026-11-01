@@ -20,7 +20,7 @@ EOS 在目录变成可用前再次检查选中 manifest 与库内容。链接 pa
 
 IsOS 实现候选（2026-11-02）：`cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test`、`cargo build`、`cargo test skill_selection -- --nocapture` 与 `python3 tests/fixtures/skill_selection/check_cases.py` 均通过。完整输出位于忽略的 `logs/test/20261102-r04-isos-impl/`。专项测试覆盖精确图指针、重复与不安全路径、已验证 P01 pin、链接 payload 修改、不兼容发布类型、私有 V2 generation 清单及篡改拒绝，以及只向 EOS 子进程交付环境变量。20 用例检查仅验证冻结表格与 schema；EOS 拥有的 I17–I20 和跨所有者双代运行重放仍需集成证据，才能关闭 R04。
 
-独立审查修复（2026-11-02）：`cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test --no-fail-fast`、`cargo build --all-targets`、`cargo test skill_selection -- --nocapture`、`python3 tests/fixtures/skill_selection/check_cases.py` 与 `git diff --check` 均通过。完整输出位于忽略的 `logs/test/20261102-r04-isos-review-fix/`（203 个单元测试、七个 CLI 指南测试、一个移除命令测试、九个边检查测试；11 个专项 skill-selection 单元测试及一个 CLI 测试；20 个冻结用例）。回归测试覆盖 FIFO 替换时不阻塞、无符号链接且有界的选择文件读取、丢失 EOS 交付、setup/capabilities 辅助进程环境隔离，以及旧版 HTTP Validate 优先返回字段指针。跨所有者资格验证仍待完成。
+独立审查修复（2026-11-02）：`cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test --no-fail-fast`、`cargo build --all-targets`、`cargo test skill_selection -- --nocapture`、`python3 tests/fixtures/skill_selection/check_cases.py` 与 `git diff --check` 均通过。完整输出位于忽略的 `logs/test/20261102-r04-isos-review-fix/`（204 个单元测试、七个 CLI 指南测试、一个移除命令测试、九个边检查测试；12 个专项 skill-selection 单元测试及一个 CLI 测试；20 个冻结用例）。回归测试覆盖 FIFO 替换时不阻塞、无符号链接且有界的选择文件读取、丢失 EOS 交付、setup/capabilities 辅助进程环境隔离、旧版 HTTP Validate 优先返回字段指针，以及 EOS 64 KiB 选择文件限制。跨所有者资格验证仍待完成。
 
 ## 精确诊断路径
 

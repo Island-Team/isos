@@ -18,6 +18,7 @@ use std::{
 
 const BASE: &str = "/cores/isos/layers/process/groups/component/nodes";
 const MAX_LIBRARY_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_SELECTION_BYTES: usize = 64 * 1024;
 pub const ENV: &str = "EOS_SKILL_SELECTION_FILE";
 pub const RELATIVE_FILE: &str = "isos/skill-selection.json";
 
@@ -486,13 +487,23 @@ pub fn render(
             library_sha256: hash,
         });
     }
+    Ok(Some(encode_selection(revision, libraries)?))
+}
+
+fn encode_selection(
+    revision: &str,
+    libraries: Vec<SelectedLibrary>,
+) -> std::result::Result<Vec<u8>, Diagnostic> {
     let bytes = serde_json::to_vec(&Selection {
         schema_version: 1,
         active_revision: revision.into(),
         libraries,
     })
     .map_err(|_| diagnostic("skill_selection_invalid", pointer("eos")))?;
-    Ok(Some(bytes))
+    if bytes.len() > MAX_SELECTION_BYTES {
+        return Err(diagnostic("skill_selection_invalid", pointer("eos")));
+    }
+    Ok(bytes)
 }
 
 pub fn compare_selected(
@@ -528,7 +539,7 @@ fn read_selected_bytes(
     expected_len: usize,
 ) -> std::result::Result<Vec<u8>, crate::generated_v2::Diagnostic> {
     let mismatch = crate::generated_v2::snapshot_mismatch;
-    if expected_len == 0 || expected_len > 65_536 {
+    if expected_len == 0 || expected_len > MAX_SELECTION_BYTES {
         return Err(mismatch());
     }
     let directory = OpenOptions::new()
@@ -843,6 +854,30 @@ mod tests {
             "generated_manifest_mismatch"
         );
         assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn selected_manifest_over_eos_reader_limit_fails_before_publication() {
+        let item = SelectedLibrary {
+            package_id: "test/verified".into(),
+            package_version: "0.1.1".into(),
+            package_root: "/tmp/package".into(),
+            payload_root: format!("/tmp/{}", "a/".repeat(1800)),
+            receipt_sha256: "a".repeat(64),
+            release_sha256: "b".repeat(64),
+            payload_sha256: "c".repeat(64),
+            library: "lib/island/skills/example.skill.so".into(),
+            library_sha256: "d".repeat(64),
+        };
+        assert!(encode_selection(&"a".repeat(64), vec![item.clone()]).is_ok());
+        let error = encode_selection(&"a".repeat(64), vec![item; 16]).unwrap_err();
+        assert_eq!(
+            (error.code, error.path.as_str()),
+            (
+                "skill_selection_invalid",
+                "/cores/isos/layers/process/groups/component/nodes/eos/settings/skill_libraries"
+            )
+        );
     }
 
     #[test]
