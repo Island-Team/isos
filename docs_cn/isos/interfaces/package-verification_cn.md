@@ -37,3 +37,7 @@ CLI 失败返回非零状态。HTTP 保留现有 schema-1 `{schema_version,ok,da
 例如，`POST /api/isos/v1/packages/link` 接收 `{ "id": "island/mujoco-sim", "version": "0.1.1", "path": "/home/user/bundle", "manifest": "/home/user/bundle/release.json" }`。成功响应保留现有 `data.path` 与 `data.installed`，增加 `data.verified:true` 与 `data.source_kind:"local_link"`；`installed` 包含该精确固定版本的新 schema-2 收据。链接程序变化示例：`{ "schema_version": 1, "ok": false, "data": { "diagnostics": [{ "code": "package_changed", "path": "/cores/eos/layers/process/groups/mujoco/nodes/sim/package", "message": "Reinstall or relink island/mujoco-sim@0.1.1", "id": "island/mujoco-sim", "version": "0.1.1", "stage": "payload" }] }, "error": "Reinstall or relink island/mujoco-sim@0.1.1" }`；Apply 与 Run 均保持保存和活动修订不变。
 
 [P01 夹具](../../../tests/fixtures/package_verification/README.md)冻结正反例；首次使用命令见[软件包操作](../usage/packages_cn.md)。P04／P05 在生成配置及启动读取器之前复用本准入。
+
+## R04 选择扩展目标
+
+[host 技能选择契约](skill-selection_cn.md)把精确的 `settings.skill_libraries[*].package` pin 加入同一 P01 收集器。P01 重新验证选中且 `kind:"skill"` 的发布与链接 payload；R04 选择器检查每个明列的普通 `.skill.so` 文件及摘要。schema-2 收据和 v4 发布 manifest 不变，递归扫描不会授予执行权。

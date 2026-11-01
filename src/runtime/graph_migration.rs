@@ -491,11 +491,15 @@ pub fn cross_core_diagnostic(graph: &Value) -> Option<Diagnostic> {
 }
 
 pub fn prepare(paths: &Paths, name: &str, proposal: &Proposal) -> Result<Prepared, Diagnostic> {
+    crate::skill_selection::check_reserved(&proposal.graph).map_err(skill_diagnostic)?;
+    crate::skill_selection::entries(&proposal.graph).map_err(skill_diagnostic)?;
     if let Some(diagnostic) = graph_compat::admission_diagnostic(&proposal.graph, None) {
         return Err(diagnostic);
     }
     packages::verify_graph_packages(paths, &proposal.graph)
         .map_err(|error| package_diagnostic(&error))?;
+    crate::skill_selection::render(paths, &proposal.graph, &proposal.revision)
+        .map_err(skill_diagnostic)?;
     mujoco_catalog::validate_graph(paths, &proposal.graph)
         .map_err(|error| package_or_owner_diagnostic(&error, "/cores/eos"))?;
     if proposal.graph.pointer("/cores/eos").is_none() {
@@ -552,6 +556,26 @@ pub fn prepare(paths: &Paths, name: &str, proposal: &Proposal) -> Result<Prepare
         files,
         edges,
     })
+}
+
+fn skill_diagnostic(problem: crate::skill_selection::Diagnostic) -> Diagnostic {
+    let mut diagnostic = diagnostic(problem.path, problem.code, problem.message);
+    diagnostic
+        .context
+        .insert("stage".into(), Value::String(problem.stage.into()));
+    diagnostic
+}
+
+pub fn public_diagnostic(diagnostic: &Diagnostic) -> Value {
+    if diagnostic.code.starts_with("skill_") {
+        return json!({
+            "code": diagnostic.code,
+            "path": diagnostic.path,
+            "message": diagnostic.message,
+            "stage": diagnostic.context.get("stage").and_then(Value::as_str).unwrap_or("graph")
+        });
+    }
+    json!(diagnostic)
 }
 
 fn check_digest(value: &str) -> Result<(), MigrationError> {

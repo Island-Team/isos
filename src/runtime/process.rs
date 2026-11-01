@@ -134,6 +134,8 @@ pub struct ProcessSettings {
     #[serde(default)]
     pub env_from: BTreeMap<String, String>,
     #[serde(default)]
+    pub skill_libraries: Vec<crate::skill_selection::Entry>,
+    #[serde(default)]
     pub ready_tcp: Option<String>,
     #[serde(default)]
     pub ready_unix: Option<PathBuf>,
@@ -356,6 +358,8 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
         "node graph exceeds 1 MiB"
     );
     let value = normalize_source(source)?;
+    crate::skill_selection::check_reserved(&value)?;
+    crate::skill_selection::entries(&value)?;
     let sidecars = paths
         .map(|paths| packages::node_type_sidecars_for_graph(paths, &value))
         .transpose()?
@@ -586,6 +590,11 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
                             node.node_type == "isos.process.component@v0.1"
                                 || settings.env_from.is_empty(),
                             "{path}: env_from requires the @v0.1 component type"
+                        );
+                        ensure!(
+                            node.node_type == "isos.process.component@v0.1"
+                                || settings.skill_libraries.is_empty(),
+                            "{path}: skill_libraries requires the @v0.1 component type"
                         );
                         let binary = match key.as_str() {
                             "eos" => "aether-runtime",
@@ -843,6 +852,8 @@ pub fn normalize_source(source: &str) -> Result<Value> {
 }
 
 pub fn validate_value(paths: &Paths, graph: &Value) -> Result<()> {
+    crate::skill_selection::check_reserved(graph)?;
+    crate::skill_selection::entries(graph)?;
     packages::verify_graph_packages(paths, graph)?;
     mujoco_catalog::validate_graph(paths, graph)?;
     graph_compat::admit_legacy_mapped(graph, catalog().ok().as_ref())?;
@@ -850,6 +861,8 @@ pub fn validate_value(paths: &Paths, graph: &Value) -> Result<()> {
 }
 
 pub fn validate_value_with_profile(paths: &Paths, graph: &Value, profile: &Path) -> Result<()> {
+    crate::skill_selection::check_reserved(graph)?;
+    crate::skill_selection::entries(graph)?;
     packages::verify_graph_packages(paths, graph)?;
     mujoco_catalog::validate_graph(paths, graph)?;
     graph_compat::admit_legacy_mapped(graph, catalog().ok().as_ref())?;
@@ -1029,10 +1042,8 @@ fn catalog_with_sidecars(sidecars: Vec<PathBuf>) -> Result<Value> {
         }
     }
     let types = catalog["types"].as_array_mut().unwrap();
-    if !types
-        .iter()
-        .any(|item| item["id"] == "isos.process.component@v0.1")
     {
+        types.retain(|item| item["id"] != "isos.process.component@v0.1");
         let mut component = types
             .iter()
             .find(|item| item["id"] == "isos.process.component@v1.1")
@@ -1047,6 +1058,7 @@ fn catalog_with_sidecars(sidecars: Vec<PathBuf>) -> Result<Value> {
                 "name":"env_from","data_type":"string_table","required":false,
                 "description":"Child environment targets and manager environment source names"
             }));
+            settings.push(crate::skill_selection::setting_descriptor());
         }
         types.push(component);
     }
@@ -1250,6 +1262,9 @@ impl Supervisor {
         secrets: &BTreeMap<String, std::ffi::OsString>,
         secret_sources: &BTreeSet<String>,
     ) -> Result<Child> {
+        if spec.id == "eos" && spec.settings.role.as_deref() == Some("eos") {
+            crate::skill_selection::verify_child_handoff(&self.paths, &self.deployment, spec)?;
+        }
         let mut command = Command::new(&spec.settings.command[0]);
         command.args(&spec.settings.command[1..]);
         if matches!(spec.id.as_str(), "eos" | "bridge" | "config")
@@ -1300,6 +1315,7 @@ impl Supervisor {
                     .arg(payload);
             }
         }
+        crate::skill_selection::scrub_inherited(&mut command);
         command.envs(&spec.settings.env);
         for reserved in control_grants::RESERVED_ENVS {
             command.env_remove(reserved);

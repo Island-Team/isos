@@ -41,3 +41,7 @@ schema-1 HTTP 封装保留 `ok:false`、`error` 和 `data.diagnostics`；CLI 输
 `isos version check --json` 仅在 IsOS 已针对该图核验一个已安装或已索引发行版的签名／验证清单、精确资产摘要、核心角色、读取集合、必需特性及包贡献时，才可给出 `compatible_upgrade`。该字段为 `null` 或单个精确发行版 `{id,version,sha256}`；semver 范围、Git 分支、猜测 URL 或较新的产品版本均不够。列出候选不安装、不选择、不应用。缺少验证证据时，建议恢复兼容的所选构建或检查归属方发行目录。即使有候选，未来版本和未知版本依然失败。
 
 [`tests/fixtures/reader_features/`](../../../tests/fixtures/reader_features/) 中的 P05 夹具冻结实现和跨仓库重放的正例、负例及不停止行为。其中 `reader_preflight` 操作仅隔离检查身份；R02 尚未提供 EOS 网关就绪时，`admit_reader_only` 不表示公开 Run 成功。所选读取器实现位于 `src/runtime/reader_features.rs`；EOS 与 EGIA 分别归属各自公布的身份。完整首次启动资格验证仍依赖 R02 网关。
+
+## R04 host feature 目标
+
+显式 EOS `settings.skill_libraries` 非空时，选中的 `aether-runtime` 必须通过有界 `--capabilities` 探测声明精确 `host-skill-abi-v2`。缺失时在 EOS component `/node_type` 返回同一 `reader_feature_unsupported`，且必须发生在 P04 发布或停止旧子进程之前；产品版本不能替代 feature。空列表或字段缺失不要求此 feature。详见[技能选择契约](skill-selection_cn.md)。

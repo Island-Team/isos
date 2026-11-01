@@ -6,4 +6,6 @@ IsOS 在本地管理已保存图、后端软件包、工作台 API 和直接子�
 
 R03 的[托管控制授权契约](interfaces/control-grants_cn.md)和[启动设计](design/control-grants_cn.md)记录已合并所有者 PR 且通过干净 home 重放的 IsOS 签发与 EOS 交接。较广的 I4 生命周期门槛以及 R05/R06 MuJoCo 实体验证仍未关闭。
 
+R04 的[已验证原生技能选择契约](interfaces/skill-selection_cn.md)和[事务设计](design/skill-selection_cn.md)定义向 EOS worker 精确交付软件包与库。IsOS 实现候选已准入此选择；独立复核和跨所有者验收仍未完成。
+
 [English](../../docs/isos/README.md)

@@ -146,6 +146,11 @@ fn log_prelaunch_failure(
             })
             .or_else(|| {
                 cause
+                    .downcast_ref::<crate::skill_selection::Diagnostic>()
+                    .map(|d| (d.code, d.path.as_str()))
+            })
+            .or_else(|| {
+                cause
                     .downcast_ref::<crate::control_grants::Diagnostic>()
                     .map(|d| (d.code, d.path.as_str()))
             })
@@ -215,6 +220,12 @@ fn preflight_packages(
     revision: &str,
 ) -> Result<Vec<process::ProcessSpec>> {
     let graph: Value = serde_json::from_str(source)?;
+    crate::skill_selection::check_reserved(&graph)?;
+    let selected_libraries = crate::skill_selection::entries(&graph)?;
+    if !selected_libraries.is_empty() {
+        crate::packages::verify_graph_packages(paths, &graph)?;
+        crate::skill_selection::render(paths, &graph, revision)?;
+    }
     let selected = if graph["version"] == "0.1.0" {
         Some(crate::generated_v2::selected_v2_root(
             paths, name, &graph, revision,
@@ -230,6 +241,9 @@ fn preflight_packages(
         let generated = selected.join("eos/graph.json");
         process::use_generated_eos_profile(&mut specs, &generated)?;
         process::use_generated_egia_config(&mut specs, &selected.join("egia"))?;
+        let skill_file =
+            crate::skill_selection::compare_selected(paths, &graph, revision, &selected)?;
+        crate::skill_selection::apply_env(&mut specs, skill_file.as_deref());
     }
     let catalog = process::catalog_for_graph(paths, &graph)?;
     reader_features::check(paths, &graph, &specs, &catalog)?;
@@ -262,6 +276,11 @@ fn verify_selected_before_reader(
 ) -> Result<()> {
     let saved = graph_compat::parse(source.as_bytes())?;
     if saved.value["version"] == "0.1.0" {
+        crate::skill_selection::check_reserved(&saved.value)?;
+        if !crate::skill_selection::entries(&saved.value)?.is_empty() {
+            crate::packages::verify_graph_packages(paths, &saved.value)?;
+            crate::skill_selection::render(paths, &saved.value, revision)?;
+        }
         crate::generated_v2::selected_v2_root(paths, name, &saved.value, revision)?;
     }
     Ok(())
@@ -861,6 +880,11 @@ pub(crate) fn handle_client(
                         })
                         .or_else(|| {
                             cause
+                                .downcast_ref::<crate::skill_selection::Diagnostic>()
+                                .map(|diagnostic| json!({"diagnostics":[diagnostic]}))
+                        })
+                        .or_else(|| {
+                            cause
                                 .downcast_ref::<crate::control_grants::Diagnostic>()
                                 .map(|diagnostic| json!({"diagnostics":[diagnostic]}))
                         })
@@ -1087,6 +1111,90 @@ pub(crate) fn service_call(
 mod restart_tests {
     use super::*;
     use std::net::Shutdown;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn writable_selected_skill_rejects_restart_before_old_process_stops() {
+        let (_temp, paths, source) = crate::skill_selection::tests::fixture();
+        let graph =
+            crate::skill_selection::tests::graph(json!([crate::skill_selection::tests::pin(
+                "lib/island/skills/example.skill.so"
+            )]));
+        let bytes = serde_json::to_vec_pretty(&graph).unwrap();
+        let revision = graph_compat::revision(&bytes);
+        config::atomic_write(&paths.node_graph_path("test"), &bytes).unwrap();
+        crate::generated_v2::publish(
+            &paths,
+            "test",
+            &graph,
+            &revision,
+            &[
+                (
+                    std::path::PathBuf::from("eos/graph.json"),
+                    b"projection".to_vec(),
+                ),
+                (
+                    std::path::PathBuf::from("launch-inputs.json"),
+                    b"[]".to_vec(),
+                ),
+            ],
+        )
+        .unwrap();
+        let active_spec = process::ProcessSpec {
+            id: "stub".into(),
+            path: "isos/process/component/stub".into(),
+            settings: serde_json::from_value(json!({
+                "command":["/bin/sleep","30"],"start_timeout_ms":500
+            }))
+            .unwrap(),
+            package: None,
+            fingerprint: None,
+        };
+        let mut managers = Deployments::new();
+        restart_processes(&paths, &mut managers, "test", "old", &[active_spec]).unwrap();
+        let old_run = managers.get("test").unwrap().supervisor.run_id().to_owned();
+        let old_pid = managers
+            .get_mut("test")
+            .unwrap()
+            .supervisor
+            .status()
+            .unwrap()[0]
+            .pid;
+        fs::set_permissions(
+            source.join("lib/island/skills/example.skill.so"),
+            fs::Permissions::from_mode(0o775),
+        )
+        .unwrap();
+        let mut services = services::ServiceManager::new(&paths, "test").unwrap();
+        let error = api_call(
+            &paths,
+            &mut managers,
+            &mut services,
+            ApiRequest {
+                schema_version: 1,
+                op: "deployment_restart".into(),
+                deployment: Some("test".into()),
+                role: None,
+                revision: Some(revision),
+                service_id: None,
+                cursor: None,
+                limit: None,
+                log: None,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<crate::skill_selection::Diagnostic>()
+                .unwrap()
+                .code,
+            "skill_library_unsafe"
+        );
+        let active = managers.get_mut("test").unwrap();
+        assert_eq!(active.supervisor.run_id(), old_run);
+        assert_eq!(active.supervisor.status().unwrap()[0].pid, old_pid);
+        active.supervisor.stop();
+    }
 
     #[test]
     fn grant_plan_preflight_leaves_active_pid_and_current_run_scope_unchanged() {
