@@ -845,8 +845,7 @@ pub(crate) fn daemon(
 ) -> Result<()> {
     // A manager session boundary is explicit; one-shot CLI reads must not
     // silently rotate the pre-run scope between commands.
-    let _ =
-        log_store::LogStore::new(paths, deployment).and_then(|logs| logs.begin_manager_session());
+    log_store::LogStore::new(paths, deployment)?.begin_manager_session()?;
     let mut managers = Deployments::new();
     let mut service_manager = services::ServiceManager::new(paths, deployment)?;
     println!("IsOS API listening on {}", paths.socket().display());

@@ -31,6 +31,24 @@ struct RawEvent {
     fields: Map<String, Value>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)] // Used to reject duplicate and unknown stored keys during deserialization.
+struct StrictStoredEvent {
+    timestamp: String,
+    level: String,
+    source: String,
+    core: String,
+    node_path: Option<String>,
+    event_code: String,
+    run_id: String,
+    correlation_id: Option<String>,
+    message: String,
+    #[serde(deserialize_with = "unique_fields")]
+    fields: Map<String, Value>,
+    pid: Option<u32>,
+}
+
 fn unique_fields<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> std::result::Result<Map<String, Value>, D::Error> {
@@ -516,6 +534,150 @@ pub fn parse_child(raw: &[u8], role: &str, run_id: &str, pid: u32) -> Result<Val
         "normalized line too large"
     );
     Ok(normalized)
+}
+
+/// Check an already normalized P06 record before it can enter a P07 page or
+/// become a persisted anchor. The source log is owner-only, but it can be
+/// truncated or modified independently of the cursor state.
+pub(crate) fn validate_stored(value: &Value) -> Result<()> {
+    let object = value
+        .as_object()
+        .context("stored event must be an object")?;
+    const KEYS: [&str; 11] = [
+        "timestamp",
+        "level",
+        "source",
+        "core",
+        "node_path",
+        "event_code",
+        "run_id",
+        "correlation_id",
+        "message",
+        "fields",
+        "pid",
+    ];
+    ensure!(
+        object.len() == KEYS.len() && KEYS.iter().all(|key| object.contains_key(*key)),
+        "stored event envelope mismatch"
+    );
+    ensure!(
+        serde_json::to_vec(value)?.len() < MAX_STORED_LINE,
+        "stored event exceeds line bound"
+    );
+    let timestamp = value["timestamp"]
+        .as_str()
+        .context("stored event timestamp")?;
+    let stamp = DateTime::parse_from_rfc3339(timestamp)?;
+    ensure!(
+        timestamp.ends_with('Z') && stamp.to_rfc3339_opts(SecondsFormat::Millis, true) == timestamp,
+        "stored event time must be UTC milliseconds"
+    );
+    let level = value["level"].as_str().context("stored event level")?;
+    ensure!(
+        matches!(level, "trace" | "debug" | "info" | "warn" | "error"),
+        "stored event severity"
+    );
+    let source = value["source"].as_str().context("stored event source")?;
+    ensure!(
+        token(source, 48) && !matches!(source, "all" | "services" | "events"),
+        "stored event source"
+    );
+    let core = value["core"].as_str().context("stored event core")?;
+    let selected = matches!(source, "eos" | "bridge" | "config" | "egia");
+    ensure!(
+        core == if source == "egia" {
+            "egia"
+        } else if selected {
+            "eos"
+        } else {
+            "isos"
+        },
+        "stored event core/source mismatch"
+    );
+    let run = value["run_id"].as_str().context("stored event run")?;
+    ensure!(
+        token(run, 64) && (run.starts_with('m') || run.starts_with('r')),
+        "stored event run"
+    );
+    ensure!(
+        value["correlation_id"].is_null()
+            || value["correlation_id"]
+                .as_str()
+                .is_some_and(|id| token(id, 64)),
+        "stored event correlation"
+    );
+    ensure!(
+        value["node_path"].is_null()
+            || value["node_path"].as_str().is_some_and(|path| node_pointer(
+                path,
+                if selected { core } else { "isos" }
+            ) || (!selected
+                && ["eos", "egia"]
+                    .into_iter()
+                    .any(|owner| node_pointer(path, owner)))),
+        "stored event node pointer"
+    );
+    let code_value = value["event_code"].as_str().context("stored event code")?;
+    ensure!(code(code_value), "stored event code");
+    let message = value["message"].as_str().context("stored event message")?;
+    ensure!(
+        !message.is_empty() && message.len() <= 8192 && !message.chars().any(char::is_control),
+        "stored event message"
+    );
+    ensure!(
+        value["pid"].is_null()
+            || value["pid"]
+                .as_u64()
+                .is_some_and(|pid| (1..=u32::MAX as u64).contains(&pid)),
+        "stored event pid"
+    );
+    let fields = value["fields"].as_object().context("stored event fields")?;
+    ensure!(
+        fields.len() <= 12 && serde_json::to_vec(fields)?.len() <= 4096,
+        "stored event fields bound"
+    );
+    for (key, field) in fields {
+        ensure!(token(key, 48), "stored event field key");
+        ensure!(
+            field.is_null()
+                || field.is_boolean()
+                || (field.is_number() && (!selected || field.is_i64() || field.is_u64()))
+                || field
+                    .as_str()
+                    .is_some_and(|s| s.len() <= 256 && !s.chars().any(char::is_control)),
+            "stored event field value"
+        );
+    }
+    if selected {
+        ensure!(run.starts_with('r'), "selected event run");
+        ensure!(
+            value["pid"]
+                .as_u64()
+                .is_some_and(|pid| (1..=u32::MAX as u64).contains(&pid)),
+            "selected event pid"
+        );
+        ensure!(allowed(source, code_value), "selected stored event code");
+        let mut raw = value.clone();
+        raw.as_object_mut().expect("checked object").remove("pid");
+        let event: RawEvent = serde_json::from_value(raw)?;
+        if source == "egia" {
+            validate_egia(&event)?;
+        } else {
+            validate_eos(&event)?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn parse_stored(raw: &[u8]) -> Result<Value> {
+    ensure!(
+        raw.len() <= MAX_STORED_LINE && raw.last() == Some(&b'\n'),
+        "stored event line bound"
+    );
+    let _: StrictStoredEvent = serde_json::from_slice(raw)?;
+    let value: Value = serde_json::from_slice(raw)?;
+    validate_stored(&value)?;
+    Ok(value)
 }
 
 #[cfg(test)]

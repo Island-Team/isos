@@ -54,13 +54,9 @@ for name in ("stop_retains_last_run", "failed_retains_last_run"):
     assert next(c for c in cases if c["name"] == name)["expected"]["process_status_run_id"] == "r7"
 
 
-def resolve(state, retained, history_complete=False):
+def resolve(state, retained):
     """Reference scope selector. The durable last-run ID survives log rotation."""
     last = state.get("last_run_id") if state["valid"] else None
-    if last is None and not state["valid"]:
-        starts = [e for e in retained if e["event_code"] == "deployment_starting"]
-        if history_complete and starts:
-            last = max(starts, key=lambda e: e["accepted_position"])["run_id"]
     if last is None and (not state["valid"] or not state.get("never_run", False)):
         return {"http": 503, "code": "log_scope_unavailable", "path": "/scope",
                 "run_id_state": "unavailable", "scope_kind": None, "scope_run_id": None}
@@ -101,7 +97,7 @@ def admit(state, candidate, publication):
 
 state_cases = json.loads((HERE / "state-scenarios.json").read_text())
 assert state_cases["contract"] == "isos-log-cursors-p07-state-v1"
-assert len(state_cases["cases"]) == 9
+assert len(state_cases["cases"]) == 10
 for scenario in state_cases["cases"]:
     retained = scenario.get("retained_events", [])
     positions = [e["accepted_position"] for e in retained]
@@ -109,7 +105,7 @@ for scenario in state_cases["cases"]:
     if "publication" in scenario:
         actual = admit(scenario["state"], scenario["candidate_run_id"], scenario["publication"])
     else:
-        actual = resolve(scenario["state"], scenario["retained_events"], scenario.get("retained_history_complete", False))
+        actual = resolve(scenario["state"], scenario["retained_events"])
     assert actual == scenario["expected"], (scenario["name"], actual, scenario["expected"])
 
 print(f"P07 contract fixtures OK: {len(cases)} wire cases, {len(state_cases['cases'])} state scenarios")

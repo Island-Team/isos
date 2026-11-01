@@ -24,6 +24,7 @@ struct Anchor {
     event: Value,
     segment: String,
     after_offset: u64,
+    seal: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -43,10 +44,10 @@ struct State {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Origin {
+struct SessionIntent {
     schema_version: u8,
     deployment: String,
-    first_segment: String,
+    session: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -176,17 +177,165 @@ fn state_path(store: &LogStore) -> PathBuf {
     store.root.join("cursor-state.json")
 }
 
+fn intent_path(store: &LogStore) -> PathBuf {
+    store.root.join("cursor-session-intent.json")
+}
+
+fn read_intent(store: &LogStore, name: &str) -> Result<Option<String>> {
+    let path = intent_path(store);
+    match fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+        Ok(_) => {}
+    }
+    let intent: SessionIntent = serde_json::from_slice(&private_read(&path, 1024)?)?;
+    ensure!(
+        intent.schema_version == 1
+            && intent.deployment == name
+            && intent.session.starts_with('m')
+            && token_valid(&intent.session, 64),
+        "manager session intent invalid"
+    );
+    Ok(Some(intent.session))
+}
+
+fn write_intent(store: &LogStore, name: &str, session: &str) -> Result<()> {
+    let intent = SessionIntent {
+        schema_version: 1,
+        deployment: name.to_owned(),
+        session: session.to_owned(),
+    };
+    private_write(&intent_path(store), &serde_json::to_vec(&intent)?)
+}
+
+fn clear_intent(store: &LogStore) -> Result<()> {
+    let path = intent_path(store);
+    if path.exists() {
+        fs::remove_file(path)?;
+        File::open(&store.root)?.sync_all()?;
+    }
+    Ok(())
+}
+
 fn loss_total(store: &LogStore) -> u64 {
     store.losses.load(Ordering::Relaxed)
 }
 
-fn validate_state(state: &State, name: &str) -> Result<()> {
+fn anchor_record_matches(store: &LogStore, anchor: &Anchor) -> Result<()> {
+    let Some(segment) = segments(store)?
+        .into_iter()
+        .find(|segment| segment.id == anchor.segment)
+    else {
+        // The sanitized copy outlives ordinary rotation. Its original
+        // segment may no longer be retained.
+        return Ok(());
+    };
+    ensure!(
+        anchor.after_offset <= segment.len,
+        "anchor position exceeds segment"
+    );
+    let start = anchor
+        .after_offset
+        .saturating_sub(event_policy::MAX_STORED_LINE as u64);
+    let mut file = File::open(&segment.path)?;
+    file.seek(SeekFrom::Start(start))?;
+    let mut bytes = vec![0; (anchor.after_offset - start) as usize];
+    file.read_exact(&mut bytes)?;
+    ensure!(
+        bytes.last() == Some(&b'\n'),
+        "anchor position is not a record boundary"
+    );
+    let begin = bytes[..bytes.len() - 1]
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(0, |index| index + 1);
+    let accepted = event_policy::parse_stored(&bytes[begin..])?;
+    ensure!(
+        accepted == anchor.event,
+        "anchor copy differs from accepted record"
+    );
+    Ok(())
+}
+
+fn anchor_seal(
+    store: &LogStore,
+    event: &Value,
+    segment: &str,
+    after_offset: u64,
+) -> Result<String> {
+    let body = serde_json::to_vec(&json!([event, segment, after_offset]))?;
+    Ok(URL_SAFE_NO_PAD.encode(mac(&key(store)?, &body)))
+}
+
+fn typed_package_failure(code: &str) -> bool {
+    matches!(
+        code,
+        "package_load_failed"
+            | "package_unsafe_path"
+            | "package_missing_file"
+            | "package_invalid_descriptor"
+            | "package_invalid_manifest"
+            | "package_changed"
+            | "package_platform_mismatch"
+            | "package_invalid_sidecar"
+            | "package_version_exists"
+            | "package_digest_mismatch"
+    )
+}
+
+fn validate_anchor(store: &LogStore, anchor: &Anchor, run: &str, manager: bool) -> Result<()> {
+    ensure!(
+        anchor.segment.len() <= 96
+            && anchor.segment.split('-').count() == 3
+            && anchor
+                .segment
+                .split('-')
+                .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_hexdigit())),
+        "anchor segment identity"
+    );
+    ensure!(
+        anchor.after_offset > 0 && anchor.after_offset <= 100_000_000,
+        "anchor accepted position"
+    );
+    let expected = anchor_seal(store, &anchor.event, &anchor.segment, anchor.after_offset)?;
+    ensure!(anchor.seal == expected, "anchor seal mismatch");
+    event_policy::validate_stored(&anchor.event)?;
+    ensure!(
+        anchor.event["run_id"].as_str() == Some(run),
+        "anchor scope mismatch"
+    );
+    let source = anchor.event["source"].as_str().context("anchor source")?;
+    let code = anchor.event["event_code"].as_str().context("anchor code")?;
+    let level = anchor.event["level"].as_str().context("anchor level")?;
+    let eligible = if manager {
+        level == "error"
+            && ((source == "packages" && typed_package_failure(code))
+                || (source == "isos" && code == "deployment_preflight_failed"))
+    } else {
+        (level == "info"
+            && matches!(
+                (source, code),
+                ("isos", "deployment_ready")
+                    | ("eos", "eos_ready")
+                    | ("bridge", "bridge_ready")
+                    | ("config", "config_ready")
+                    | ("egia", "egia_ready")
+            ))
+            || (level == "error"
+                && (matches!(source, "eos" | "bridge" | "config" | "egia")
+                    || (source == "isos" && code == "deployment_failed")))
+    };
+    ensure!(eligible, "anchor event is not eligible for scope");
+    anchor_record_matches(store, anchor)
+}
+
+fn validate_state(store: &LogStore, state: &State, name: &str) -> Result<()> {
     ensure!(
         state.schema_version == 1 && state.deployment == name,
         "cursor state identity"
     );
     ensure!(
-        token_valid(&state.manager_session, 64),
+        state.manager_session.starts_with('m') && token_valid(&state.manager_session, 64),
         "cursor manager identity"
     );
     ensure!(
@@ -209,19 +358,26 @@ fn validate_state(state: &State, name: &str) -> Result<()> {
     );
     if state.run_anchor_state == "found" {
         ensure!(state.run_anchor.is_some(), "cursor anchor missing");
+    } else {
+        ensure!(state.run_anchor.is_none(), "cursor anchor state mismatch");
     }
-    for anchor in [&state.manager_anchor, &state.run_anchor]
-        .into_iter()
-        .flatten()
-    {
+    if let Some(anchor) = state.manager_anchor.as_ref() {
         ensure!(
-            anchor.event.is_object() && anchor.event["run_id"].is_string(),
-            "cursor anchor event"
+            state.last_run_id.is_none(),
+            "manager anchor after run admission"
         );
-        ensure!(
-            anchor.segment.len() <= 96 && !anchor.segment.is_empty(),
-            "cursor anchor segment"
-        );
+        validate_anchor(store, anchor, &state.manager_session, true)?;
+    }
+    if let Some(anchor) = state.run_anchor.as_ref() {
+        validate_anchor(
+            store,
+            anchor,
+            state
+                .last_run_id
+                .as_deref()
+                .context("run anchor without identity")?,
+            false,
+        )?;
     }
     Ok(())
 }
@@ -231,6 +387,13 @@ fn save_state(store: &LogStore, state: &State) -> Result<()> {
     if state.deployment == "p07-anchor-fail" && state.run_anchor_state == "found" {
         anyhow::bail!("injected anchor publication failure");
     }
+    #[cfg(test)]
+    if state.deployment == "p07-session-fail"
+        && intent_path(store).exists()
+        && state.manager_session == crate::manager::manager_session_id()
+    {
+        anyhow::bail!("injected manager-session state publication failure");
+    }
     private_write(&state_path(store), &serde_json::to_vec(state)?)
 }
 
@@ -239,15 +402,6 @@ pub(super) fn initialize(store: &LogStore, fresh_root: bool) -> Result<()> {
         return Ok(());
     }
     let name = deployment(store)?;
-    let origin = Origin {
-        schema_version: 1,
-        deployment: name.clone(),
-        first_segment: identity(&store.root.join("events.log"))?,
-    };
-    private_write(
-        &store.root.join("cursor-origin.json"),
-        &serde_json::to_vec(&origin)?,
-    )?;
     let state = State {
         schema_version: 1,
         deployment: name,
@@ -296,72 +450,18 @@ impl Segment {
     }
 }
 
-fn recover_state(store: &LogStore, name: &str) -> Result<State> {
-    let origin: Origin =
-        serde_json::from_slice(&private_read(&store.root.join("cursor-origin.json"), 1024)?)?;
-    ensure!(
-        origin.schema_version == 1 && origin.deployment == name,
-        "history origin identity"
-    );
-    let segments = segments(store)?;
-    ensure!(
-        segments
-            .first()
-            .is_some_and(|segment| segment.id == origin.first_segment),
-        "admission history is incomplete"
-    );
-    let mut latest = None;
-    let mut scanned = 0_u64;
-    for segment in segments {
-        scanned = scanned.saturating_add(segment.len);
-        ensure!(
-            scanned <= 4_194_304,
-            "admission history exceeds recovery bound"
-        );
-        for raw in BufReader::new(File::open(&segment.path)?).split(b'\n') {
-            let raw = raw?;
-            if raw.is_empty() {
-                continue;
-            }
-            let event: Value = serde_json::from_slice(&raw)?;
-            if event["source"] == "isos" && event["event_code"] == "deployment_starting" {
-                let run = event["run_id"].as_str().context("admission marker run")?;
-                ensure!(
-                    run.starts_with('r') && token_valid(run, 64),
-                    "admission marker run"
-                );
-                latest = Some(run.to_owned());
-            }
-        }
-    }
-    let last_run_id = latest.context("no proven last admitted run")?;
-    let state = State {
-        schema_version: 1,
-        deployment: name.to_owned(),
-        manager_session: crate::manager::manager_session_id().to_owned(),
-        never_run: false,
-        last_run_id: Some(last_run_id),
-        manager_anchor: None,
-        run_anchor: None,
-        run_anchor_state: "unavailable".into(),
-        loss_baseline: loss_total(store),
-        loss_uncertain: true,
-    };
-    save_state(store, &state)?;
-    Ok(state)
-}
-
 fn load_state(store: &LogStore) -> Result<State> {
     let name = deployment(store)?;
-    match private_read(&state_path(store), STATE_MAX)
-        .and_then(|bytes| serde_json::from_slice::<State>(&bytes).map_err(Into::into))
-        .and_then(|state| {
-            validate_state(&state, &name)?;
-            Ok(state)
-        }) {
-        Ok(state) => Ok(state),
-        Err(_) => recover_state(store, &name),
+    let bytes = private_read(&state_path(store), STATE_MAX)?;
+    let state: State = serde_json::from_slice(&bytes)?;
+    validate_state(store, &state, &name)?;
+    if let Some(intent) = read_intent(store, &name)? {
+        ensure!(
+            intent == state.manager_session,
+            "manager session publication pending"
+        );
     }
+    Ok(state)
 }
 
 pub(super) fn manager_scope_id(store: &LogStore) -> Option<String> {
@@ -377,9 +477,14 @@ pub(super) fn begin_manager_session(store: &LogStore) -> Result<()> {
         return Ok(());
     };
     if state.manager_session != crate::manager::manager_session_id() {
+        write_intent(
+            store,
+            &state.deployment,
+            crate::manager::manager_session_id(),
+        )?;
         state.manager_session = crate::manager::manager_session_id().to_owned();
+        state.manager_anchor = None;
         if state.last_run_id.is_none() {
-            state.manager_anchor = None;
             state.loss_baseline = loss_total(store);
         } else if state.run_anchor_state == "pending" {
             // A prior manager published an admitted run but never durably
@@ -393,6 +498,7 @@ pub(super) fn begin_manager_session(store: &LogStore) -> Result<()> {
             state.loss_uncertain = true;
         }
         save_state(store, &state)?;
+        clear_intent(store)?;
     }
     Ok(())
 }
@@ -421,15 +527,7 @@ pub(super) fn publish_run(store: &LogStore, run_id: &str) -> Result<()> {
             // cannot be read as manager scope, but a newly admitted run can
             // establish a durable identity and a new history proof epoch.
             let name = deployment(store)?;
-            let origin = Origin {
-                schema_version: 1,
-                deployment: name.clone(),
-                first_segment: identity(&store.root.join("events.log"))?,
-            };
-            private_write(
-                &store.root.join("cursor-origin.json"),
-                &serde_json::to_vec(&origin)?,
-            )?;
+            write_intent(store, &name, crate::manager::manager_session_id())?;
             State {
                 schema_version: 1,
                 deployment: name,
@@ -446,6 +544,7 @@ pub(super) fn publish_run(store: &LogStore, run_id: &str) -> Result<()> {
     };
     state.never_run = false;
     state.last_run_id = Some(run_id.to_owned());
+    state.manager_anchor = None;
     state.run_anchor = None;
     state.run_anchor_state = "pending".into();
     state.loss_baseline = loss_total(store);
@@ -462,6 +561,7 @@ pub(super) fn publish_run(store: &LogStore, run_id: &str) -> Result<()> {
     } else {
         saved
     };
+    let saved = saved.and_then(|()| clear_intent(store));
     if saved.is_err()
         && let Ok(bytes) = private_read(&state_path(store), STATE_MAX)
         && let Ok(mut survivor) = serde_json::from_slice::<State>(&bytes)
@@ -478,10 +578,18 @@ pub(super) fn record_accept(store: &LogStore, event: &Value, apply_failure: bool
     let code = event["event_code"].as_str().unwrap_or("");
     let source = event["source"].as_str().unwrap_or("");
     let level = event["level"].as_str().unwrap_or("");
-    let ready = matches!(
-        code,
-        "deployment_ready" | "eos_ready" | "bridge_ready" | "config_ready" | "egia_ready"
-    );
+    let ready = level == "info"
+        && matches!(
+            (source, code),
+            ("isos", "deployment_ready")
+                | ("eos", "eos_ready")
+                | ("bridge", "bridge_ready")
+                | ("config", "config_ready")
+                | ("egia", "egia_ready")
+        );
+    let run_failure = level == "error"
+        && (matches!(source, "eos" | "bridge" | "config" | "egia")
+            || (source == "isos" && code == "deployment_failed"));
     if !(level == "error"
         && (source == "packages"
             || matches!(source, "isos" | "eos" | "bridge" | "config" | "egia")))
@@ -495,22 +603,23 @@ pub(super) fn record_accept(store: &LogStore, event: &Value, apply_failure: bool
         && state.manager_anchor.is_none()
         && run_id == state.manager_session
         && level == "error"
-        && ((source == "packages")
+        && ((source == "packages" && typed_package_failure(code))
             || (source == "isos" && apply_failure && code == "deployment_preflight_failed"));
     let run_eligible = state.last_run_id.as_deref() == Some(run_id)
         && state.run_anchor_state == "pending"
-        && ((ready && matches!(source, "isos" | "eos" | "bridge" | "config" | "egia"))
-            || (level == "error"
-                && matches!(source, "isos" | "eos" | "bridge" | "config" | "egia")
-                && code != "legacy_external_event"));
+        && (ready || run_failure);
     if !manager_eligible && !run_eligible {
         return Ok(());
     }
+    event_policy::validate_stored(event)?;
     let path = store.root.join("events.log");
+    let segment = identity(&path)?;
+    let after_offset = fs::metadata(&path)?.len();
     let anchor = Anchor {
         event: event.clone(),
-        segment: identity(&path)?,
-        after_offset: fs::metadata(&path)?.len(),
+        seal: anchor_seal(store, event, &segment, after_offset)?,
+        segment,
+        after_offset,
     };
     if manager_eligible {
         state.manager_anchor = Some(anchor);
@@ -720,7 +829,7 @@ pub(super) fn read_current(
         }
     }
     let loss_now = loss_total(store);
-    let gap_count = if state.loss_uncertain {
+    let mut gap_count = if state.loss_uncertain {
         None
     } else {
         old.as_ref().map_or_else(
@@ -728,7 +837,7 @@ pub(super) fn read_current(
             |token| loss_now.checked_sub(token.l),
         )
     };
-    let collector_gap = gap_count.is_none() || gap_count.is_some_and(|count| count > 0);
+    let mut collector_gap = gap_count.is_none() || gap_count.is_some_and(|count| count > 0);
     let mut anchor_state = if anchor.is_some() {
         "found"
     } else if state.last_run_id.is_some() {
@@ -788,12 +897,26 @@ pub(super) fn read_current(
                 }
                 remaining -= read;
                 if raw.last() != Some(&b'\n') {
+                    if raw.len() >= event_policy::MAX_STORED_LINE {
+                        // An unterminated prefix this large cannot be a
+                        // valid P06 line. Advance across it over bounded
+                        // pages instead of trapping the cursor forever.
+                        collector_gap = true;
+                        gap_count = None;
+                        offset += read as u64;
+                        position = (segment.id.clone(), offset);
+                    }
                     break;
                 }
                 offset += read as u64;
                 position = (segment.id.clone(), offset);
-                let Ok(value) = serde_json::from_slice::<Value>(&raw) else {
-                    continue;
+                let value = match event_policy::parse_stored(&raw) {
+                    Ok(value) => value,
+                    _ => {
+                        collector_gap = true;
+                        gap_count = None;
+                        continue;
+                    }
                 };
                 if value["run_id"].as_str() != Some(run_id) {
                     continue;
@@ -946,7 +1069,7 @@ mod tests {
     #[test]
     fn cursor_identity_and_key_are_private_files() {
         let (_temp, store) = store("p07-private");
-        for name in ["cursor-state.json", "cursor-origin.json", "cursor-key"] {
+        for name in ["cursor-state.json", "cursor-key"] {
             let metadata = fs::symlink_metadata(store.root.join(name)).unwrap();
             assert!(metadata.file_type().is_file());
             assert_eq!(metadata.permissions().mode() & 0o077, 0);
@@ -1055,7 +1178,7 @@ mod tests {
     }
 
     #[test]
-    fn durable_two_run_recovery_and_missing_history_fail_closed() {
+    fn corrupt_state_never_guesses_from_two_retained_starting_events() {
         let (_temp, store) = store("p07-recovery");
         for run in ["r301", "r302"] {
             store.publish_run(run).unwrap();
@@ -1063,12 +1186,6 @@ mod tests {
             append(&store, run, "deployment_ready", "info");
         }
         fs::write(state_path(&store), b"broken").unwrap();
-        assert_eq!(store.run_identity(), (Some("r302".into()), "known"));
-        let recovered = page(&store, None, "all");
-        assert_eq!(recovered["anchor"]["state"], "unavailable");
-        assert_eq!(recovered["diagnostics"][0]["code"], "log_collector_gap");
-        fs::write(state_path(&store), b"broken").unwrap();
-        fs::remove_file(store.root.join("cursor-origin.json")).unwrap();
         assert_eq!(store.run_identity(), (None, "unavailable"));
         assert_eq!(
             store
@@ -1085,6 +1202,155 @@ mod tests {
                 .code,
             "log_scope_unavailable"
         );
+    }
+
+    #[test]
+    fn admitted_second_run_without_start_marker_stays_unavailable_after_restart() {
+        let (temp, store) = store("p07-missing-start");
+        store.publish_run("r801").unwrap();
+        append(&store, "r801", "deployment_starting", "info");
+        append(&store, "r801", "deployment_ready", "info");
+        store.publish_run("r802").unwrap();
+        // Simulate the P06 starting append failing after durable admission.
+        fs::write(state_path(&store), b"broken").unwrap();
+        let paths = Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        let restarted = LogStore::new(&paths, "p07-missing-start").unwrap();
+        restarted.begin_manager_session().unwrap();
+        assert_eq!(restarted.run_identity(), (None, "unavailable"));
+        assert_eq!(
+            restarted
+                .read_current(CurrentQuery {
+                    source: "all",
+                    level: "info",
+                    node_path: None,
+                    correlation_id: None,
+                    cursor: None,
+                    limit: 100,
+                    active_revision: None,
+                })
+                .unwrap_err()
+                .code,
+            "log_scope_unavailable"
+        );
+    }
+
+    #[test]
+    fn semantically_corrupt_pinned_anchor_fails_closed() {
+        let (_temp, store) = store("p07-bad-anchor");
+        store.publish_run("r811").unwrap();
+        append(&store, "r811", "deployment_ready", "info");
+        let original: State =
+            serde_json::from_slice(&private_read(&state_path(&store), STATE_MAX).unwrap()).unwrap();
+        let mut bad = original.clone();
+        bad.run_anchor.as_mut().unwrap().event["event_code"] = json!("legacy_external_event");
+        let anchor = bad.run_anchor.as_mut().unwrap();
+        anchor.seal =
+            anchor_seal(&store, &anchor.event, &anchor.segment, anchor.after_offset).unwrap();
+        save_state(&store, &bad).unwrap();
+        assert_eq!(store.run_identity(), (None, "unavailable"));
+        let mut bad = original.clone();
+        bad.run_anchor.as_mut().unwrap().after_offset += 1;
+        let anchor = bad.run_anchor.as_mut().unwrap();
+        anchor.seal =
+            anchor_seal(&store, &anchor.event, &anchor.segment, anchor.after_offset).unwrap();
+        save_state(&store, &bad).unwrap();
+        assert_eq!(store.run_identity(), (None, "unavailable"));
+        let mut bad = original;
+        bad.run_anchor.as_mut().unwrap().event["pid"] = json!("forged");
+        let anchor = bad.run_anchor.as_mut().unwrap();
+        anchor.seal =
+            anchor_seal(&store, &anchor.event, &anchor.segment, anchor.after_offset).unwrap();
+        save_state(&store, &bad).unwrap();
+        assert_eq!(store.run_identity(), (None, "unavailable"));
+    }
+
+    #[test]
+    fn signed_but_ineligible_manager_package_anchor_fails_closed() {
+        let (_temp, store) = store("p07-bad-package-anchor");
+        let manager = crate::manager::manager_session_id();
+        store
+            .append_event_context(
+                "packages",
+                "error",
+                "package_load_failed",
+                "package load failed",
+                LogContext {
+                    run_id: Some(manager),
+                    correlation_id: None,
+                    node_path: None,
+                    fields: json!({}),
+                },
+            )
+            .unwrap();
+        let mut state: State =
+            serde_json::from_slice(&private_read(&state_path(&store), STATE_MAX).unwrap()).unwrap();
+        let anchor = state.manager_anchor.as_mut().unwrap();
+        anchor.event["event_code"] = json!("package_verified");
+        anchor.seal =
+            anchor_seal(&store, &anchor.event, &anchor.segment, anchor.after_offset).unwrap();
+        save_state(&store, &state).unwrap();
+        assert_eq!(store.run_identity(), (None, "unavailable"));
+    }
+
+    #[test]
+    fn malformed_matching_json_line_is_skipped_with_collector_gap() {
+        let (_temp, store) = store("p07-bad-line");
+        let run = "r821";
+        store.publish_run(run).unwrap();
+        append(&store, run, "deployment_ready", "info");
+        let malformed = json!({"run_id":run,"source":"isos","level":"info",
+            "event_code":"deployment_stopped","message":"forged without P06 envelope"});
+        let mut line = serde_json::to_vec(&malformed).unwrap();
+        line.push(b'\n');
+        OpenOptions::new()
+            .append(true)
+            .open(store.root.join("events.log"))
+            .unwrap()
+            .write_all(&line)
+            .unwrap();
+        let mut duplicate = store.read("all", None, 1).unwrap()["lines"][0].clone();
+        duplicate["event_code"] = json!("deployment_stopped");
+        let mut duplicate = serde_json::to_string(&duplicate).unwrap();
+        duplicate.pop();
+        duplicate.push_str(",\"run_id\":\"r821\"}\n");
+        OpenOptions::new()
+            .append(true)
+            .open(store.root.join("events.log"))
+            .unwrap()
+            .write_all(duplicate.as_bytes())
+            .unwrap();
+        append(&store, run, "deployment_stopped", "info");
+        let current = page(&store, None, "all");
+        assert_eq!(current["lines"].as_array().unwrap().len(), 1);
+        assert_eq!(current["lines"][0]["event_code"], "deployment_stopped");
+        assert_eq!(current["diagnostics"][0]["code"], "log_collector_gap");
+        assert!(current["diagnostics"][0]["count"].is_null());
+    }
+
+    #[test]
+    fn overlong_corrupt_line_advances_across_bounded_pages() {
+        let (_temp, store) = store("p07-oversize-line");
+        let run = "r831";
+        store.publish_run(run).unwrap();
+        append(&store, run, "deployment_ready", "info");
+        let mut raw = vec![b'x'; 70_000];
+        raw.push(b'\n');
+        OpenOptions::new()
+            .append(true)
+            .open(store.root.join("events.log"))
+            .unwrap()
+            .write_all(&raw)
+            .unwrap();
+        append(&store, run, "deployment_stopped", "info");
+        let first = page(&store, None, "all");
+        assert!(first["lines"].as_array().unwrap().is_empty());
+        assert_eq!(first["diagnostics"][0]["code"], "log_collector_gap");
+        let second = page(&store, first["next_cursor"].as_str(), "all");
+        assert_eq!(second["lines"][0]["event_code"], "deployment_stopped");
     }
 
     #[test]
@@ -1136,6 +1402,39 @@ mod tests {
         assert_eq!(current["anchor"]["state"], "unavailable");
         assert_eq!(current["diagnostics"][0]["code"], "log_collector_gap");
         assert_eq!(current["diagnostics"][1]["code"], "log_anchor_unavailable");
+    }
+
+    #[test]
+    fn failed_manager_session_publication_latches_stale_scope_unavailable() {
+        let (temp, store) = store("p07-session-fail");
+        let mut state: State =
+            serde_json::from_slice(&private_read(&state_path(&store), STATE_MAX).unwrap()).unwrap();
+        state.manager_session = "m-old-manager".into();
+        save_state(&store, &state).unwrap();
+        assert!(store.begin_manager_session().is_err());
+        assert!(intent_path(&store).is_file());
+        assert_eq!(store.run_identity(), (None, "unavailable"));
+        let paths = Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        let later = LogStore::new(&paths, "p07-session-fail").unwrap();
+        assert_eq!(
+            later
+                .read_current(CurrentQuery {
+                    source: "all",
+                    level: "info",
+                    node_path: None,
+                    correlation_id: None,
+                    cursor: None,
+                    limit: 100,
+                    active_revision: None
+                })
+                .unwrap_err()
+                .code,
+            "log_scope_unavailable"
+        );
     }
 
     #[test]
