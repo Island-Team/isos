@@ -1950,10 +1950,12 @@ impl Supervisor {
         }
         let mut stopped = Vec::new();
         let mut processes = Vec::new();
-        let mut first_reason = if intent_ok {
-            None
-        } else {
+        let mut first_reason = if !intent_ok {
             Some("stop_result_persist_failed")
+        } else if self.unexpected_exit {
+            Some("child_exit_unexpected")
+        } else {
+            None
         };
         for id in &ids {
             let Some(mut running) = self.running.remove(id) else {
@@ -2094,11 +2096,17 @@ impl Supervisor {
                 .map(|id| {
                     observed.remove(id).unwrap_or(dependent_stop::ChildOutcome {
                         id: id.clone(),
-                        outcome: if intent_ok { "confirmed" } else { "unknown" },
-                        reason_code: if intent_ok {
-                            None
+                        outcome: if intent_ok && !self.unexpected_exit {
+                            "confirmed"
                         } else {
+                            "unknown"
+                        },
+                        reason_code: if !intent_ok {
                             Some("stop_result_persist_failed")
+                        } else if self.unexpected_exit {
+                            Some("child_exit_unexpected")
+                        } else {
+                            None
                         },
                     })
                 })
@@ -2220,6 +2228,10 @@ impl Supervisor {
             bail!("managed child exited unexpectedly; dependent stop is unconfirmed");
         }
         Ok(())
+    }
+
+    pub fn mark_unexpected_exit(&mut self) {
+        self.unexpected_exit = true;
     }
 
     pub fn status(&mut self) -> Result<Vec<ProcessStatus>> {

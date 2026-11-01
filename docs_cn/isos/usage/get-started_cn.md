@@ -81,4 +81,6 @@ isos config migrate --revision <saved-sha256> --proposed-revision <preview-sha25
 
 ## R06 依赖停止目标
 
+EOS 或其他提供者意外退出时，管理器自己的 daemon 轮询会立即停止并回收其余依赖进程，无须打开状态页。该运行报告 `unknown` 并阻止 Restart。归属方评审恢复前，先查看实时终结结果和 `deployment_stop_unconfirmed` 事件。
+
 **实现中，尚待验证。** Run 前检查所选 EOS 构建有 `managed-stop-v1`；该 token 只声明支持，不能证明本次运行已停止。执行 `isos deployment stop`、附着运行的 `isos run` Ctrl+C 或 `isos stop` 后，先用 `isos status --json` 检查实时 `terminal.outcome` 与运行 ID，再用 `isos logs all --current` 查同一运行的终结事件。`confirmed` 要求选中 EOS 子进程原始 stdout 的严格 `eos_terminal_stop` 收据与运行／修订／PID／后端／部件匹配，证明底盘和机械臂、MuJoCo 组排空及回收、socket 清理，且 EOS 以零码退出；空进程列表、PID 消失或 `eos_stopped` 日志不足够。EOS 归属方停止硬界限为 15 秒；IsOS 缺省在 30 秒总期限内预留 20 秒。收据过晚、无效、缺失或明确未知会使部署降级并阻止 Restart，直到归属方评审的恢复 fence 证明安全。即使实时确认，管理器重启后也降级为未知，因为 IsOS 只持久保存未知停止意图。[依赖停止契约](../interfaces/dependent-stop_cn.md)规定精确解析字段、原因码与期限配置。真实归属方 R06 重放通过前，当前程序仍未合格。

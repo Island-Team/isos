@@ -29,6 +29,11 @@ for case in cases:
         assert "expected_reason" not in case, case
     if case.get("automatic_restart_blocked"):
         assert case["expected_outcome"] == "unknown", case
+    if case.get("status_client_required") is False:
+        assert case["trigger"] in {"provider_loss", "daemon_poll"}, case
+        assert case["expected_outcome"] == "unknown", case
+        assert case["expected_reason"] == "child_exit_unexpected", case
+        assert case["dependent_reaped"], case
     if case.get("candidate_spawned") is False:
         assert case["expected_outcome"] in {"unknown", "no_stop"}, case
     if case.get("old_run_unchanged"):
@@ -62,6 +67,7 @@ for case in cases:
     if case.get("support_token_not_stop_proof"):
         assert case["expected_reason"] == "eos_receipt_missing", case
 assert {"clean_reverse_dependency", "eos_dual_ack_unknown", "provider_crash", "restart_old_stop_unknown", "log_collector_outage", "simulator_crash", "socket_cleanup_failure"}.issubset(ids)
+assert "daemon_short_snapshot" in ids
 assert {"leader_exited_unreaped_before_stop", "leader_reaped_before_group_signal", "cleanup_window_starts_before_deadline", "crash_after_durable_stop_intent", "crash_during_stop", "new_run_stop_state_reset", "crash_between_p07_publish_and_state_reset", "stop_intent_fsync_failure", "manager_crash_with_running_record"}.issubset(ids)
 assert {"stalled_intent_rename_after_deadline", "stalled_intent_parent_fsync_after_deadline", "live_confirmed_then_manager_restart", "deadline_equality_fence"}.issubset(ids)
 assert {"receipt_duplicate_json_key", "receipt_unknown_json_key", "receipt_missing_required_key", "receipt_oversized_line", "receipt_partial_line", "receipt_second_line", "receipt_wrong_pipe", "receipt_wrong_run", "receipt_wrong_pid", "receipt_wrong_revision", "receipt_wrong_backend", "receipt_wrong_parts", "receipt_group_not_drained", "receipt_late", "receipt_after_global_deadline", "receipt_nonzero_eos_exit", "receipt_short_eos_grace", "managed_stop_token_only"}.issubset(ids)

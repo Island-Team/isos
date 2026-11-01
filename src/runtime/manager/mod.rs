@@ -1183,18 +1183,21 @@ pub(crate) fn api_call(
                     Ok(processes) => {
                         if active.supervisor.terminal().is_none()
                             && processes.len() < active.expected_processes
-                            && active.last_error.is_none()
                         {
-                            log_deployment(
-                                paths,
-                                &name,
-                                active.supervisor.run_id(),
-                                "deployment_failed",
-                                "error",
-                            );
+                            active.supervisor.mark_unexpected_exit();
+                            if active.last_error.is_none() {
+                                log_deployment(
+                                    paths,
+                                    &name,
+                                    active.supervisor.run_id(),
+                                    "deployment_failed",
+                                    "error",
+                                );
+                            }
+                            let _ = stop_active(paths, &name, active, false);
                             active.last_error = Some("a managed process exited".into());
                         }
-                        processes
+                        active.supervisor.status_snapshot()
                     }
                     Err(error) => {
                         active.last_error = Some(error.to_string());
@@ -1411,7 +1414,15 @@ fn poll_deployments(paths: &config::Paths, managers: &mut Deployments) {
         if active.supervisor.terminal().is_some() {
             continue;
         }
-        if let Err(error) = active.supervisor.poll() {
+        let failure = if let Err(error) = active.supervisor.poll() {
+            Some(error.to_string())
+        } else if active.supervisor.status_snapshot().len() < active.expected_processes {
+            active.supervisor.mark_unexpected_exit();
+            Some("a managed process exited".to_owned())
+        } else {
+            None
+        };
+        if let Some(error) = failure {
             if active.last_error.is_none() {
                 log_deployment(
                     paths,
@@ -1421,23 +1432,13 @@ fn poll_deployments(paths: &config::Paths, managers: &mut Deployments) {
                     "error",
                 );
             }
-            active.last_error = Some(error.to_string());
+            let _ = stop_active(paths, name, active, false);
+            active.last_error = Some(error.clone());
             tracing::error!(
                 event_code = "deployment_supervisor_failed",
-                "process supervisor: {error:#}"
+                "process supervisor: {error}"
             );
-            eprintln!("process supervisor: {error:#}");
-        } else if active.supervisor.status_snapshot().len() < active.expected_processes
-            && active.last_error.is_none()
-        {
-            log_deployment(
-                paths,
-                name,
-                active.supervisor.run_id(),
-                "deployment_failed",
-                "error",
-            );
-            active.last_error = Some("a managed process exited".into());
+            eprintln!("process supervisor: {error}");
         }
     }
 }
@@ -1995,19 +1996,54 @@ mod restart_tests {
             data: temp.path().join("data"),
             runtime: temp.path().join("run"),
         };
-        let spec = process::ProcessSpec {
-            id: "stub".into(),
-            path: "isos/process/component/stub".into(),
-            settings: serde_json::from_value(json!({"command":["/bin/sleep","0.4"]})).unwrap(),
+        let make = |id: &str, seconds: &str, depends_on: Vec<&str>| process::ProcessSpec {
+            id: id.into(),
+            path: format!("isos/process/component/{id}"),
+            settings: serde_json::from_value(json!({
+                "command": ["/bin/sleep", seconds],
+                "depends_on": depends_on,
+            }))
+            .unwrap(),
             package: None,
             fingerprint: None,
         };
+        let specs = [
+            make("provider", "0.4", vec![]),
+            make("bridge", "30", vec!["provider"]),
+            make("egia", "30", vec!["bridge"]),
+        ];
         let mut managers = Deployments::new();
-        restart_processes(&paths, &mut managers, "provider-exit", "a", &[spec]).unwrap();
+        restart_processes(&paths, &mut managers, "provider-exit", "a", &specs).unwrap();
+        let pids: Vec<_> = managers["provider-exit"]
+            .supervisor
+            .status_snapshot()
+            .iter()
+            .map(|process| process.pid)
+            .collect();
         std::thread::sleep(Duration::from_millis(450));
+        // The daemon tick must stop dependents without waiting for a status client.
         poll_deployments(&paths, &mut managers);
         assert!(managers["provider-exit"].last_error.is_some());
-        assert!(managers["provider-exit"].supervisor.terminal().is_none());
+        let terminal = managers["provider-exit"].supervisor.terminal().unwrap();
+        assert_eq!(terminal.outcome, "unknown");
+        assert_eq!(terminal.reason_code, Some("child_exit_unexpected"));
+        assert_eq!(
+            terminal
+                .processes
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            ["egia", "bridge", "provider"]
+        );
+        assert!(
+            managers["provider-exit"]
+                .supervisor
+                .status_snapshot()
+                .is_empty()
+        );
+        for pid in pids {
+            assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+        }
         let logs = log_store::LogStore::new(&paths, "provider-exit").unwrap();
         assert!(
             logs.read("all", None, 100).unwrap()["lines"]
@@ -2016,13 +2052,43 @@ mod restart_tests {
                 .iter()
                 .any(|line| line["event_code"] == "deployment_failed")
         );
-        let (_, terminal) = stop_active(
+        let (stopped, repeated) = stop_active(
             &paths,
             "provider-exit",
             managers.get_mut("provider-exit").unwrap(),
             false,
         );
-        assert_eq!(terminal.outcome, "unknown");
+        assert!(stopped.is_empty());
+        assert_eq!(repeated, terminal);
+    }
+
+    #[test]
+    fn short_daemon_snapshot_stops_remaining_dependents_without_a_status_request() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = config::Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        let spec = process::ProcessSpec {
+            id: "dependent".into(),
+            path: "isos/process/component/dependent".into(),
+            settings: serde_json::from_value(json!({"command":["/bin/sleep","30"]})).unwrap(),
+            package: None,
+            fingerprint: None,
+        };
+        let mut managers = Deployments::new();
+        restart_processes(&paths, &mut managers, "short-snapshot", "a", &[spec]).unwrap();
+        let pid = managers["short-snapshot"].supervisor.status_snapshot()[0].pid;
+        managers
+            .get_mut("short-snapshot")
+            .unwrap()
+            .expected_processes = 2;
+        poll_deployments(&paths, &mut managers);
+        let active = &managers["short-snapshot"];
+        assert_eq!(active.supervisor.terminal().unwrap().outcome, "unknown");
+        assert!(active.supervisor.status_snapshot().is_empty());
+        assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
     }
 
     #[test]
