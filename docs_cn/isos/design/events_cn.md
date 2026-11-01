@@ -32,6 +32,8 @@ API、CLI 与 Unix 管理器在工作前选定部署和请求关联。启动前�
 
 **R04 实现复核修正（2026-11-02）。** 当前所选 P01／EOS 生产者语法允许 `0..1`；收集器只在软件包 ID／版本与所选精确配对一致时接纳空点段。新增正例使 R04 子进程矩阵增至 31 个案例。有效但未选择的技能 pin 现在计入 `log_ingest_rejected_by_reason.skill_pin_mismatch`，不得写入两个共享文件；`node_owner` 仍专用于节点归属故障。更严格的所选技能预停止语法门禁属于独立待完成切片。新增桩子进程回归测试同时检查所选接纳和不匹配计数。`cargo fmt --all -- --check`、`cargo check --all-targets`、严格 Clippy、完整测试（211 个单元、七个 CLI、一个已删除命令、九个边界）、构建、R04／P06／P07 夹具、链接及差异检查均通过。完整命令与输出保存在忽略的 `logs/test/20261102-r04-skill-events-review-fixes/`；EOS SkillService／C guest 与 HTTP／CLI 回放仍待完成。
 
+**选择分支合并后的刷新（2026-11-02）。** 四个事件提交已重放到经过复核的 IsOS 选择合并提交 `2e70369`；`git range-diff df48177..7414f04 2e70369..8c35bec` 显示四个等价补丁，无冲突解决。`cargo fmt --all -- --check`、`cargo check --all-targets`、严格 Clippy、完整测试（211 个单元、七个 CLI、一个已删除命令、九个边界）、`cargo build --all-targets`、R04 选择／事件及 P06／P07 夹具检查、双语文档链接和 `git diff --check` 均通过。完整命令与输出保存在忽略的 `logs/test/20261102-r04-skill-events-refresh/`。刷新后的 PR 提交仍需独立复核，跨归属回放门禁也仍待完成。
+
 [冻结夹具](../../../tests/fixtures/jsonl_events/README_cn.md)覆盖管理器会话失败、包来源、运行身份、所选子进程角色绑定、错误及超长行、不安全载荷拒绝、抑制、轮转和写入失败下停止。单元测试使用 stub 子进程管道及所选进程边界测试；合并后的真实 EOS runtime 二进制通过收集器回放启动失败路径。EGIA 经审核的 16 个事件码与归属夹具核对；合并后的 EGIA 启动器作为所选受管子进程回放，其接收事件在分类与统一日志间对比。完整输出保存于忽略 Git 的 `logs/test/<run-id>/`。
 
 2026-11-01 在 `7898735` 加本文档分支上完成设计校验：`python3 tests/fixtures/jsonl_events/check_cases.py` 检查 30 个冻结案例与原始／存储字节边界；12 个修改后的 Markdown 文件相对链接、JSON 解析及 `git diff --check` 通过。仓库检查 `cargo fmt --check`、`cargo clippy --all-targets -- -D warnings` 和 `cargo test` 通过。完整输出位于忽略 Git 的 `logs/test/p06-design-20261101/`（`docs-gates.log`、`cargo-fmt.log`、`cargo-clippy.log`、`cargo-test.log`）。这些检查不能代替上述 P06 运行时和边界测试。
