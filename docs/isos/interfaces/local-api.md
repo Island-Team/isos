@@ -42,6 +42,34 @@ Each edge also reports `data_type` (exact registered type ID), `transport` (exac
 
 `GET /node-graph` keeps the schema-1 envelope and returns `data:{revision,graph,read_only,diagnostics}`. The revision is SHA-256 of the exact saved bytes. An applied safe `1.0.0` graph is read-only until explicit migration; an unapplied legacy starter remains editable. A missing graph returns an editable `0.1.0` draft with `revision:""`; Init creates and saves the same new-version starter only when absent. A syntactically valid unknown version, such as `2.0.0`, returns the original graph, original-byte revision, `read_only:true`, and a `/version` `unsupported_graph_version` diagnostic. Malformed or oversized files return HTTP 422. GET never rewrites saved bytes.
 
+**G02 projection extension (design contract):** For a saved, wholly mapped and safe `1.0.0` graph, GET also returns `data.legacy_projection:{read_only:true,source_revision,graph,mappings,defaults,display_descriptions}` as an inspection-only value. Its `graph.version` and node type IDs remain `1.0.0` and the original legacy identities; `mappings` identifies candidate `0.1.0` types without changing them. `defaults` contains only historically optional fields inserted in that separate in-memory graph, each with an exact `path` and JSON `value`; `display_descriptions` is keyed by node JSON Pointer and never changes `graph.description`. `source_revision` equals the raw-byte `revision`. The top-level `data.graph` is always the original JSON value and is the only graph accepted for legacy no-op comparison. The projection is never PUT automatically and never used as a launch profile or migration source. An unknown, unsafe, invalid, or unmapped legacy node makes GET `read_only:true`, omits `legacy_projection`, and returns the first exact-path diagnostic with migration guidance. In particular, a known but unmapped identity reports `unmapped_node_type` at its `/node_type`; this also closes the unapplied-starter edit exception for such graphs. Future `2.0.0` and malformed graphs have no projection. A missing graph and a saved `0.1.0` graph have no legacy projection.
+
+For the frozen safe fixture in a clean, unapplied home, the additive response has this shape (the full raw and projection graphs are abbreviated here):
+
+```json
+{
+  "schema_version": 1,
+  "ok": true,
+  "data": {
+    "revision": "7a8daee6b7db9105f5483506ffc1743625b63089710dfbf936622329c471016b",
+    "graph": {"version": "1.0.0", "robot": {"id": "demo-0", "name": "Aether deployment"}},
+    "read_only": false,
+    "diagnostics": [],
+    "legacy_projection": {
+      "read_only": true,
+      "source_revision": "7a8daee6b7db9105f5483506ffc1743625b63089710dfbf936622329c471016b",
+      "graph": {"version": "1.0.0", "robot": {"id": "demo-0", "name": "Aether deployment"}},
+      "mappings": [{"path": "/cores/eos/layers/dispatcher/groups/control/nodes/command/node_type", "source_type": "eos.dispatcher.control@v1.0", "candidate_type": "eos.dispatcher.control@v0.1"}],
+      "defaults": [],
+      "display_descriptions": {}
+    }
+  },
+  "error": null
+}
+```
+
+The abbreviated objects and mapping list illustrate field types, not a complete fixture response. `read_only` at the top level remains false for a fully mapped unapplied legacy starter; the projection's own `read_only` is always true. Validate receives the caller's raw graph and uses the same exact identity gate before owner validation. A structurally identical legacy PUT or CLI Apply preserves the saved bytes and SHA; changed applied legacy still returns `migration_required`. The frozen paths and hashes are in the [fixture inventory](../../../tests/fixtures/graph_compat/README.md).
+
 `POST /node-graph/validate`, PUT Apply, CLI Apply, core setup, Run, and Restart admit only exact supported versions and approved type identities at their registered placement. An unknown version fails at `/version`; an unknown or legacy-only type fails at its `/node_type`; an unsafe process fails at its exact node or `settings/command`. A `0.1.0` Apply requires an explicit expected revision, owner-reader support, verified package inputs, and graph-wide core and placement admission. Validation returns diagnostics in `data.diagnostics`; Apply returns HTTP 422 for admission failures, 409 for stale revisions. A safe saved legacy graph submitted with the matching revision and structurally identical JSON returns the original revision without writing; changed applied legacy graphs require explicit migration. Preview and commit compare saved revisions under the graph lock, publish only after package and owner setup checks, and leave the active revision unchanged until Restart.
 
 The [`graph compatibility fixtures`](../../../tests/fixtures/graph_compat/README.md) fix the expected paths and unchanged-byte behavior. The same version/type failures must appear through the CLI and manager preflight; GET remains available for inspection when admission fails.

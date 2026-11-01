@@ -42,6 +42,34 @@ API 只绑定 `127.0.0.1`，不提供前端文件。IsosUI 通过地址和端口
 
 `GET /node-graph` 保留 schema-1 封装，返回 `data:{revision,graph,read_only,diagnostics}`。修订号是精确已保存字节的 SHA-256。安全且已应用的 `1.0.0` 图在显式迁移前为只读；未应用的旧初始图仍可编辑。缺失图返回可编辑的 `0.1.0` 草稿，`revision:""`；Init 仅在文件不存在时创建并保存相同的新版本初始图。对于句法正确但未知的版本（如 `2.0.0`），返回原始图、原始字节修订号、`read_only:true` 及 `/version` 的 `unsupported_graph_version` 诊断。无效或超限文件返回 HTTP 422。GET 不改写已保存字节。
 
+**G02 投影扩展（设计契约）：** 对整张图均已映射且安全的已保存 `1.0.0` 图，GET 还返回仅用于检查的 `data.legacy_projection:{read_only:true,source_revision,graph,mappings,defaults,display_descriptions}`。其中 `graph.version` 与节点类型 ID 仍是 `1.0.0` 及原始旧身份；`mappings` 单独标出候选 `0.1.0` 类型，但不替换身份。`defaults` 仅包含历史 schema 已允许的可选字段，每条记录有精确 `path` 和 JSON `value`；`display_descriptions` 按节点 JSON Pointer 索引，不改变 `graph.description`。`source_revision` 等于原始字节的 `revision`。顶层 `data.graph` 始终是原始 JSON 值，也是旧图无写入比较的唯一图输入。投影不能自动交给 PUT，也不能作启动 profile 或迁移来源。未知、不安全、无效或未映射的旧节点使 GET 返回 `read_only:true`、不含 `legacy_projection`，并附首个精确路径诊断和迁移指导。尤其已知但未映射的类型在其 `/node_type` 返回 `unmapped_node_type`；此规则也关闭该类图的未应用初始图编辑例外。未来 `2.0.0` 与无效图无投影；缺失图及已保存 `0.1.0` 图也无旧图投影。
+
+在干净且未应用的 home 中，固定安全夹具的新增响应形状如下（完整原始图及投影图在此省略）：
+
+```json
+{
+  "schema_version": 1,
+  "ok": true,
+  "data": {
+    "revision": "7a8daee6b7db9105f5483506ffc1743625b63089710dfbf936622329c471016b",
+    "graph": {"version": "1.0.0", "robot": {"id": "demo-0", "name": "Aether deployment"}},
+    "read_only": false,
+    "diagnostics": [],
+    "legacy_projection": {
+      "read_only": true,
+      "source_revision": "7a8daee6b7db9105f5483506ffc1743625b63089710dfbf936622329c471016b",
+      "graph": {"version": "1.0.0", "robot": {"id": "demo-0", "name": "Aether deployment"}},
+      "mappings": [{"path": "/cores/eos/layers/dispatcher/groups/control/nodes/command/node_type", "source_type": "eos.dispatcher.control@v1.0", "candidate_type": "eos.dispatcher.control@v0.1"}],
+      "defaults": [],
+      "display_descriptions": {}
+    }
+  },
+  "error": null
+}
+```
+
+省略的对象与映射列表仅说明字段类型，并非完整夹具响应。完整映射的未应用旧初始图顶层 `read_only` 仍为 false；投影自身的 `read_only` 始终为 true。Validate 接收调用方提交的原始图，在归属方校验前使用同一精确身份门槛。结构相同的旧图 PUT 或 CLI Apply 保留原始字节与 SHA；已应用旧图的修改仍返回 `migration_required`。固定路径与摘要见[夹具清单](../../../tests/fixtures/graph_compat/README.md)。
+
 `POST /node-graph/validate`、PUT Apply、CLI Apply、核心 setup、Run 和 Restart 只准入精确支持版本及注册位置上的批准类型身份。未知版本在 `/version` 失败；未知或仅旧版类型在其 `/node_type` 失败；不安全进程在精确节点或 `settings/command` 失败。`0.1.0` Apply 要求显式期望修订号、归属方 reader 支持、已验证软件包输入及整图 core／位置准入。校验在 `data.diagnostics` 返回诊断；Apply 对准入失败返回 HTTP 422，对过期修订返回 409。安全且已保存的旧图在修订匹配、提交 JSON 结构相同时返回原修订号而不写入；已应用旧图的修改须显式迁移。预览和提交在图锁内比较保存修订号，只在软件包及归属方 setup 检查后发布，且活动修订号在 Restart 前不变。
 
 [`图兼容样例`](../../../tests/fixtures/graph_compat/README.md)固定预期路径及字节不变的行为。CLI 与管理器预检须显示相同版本／类型失败；准入失败时 GET 仍可查看原图。
