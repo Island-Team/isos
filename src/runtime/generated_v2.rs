@@ -660,7 +660,17 @@ pub fn egia_launch_env(graph: &Value) -> Result<BTreeMap<String, String>, Diagno
 
 pub fn egia_chain_digest(graph: &Value) -> Result<String, Diagnostic> {
     let chain = capture_egia_chain(graph)?.ok_or_else(|| missing("binary"))?;
-    Ok(digest(&serde_json::to_vec(&chain).map_err(|_| mismatch())?))
+    let bin = std::env::var_os("ISOS_EGIA_BIN_DIR")
+        .map(PathBuf::from)
+        .ok_or_else(|| missing("binary"))?;
+    let mut launchers = BTreeMap::new();
+    for name in ["egia", "egia-config"] {
+        launchers.insert(name, digest(&inspect_regular(&bin.join(name), "binary")?));
+    }
+    Ok(digest(
+        &serde_json::to_vec(&serde_json::json!({"chain":chain,"launchers":launchers}))
+            .map_err(|_| mismatch())?,
+    ))
 }
 
 fn package_inventory(paths: &Paths, graph: &Value) -> Result<Vec<PackageEntry>, Diagnostic> {
