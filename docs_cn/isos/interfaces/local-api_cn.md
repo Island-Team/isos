@@ -94,7 +94,7 @@ Unix 套接字每行接收一个 JSON 请求：`{schema_version:1,op,deployment?
 
 `[logging].level` 按 `trace < debug < info < warn < error` 记录达到阈值的文件事件，默认为 `info`。HTTP 的 `level` 参数和 UI 选择器只过滤显示，不改变写入。终端状态和命令错误不受影响。`isos logs [source] --level warn` 读取同一日志库。
 
-外部核心可通过仅所有者访问的管理套接字提交选定事件：`{schema_version:1,op:"log_append",deployment?,log:{source,level,message,event_code?}}`，响应含 `{accepted:true}`。`source` 为经校验的子进程 ID（1–48 个 ASCII 字母、数字、`_` 或 `-`），不能是 `all`、`events`、`services`、`isos` 或 `browser`；`level` 为五种级别之一；`message` 为 1–8192 个 UTF-8 字节；可选 `event_code` 为 1–64 个小写 ASCII 字母、数字或下划线。核心仍负责自己的完整日志。
+外部核心可通过仅所有者访问的管理套接字提交选定事件：`{schema_version:1,op:"log_append",deployment?,log:{source,level,message,event_code?}}`，响应含 `{accepted:true}`。`source` 为经校验的子进程 ID（1–48 个 ASCII 字母、数字、`_` 或 `-`），不能是 `all`、`events`、`services`、`isos` 或 `browser`；`level` 为五种级别之一；`message` 为 1–8192 个 UTF-8 字节；可选 `event_code` 为 1–64 个小写 ASCII 字母、数字或下划线。核心仍负责自己的完整日志。**P06 目标：**套接字只认证同 UID peer，不能认证所选子进程身份。语法有效且非保留来源的旧请求，包括 `source:"eos"`，保留 `accepted:true`，但只以固定 `legacy_external_event` 存入 `source:legacy_external`、`core:isos`、管理器会话运行 ID 和管理器 PID，使用安全模板而非调用方传入的来源、事件码或消息。权威 EOS、EGIA、bridge 与 config 事件只来自各自所选 stderr 管道。参见[共享事件契约](events_cn.md#角色策略与旧套接字)。
 
 应用图包含 MuJoCo 软件包时，IsOS 会把部署日志目录传给 EOS 运行时。只有 EOS 写入和轮转 `mujoco.log`，并遵守相同的 JSON 行与权限契约；IsOS 通过此 API 读取。
 

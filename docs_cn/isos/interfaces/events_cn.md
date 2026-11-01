@@ -13,14 +13,20 @@
 | `timestamp` | RFC 3339 UTC 字符串／毫秒 | 必需事件时间。IsOS 为管理器事件生成；保留所选子进程的有效时间。拒绝非 UTC 或格式错误的子进程值。 |
 | `level` | `trace`、`debug`、`info`、`warn`、`error`／— | 必需级别；保留现有过滤顺序。失败为 `error`，安全拒绝可为 `warn`。 |
 | `source` | ASCII 字符串／来源 ID | 必需，1–48 个字母、数字、`_` 或 `-`。Supervisor 将 EOS runtime 的 `eos`、EOS HTTP bridge 的 `bridge`、EOS config server 的 `config` 与 EGIA 的 `egia` 绑定到各自所选直接子进程角色。原始 MuJoCo 子进程诊断留在独立的 EOS 归属日志；`mujoco` 留给将来已验证的共享生产者。任意子进程不能冒充 `isos`、`packages` 或其他子进程。 |
-| `core` | `isos`、`eos`、`egia`／归属 ID | 必需运行时所有者。IsOS workbench、包、图和独立服务事件使用 `isos`；EOS 持有的 MuJoCo 事件使用 `eos`。收集器从所选进程确定预期所有者，拒绝不一致值。 |
+| `core` | `isos`、`eos`、`egia`／归属 ID | 必需运行时所有者。IsOS workbench、包、图和独立服务事件使用 `isos`；EOS 后端生命周期事件使用 `eos`。收集器从所选进程确定预期所有者，拒绝不一致值。 |
 | `node_path` | JSON Pointer 字符串或 null／已保存图路径 | 可选；缺省规范化为 null。非空值是精确终止于 `/cores/<core>/layers/<layer>/groups/<group>/nodes/<node>` 的规范转义已保存图指针，最多 512 UTF-8 字节，指向事件责任节点；尾部 `/package` 等成员指针被拒绝；已准入图的段语法排除 ID 中的 `/` 与 `~`，指针转义不能使无效 ID 合法；EOS 在发出前展开内部四段节点路径。不允许本地文件路径。 |
-| `event_code` | 小写 ASCII 字符串／稳定事件码 | 必需，1–64 个字母、数字或 `_`。生产者持有自身事件码清单；IsOS 只接收该进程角色注册的事件码，不将任意子进程文本当成事件码。旧日志缺失此字段仍可读；P06 新记录总是写入。 |
+| `event_code` | 小写 ASCII 字符串／稳定事件码 | 必需，1–64 个字母、数字或 `_`。生产者持有自身事件码清单；IsOS 只接收从已审核归属契约固定到版本化角色策略中的事件码，不把任意子进程文本当成事件码。旧日志缺失此字段仍可读；P06 新记录总是写入。 |
 | `run_id` | ASCII 字符串／运行或管理器会话 ID | 必需，1–64 个字母、数字、`_` 或 `-`。`m...` 表示启动前的管理器会话，`r...` 表示一次部署运行。收集器填充或核对 Supervisor 指定值，不让子进程选择另一运行。旧日志缺失仍可读。 |
 | `correlation_id` | ASCII 字符串或 null／不透明请求 ID | 可选；缺省规范化为 null。语法和长度与 `run_id` 相同。关联请求、子进程启动、操作或失败，不嵌入用户文字或凭证。 |
 | `message` | 字符串／UTF-8 字节 | 必需简短说明，单独最多 8,192 字节，并受整行限制进一步缩短。内部消息使用经审核模板；子进程消息必须通过该角色的安全消息规则。不得保存原始异常链、提示词、画面、凭证或环境值。 |
 | `fields` | 对象／有界元数据 | 可选；缺省规范化为 `{}`。最多 12 个允许的标量键，序列化后最多 4 KiB；键长 1–48 个 ASCII 字母、数字、`_` 或 `-`；字符串值最多 256 UTF-8 字节且不含控制字符。不允许嵌套值、任意文本、路径、原始载荷或秘密。每个事件码有允许的类型化键集合。 |
 | `pid` | 正整数或 null／操作系统进程 ID | 可选；缺省规范化为 null。原始子进程信封不含 `pid`；IsOS 校验后添加观察到的直接子进程 PID。管理器事件使用管理器 PID。子进程不能伪造。这是进程元数据，不是就绪证明。 |
+
+### 角色策略与旧套接字
+
+IsOS 发行版在目标 `src/runtime/event_policy.rs` 中携带经过审核的版本化角色策略。此表是收集器对事件码、类型化字段、级别、节点归属和可抑制类别的允许清单；它与所选 EOS／EGIA 归属契约固定对应，并用相应发行夹具测试。子进程不能通过 JSON、capability 回复或图值自行扩展。初始 EOS 策略从已审核的 EOS P06 归属事件契约复制精确事件码：runtime 的 `eos_starting`、`eos_ready`、`eos_start_failed`、`eos_stopping`、`eos_stopped`、`eos_package_admitted`、`eos_package_provenance_unavailable`、`eos_backend_ready`、`eos_backend_lost`、`eos_stop_unconfirmed` 和仅 runtime 可发的 `eos_events_suppressed`；bridge 的 `bridge_starting`、`bridge_ready`、`bridge_start_failed`、`bridge_stopping`、`bridge_stopped`；config 的 `config_starting`、`config_ready`、`config_start_failed`、`config_stopping`、`config_stopped`。EOS 的 `node_path` 必须指向已准入 EOS 节点。EGIA 角色在已审核的 P06 归属目录固定到同一表前，对未列出的事件码保持关闭；仅有所选 EGIA 子进程和有效 `run_id` 不授予任意事件准入。只有 IsOS 构造 `source:isos`、`core:isos` 的 `events_suppressed`，字段限于有界的 `suppressed_source`、`suppressed_event_code` 和 `count`；子进程声称此码时被拒绝。角色策略还拒绝仅对另一所选进程有效的事件码／字段组合。
+
+schema-1 管理套接字 `log_append` 只认证同 UID 本地 peer，无法证明其是所选 EOS、EGIA、bridge 或 config 进程。调用方传入的 `role`、`source`、`event_code`、`message` 不能建立归属或就绪。P06 保留历史请求形状，对语法有效且非保留来源的请求继续返回 `{"accepted":true}`，包括历史 `source:"eos"` 请求；但所有此类追加都规范化为 `source:legacy_external`、`core:isos`、固定 `event_code:legacy_external_event`、固定安全 `message:"Legacy external event received"`、调用方级别、管理器会话 `run_id`、新生成的请求关联和管理器 PID。不可信的请求来源、事件码与消息不会写入共享流。已有保留来源拒绝规则仍有效。`legacy_external_event` 不影响所选子进程就绪或部署健康。经过验证的所选子进程 stderr 管道是 P06 向权威 `eos`、`bridge`、`config` 或 `egia` 来源写记录的唯一途径。
 
 启动前的 IsOS 包失败使用管理器会话和请求关联。`null` 表示收据值不可用，不得猜测：
 
@@ -52,4 +58,4 @@ IsOS 向所选 EOS runtime 传入 `--run-id <id>`。对经过验证的受管 MuJ
 
 状态首次就绪、警告、失败与终结事件不被抑制。重复且非关键的周期健康或帧诊断按 `(run_id,source,node_path,event_code)` 计数，以不快于每 60 秒一次以及终结时的一条有界 `events_suppressed` 摘要替代。同一故障的高频重复日志不能逐出首次故障。收集器内存有界，并为生命周期／失败事件保留通道；过载时先丢弃低级别重复，增加可见计数，不能声称被丢弃事件已写入。单次日志写入或收集器故障不能延迟停止。P07 增加当前运行游标导航及跨文件轮转的留存；P06 保持现有私有轮转上限并及时发出首事件。
 
-`GET /api/isos/v1/logs?source=all&limit=100` 与 `isos logs all --level info` 通过现有 API／CLI 读取已准入事件。被拒绝的子进程行，包括规范化存储记录超过 8,192 字节的行，不是 API 错误；它增加带有有界原因码、且不含原始行的可见 `log_ingest_rejected` 计数。IsOS 写入失败在管理器 status／诊断中显示 `log_write_failed`，不能递归记录。现有 schema-1 `log_append` 仍限所有者调用，接受历史小请求；IsOS 根据已认证来源和管理器会话或活动运行上下文补齐字段。成功回复仍含 `{"accepted":true}`。[P06 夹具](../../../tests/fixtures/jsonl_events/README.md)冻结正例、反例、高频和停止案例；关闭任务前须回放真实 EOS 与 EGIA 子进程流。
+`GET /api/isos/v1/logs?source=all&limit=100` 与 `isos logs all --level info` 通过现有 API／CLI 读取已准入事件。被拒绝的子进程行，包括规范化存储记录超过 8,192 字节的行，不是 API 错误；它增加带有有界原因码、且不含原始行的可见 `log_ingest_rejected` 计数。IsOS 写入失败在管理器 status／诊断中显示 `log_write_failed`，不能递归记录。现有 schema-1 `log_append` 仍限同 UID 所有者调用，接受历史小请求，但遵循上述不可信旧请求规范化；成功回复仍含 `{"accepted":true}`。[P06 夹具](../../../tests/fixtures/jsonl_events/README.md)冻结正例、反例、高频和停止案例；关闭任务前须回放真实 EOS 与 EGIA 子进程流。

@@ -22,6 +22,10 @@ EXPECTED_IDS = {
     "next_line_after_drain", "unknown_top_level", "duplicate_json_key",
     "secret_env_value", "model_prompt", "raw_frame", "periodic_duplicate",
     "first_failure", "stop_during_log_outage", "source_rotation",
+    "legacy_source_spoof_normalized", "legacy_unrelated_source_normalized",
+    "legacy_reserved_source", "unregistered_child_code",
+    "eos_claims_egia_node", "child_claims_isos_suppression",
+    "eos_runtime_suppression",
 }
 assert CASES["schema"] == "isos-jsonl-events-p06-fixtures-v1"
 rows = CASES["cases"]
@@ -29,7 +33,7 @@ assert {row["id"] for row in rows} == EXPECTED_IDS
 assert len(rows) == len(EXPECTED_IDS)
 for row in rows:
     assert set(row) == {"id", "kind", "expected", "assertion"}
-    assert row["expected"] in {"accept", "reject", "suppress"}
+    assert row["expected"] in {"accept", "reject", "suppress", "normalize", "pending"}
     assert row["assertion"]
 
 raw = {
@@ -43,6 +47,20 @@ raw = {
     "correlation_id": None,
     "message": "EOS runtime ready",
     "fields": {"state": "ready"},
+}
+
+ROLE_CODES = {
+    "eos": {
+        "eos_starting", "eos_ready", "eos_start_failed", "eos_stopping",
+        "eos_stopped", "eos_package_admitted", "eos_package_provenance_unavailable",
+        "eos_backend_ready", "eos_backend_lost", "eos_stop_unconfirmed",
+        "eos_events_suppressed",
+    },
+    "bridge": {"bridge_starting", "bridge_ready", "bridge_start_failed",
+               "bridge_stopping", "bridge_stopped"},
+    "config": {"config_starting", "config_ready", "config_start_failed",
+               "config_stopping", "config_stopped"},
+    "egia": set(),  # Closed until the reviewed owner P06 catalog is pinned.
 }
 
 
@@ -61,6 +79,10 @@ def valid_child(event, role="eos", run="r7-cde"):
         return False
     if not re.fullmatch(r"[a-z0-9_]{1,64}", event["event_code"]):
         return False
+    if event["event_code"] not in ROLE_CODES[role]:
+        return False
+    if event["event_code"] == "eos_events_suppressed" and event.get("fields") != {"suppressed_count": 1}:
+        return False
     pointer = event.get("node_path")
     if pointer is not None:
         parts = pointer.split("/")
@@ -68,6 +90,8 @@ def valid_child(event, role="eos", run="r7-cde"):
             return False
         # The admitted node-profile segment grammar excludes slash and tilde.
         if any(not p or "~" in p for p in parts[2::2]):
+            return False
+        if parts[2] != ("egia" if role == "egia" else "eos"):
             return False
         if len(pointer.encode()) > 512:
             return False
@@ -82,6 +106,36 @@ assert not valid_child({**raw, "run_id": "r-other"})
 assert not valid_child({**raw, "pid": 1})
 assert not valid_child({**raw, "node_path": raw["node_path"] + "/package"})
 assert not valid_child({**raw, "node_path": "/cores/eos/layers/process/groups/mujoco/nodes/~2"})
+assert not valid_child({**raw, "node_path": "/cores/egia/layers/common/groups/source/nodes/sim"})
+assert not valid_child({**raw, "event_code": "eos_unknown_ready"})
+assert not valid_child({**raw, "event_code": "events_suppressed"})
+assert valid_child({**raw, "event_code": "eos_events_suppressed", "fields": {"suppressed_count": 1}})
+assert not valid_child({**raw, "source": "egia", "core": "egia", "event_code": "egia_ready"}, role="egia")
+
+
+def normalize_legacy(request):
+    if request["source"] in {"all", "events", "services", "isos", "browser"}:
+        return None
+    assert re.fullmatch(r"[A-Za-z0-9_-]{1,48}", request["source"])
+    return {
+        "accepted": True,
+        "source": "legacy_external",
+        "core": "isos",
+        "event_code": "legacy_external_event",
+        "message": "Legacy external event received",
+        "level": request["level"],
+        "run_id": "m42-abc",
+        "pid": 42,
+    }
+
+
+for claimed_source in ("eos", "egia", "bridge", "config", "component-alpha"):
+    legacy = normalize_legacy({"source": claimed_source, "level": "warn",
+                               "event_code": "eos_ready", "message": "ready"})
+    assert legacy["accepted"] and legacy["source"] == "legacy_external"
+    assert legacy["event_code"] == "legacy_external_event"
+    assert legacy["message"] != "ready" and legacy["run_id"].startswith("m")
+assert normalize_legacy({"source": "isos", "level": "warn"}) is None
 
 # A child emitter trims sanitized UTF-8 text to the exact wire limit.
 base = len(line({**raw, "message": ""}))

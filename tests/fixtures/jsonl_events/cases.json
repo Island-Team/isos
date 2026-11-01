@@ -64,8 +64,8 @@
     {
       "id": "egia_ready",
       "kind": "child",
-      "expected": "accept",
-      "assertion": "egia_role_source"
+      "expected": "pending",
+      "assertion": "requires_reviewed_egia_owner_catalog"
     },
     {
       "id": "child_source_spoof",
@@ -180,6 +180,48 @@
       "kind": "storage",
       "expected": "accept",
       "assertion": "unified_copy"
+    },
+    {
+      "id": "legacy_source_spoof_normalized",
+      "kind": "legacy_socket",
+      "expected": "normalize",
+      "assertion": "eos_claim_cannot_create_authoritative_eos_event"
+    },
+    {
+      "id": "legacy_unrelated_source_normalized",
+      "kind": "legacy_socket",
+      "expected": "normalize",
+      "assertion": "compatible_nonreserved_request_stays_accepted"
+    },
+    {
+      "id": "legacy_reserved_source",
+      "kind": "legacy_socket",
+      "expected": "reject",
+      "assertion": "reserved_source_still_rejected"
+    },
+    {
+      "id": "unregistered_child_code",
+      "kind": "child",
+      "expected": "reject",
+      "assertion": "role_code_not_in_policy"
+    },
+    {
+      "id": "eos_claims_egia_node",
+      "kind": "child",
+      "expected": "reject",
+      "assertion": "node_owner_mismatch"
+    },
+    {
+      "id": "child_claims_isos_suppression",
+      "kind": "child",
+      "expected": "reject",
+      "assertion": "manager_only_suppression_code"
+    },
+    {
+      "id": "eos_runtime_suppression",
+      "kind": "child",
+      "expected": "accept",
+      "assertion": "runtime_only_owner_suppression_code"
     }
   ]
 }
