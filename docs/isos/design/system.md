@@ -41,4 +41,10 @@ IsOS validates each edge's source, destination type, `priority` and `frequency_h
 
 ## Implementation milestones
 
+### G01–G02 compatibility-reader evidence
+
+The first reader slice admits exact registered legacy identities, rejects unknown versions and unsafe process nodes at their JSON pointers, and keeps the saved byte revision. It retains the `1.0.0` writer for the first unapplied starter edit. It does not yet provide the `0.1.0` writer or explicit migration. The shared normalized projection in step 1 above remains a later migration dependency; this slice passes the original JSON value to existing typed owner validators, which apply their established optional defaults.
+
+From the IsOS repository root, run `cargo fmt --all -- --check`, `cargo test --no-default-features`, `cargo clippy --all-targets --no-default-features -- -D warnings`, and `cargo build --no-default-features`. On 2026-11-01 these passed with 76 unit tests and 5 integration tests; full local output is in `logs/test/2026-11-01-g01-g02/`. A clean temporary `ISOS_HOME` with `ISOS_AETHER_BIN_DIR` pointing at the built EOS release binaries also passed CLI first edited starter Apply, structurally identical no-op Apply preserving a whitespace-distinct file's SHA-256, and changed applied legacy rejection with `migration_required` and no byte change. The exact fixtures and expected paths are in [`tests/fixtures/graph_compat/`](../../../tests/fixtures/graph_compat/README.md).
+
 The ordered dependencies, outputs and acceptance gates are maintained in the [single IsOS milestone plan](../maintenance/roadmap.md). This design page owns the algorithms above; contract fields stay in `interfaces/` and node behavior is indexed in the [node catalog](../layers/README.md). No WorkflowService, ActionList or workflow DAG is part of this release.
