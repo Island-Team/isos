@@ -2,7 +2,7 @@
 
 [中文](../../../docs_cn/isos/interfaces/configuration_cn.md)
 
-**Status:** The XDG/`ISOS_HOME` roots, `config/isos.toml`, schema-1 local API, rotating source logs, and `isos version check` exist. The P04 generated configuration and launch preflight below are implemented in IsOS. Cross-core event fields and supported-version arrays remain **0.x targets**. See [current API fields](local-api.md#local-runtime-configuration) and [first-use workflow](../usage/get-started.md).
+**Status:** The XDG/`ISOS_HOME` roots, `config/isos.toml`, schema-1 local API, rotating source logs, and `isos version check` exist. The P04 generated configuration and launch preflight below are implemented in IsOS. Full P05 reader-set admission and cross-core event fields remain **0.x targets**; some owner binaries already advertise supported-version arrays. See [current API fields](local-api.md#local-runtime-configuration) and [first-use workflow](../usage/get-started.md).
 
 ## Paths and precedence
 
@@ -59,7 +59,7 @@ P04 failures use the existing schema-1 local API envelope with `422` for admissi
 | Package release manifest | `schema_version:4` | Distribution format; exact package version is separate. |
 | MuJoCo socket protocol | `2.0.0` | Existing simulator wire identity; EOS and package must agree. |
 
-**Target algorithm:** Probe each enabled core's setup `identity` without starting it; read `supported_graph_versions`, `supported_node_type_versions`, setup schema, and product version; compare the actual saved graph and exact pinned package contributions. Validate package receipts/digests and compiled adapter availability. Report a supported-version list and one actionable reason for each mismatch in `isos version check --json`. Apply and Run repeat the check against current bytes and executables. A changed package, graph, or executable invalidates the generated snapshot. Never reinterpret a `1.0.0` graph as `0.1.0` to pass a check. Current identity exposes single `graph_version` and `node_type_version` strings; arrays are target additions.
+**P05 target algorithm:** The [reader-feature contract](reader-features.md) defines the exact selected-binary probes, full type and verified package checks, required feature mapping, scalar fallback, typed diagnostics and upgrade evidence. Apply and Run repeat these checks against current graph bytes and executable digests. A changed package, graph or executable invalidates the selected P04 generation. Never reinterpret a `1.0.0` graph as `0.1.0` to pass a check. Current IsOS admission still uses narrower scalar and partial-array probes; P05 is not yet implemented.
 
 ## Target shared JSONL event
 

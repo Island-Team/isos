@@ -2,7 +2,7 @@
 
 [English](../../../docs/isos/interfaces/configuration.md)
 
-**状态：** XDG／`ISOS_HOME` 目录、`config/isos.toml`、schema-1 本地 API、按来源轮转的日志和 `isos version check` 已实现。下文 P04 生成配置与启动预检已在 IsOS 实现。跨核心事件字段及受支持版本数组仍是 **0.x 目标**。当前字段见[本地 API](local-api_cn.md#本地运行配置)，操作顺序见[首次使用](../usage/get-started_cn.md)。
+**状态：** XDG／`ISOS_HOME` 目录、`config/isos.toml`、schema-1 本地 API、按来源轮转的日志和 `isos version check` 已实现。下文 P04 生成配置与启动预检已在 IsOS 实现。完整 P05 读取器集合准入和跨核心事件字段仍是 **0.x 目标**；部分归属程序已公布受支持版本数组。当前字段见[本地 API](local-api_cn.md#本地运行配置)，操作顺序见[首次使用](../usage/get-started_cn.md)。
 
 ## 目录与优先级
 
@@ -59,7 +59,7 @@ P04 失败使用已有 schema-1 本地 API 封装：准入失败用 HTTP `422`�
 | 包发行清单 | `schema_version:4` | 分发格式；精确包版本另计。 |
 | MuJoCo 套接字协议 | `2.0.0` | 已有仿真器连接身份；EOS 与包必须一致。 |
 
-**目标算法：**不启动核心，先探测每个已启用核心的 setup `identity`；读取 `supported_graph_versions`、`supported_node_type_versions`、setup schema 与产品版本；与实际保存图和精确包贡献逐一比较。校验包收据／摘要及已编译适配器。`isos version check --json` 对每个不匹配项返回受支持列表和可执行操作。Apply 与 Run 针对当前字节和程序重复校验；包、图或程序变化使生成快照失效。不可把 `1.0.0` 图伪装为 `0.1.0` 以通过校验。当前 identity 只有 `graph_version` 与 `node_type_version` 单个字符串，数组是目标扩展。
+**P05 目标算法：**[读取器特性契约](reader-features_cn.md)规定所选程序的精确探测、完整类型与已验证包检查、必需特性映射、旧标量回退、结构化诊断及升级证据。Apply 与 Run 针对当前图字节及程序摘要重复检查；包、图或程序变化使所选 P04 生成版本失效。不可把 `1.0.0` 图伪装为 `0.1.0` 以通过校验。当前 IsOS 准入仍只做较窄的标量与部分数组探测；P05 尚未实现。
 
 ## 目标统一 JSONL 事件
 
