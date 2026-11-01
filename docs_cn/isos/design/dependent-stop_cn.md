@@ -18,7 +18,7 @@
 
 用同一单调时钟计算 `deadline = stop_start + stop_timeout_ms` 与 `cleanup_at = deadline - 2,000 ms`。优雅等待不得越过 `cleanup_at`；最迟到此时向剩余自有组安全发 KILL 并标记未知。非阻塞轮询直接子进程回收至多 1,500 ms，至少留 500 ms 给**实时**终结栅栏和响应。停止归属方与期限计时器在一个按运行 ID 绑定的内存状态格上串行。归属方持有栅栏时检查单调时钟、所有进程组及 EOS 证明，再原子选择终结值，并向共享状态和有界非阻塞响应队列发布同一值。确认发布必须严格早于期限；若队列不能接收，则发布未知。到达或超过期限时计时器发布未知，恰好等于期限也归未知。较晚的 OS 传输刷新不能改变已排队值。发布后所有调用方看到的状态格不可变；文件工作线程及日志收集器均不得修改。没有工作线程持久发布确认，因此信号前未知意图的重命名或父目录 fsync 即使在调用方返回未知后完成，也不会改变安全结果。管理器存活期间保留未回收句柄供后续有界清理；Shutdown 后绝不依据记录 PGID 再发信号。日志位于停止期限的关键路径之外。
 
-EOS 专属确认步骤等待**经评审的 EOS R06 机器可检查终结收据**，要求精确运行 ID 和观测子进程 PID，表示底盘及机械臂的停止／fence、仿真器回收及 socket 清理结果；普通 `eos_stopped` 日志或退出码 0 不足够。IsOS 将收据与 EOS 退出及进程组排空交叉检查，全部一致才能记录 `confirmed`。EOS 也可能在正常退出时发出错误或未知收据；IsOS 保留未知。精确收据传输、字段及 EOS 最长优雅停止时间仍须独立设计评审解决。在此之前，IsOS 代码路径须以 `eos_receipt_missing` 失败关闭。
+EOS 专属确认步骤用专门的严格解析器在 P06 日志归一化之前读取选中子进程的原始 stdout 管道。唯一可接纳帧是至多 4096 字节、以换行结尾的 schema-1 `eos_terminal_stop` 对象。将 `run_id`、`eos_pid`、`active_revision`、规范 `backend_node`、所选 `parts` 及管道本身绑定到获准运行。重复／未知／缺失键、不完整／超长／第二条／过晚行以及错误管道帧，在进入有界收据通道之前拒绝。EOS 在 MuJoCo 和辅助进程中关闭继承的 stdout 写端；IsOS 要求唯一一行与 EOS 退出之后出现 EOF，但不会越过 EOS 宽限等待。依据[归属方契约](../interfaces/dependent-stop_cn.md)校验后端 PID／PGID 相等、generation／epoch 形状、四项停止事实、所有选中部件结果及固定原因码。EOS 独自证明嵌套 MuJoCo 组排空与双实体停止；IsOS 验证其结构化断言，并在实时栅栏确认前独立验证自己的 EOS 组排空、零码退出和组长回收。EOS 的 `managed-stop-v1` 能力 token 只是早期支持检查。其 15,000 ms 硬界限可容纳在缺省 20,000 ms IsOS 宽限内；配置更短的宽限或收据过晚均为未知。EOS 未知收据或非零退出即使其他事实看似正确，仍为未知。
 
 ## 生命周期调用处
 
@@ -28,12 +28,14 @@ EOS 专属确认步骤等待**经评审的 EOS R06 机器可检查终结收据**
 
 ## 验证计划
 
-单元测试使用假单调时钟、可注入的发信号／回收边界及 EOS 终结收据桩，覆盖逆依赖、确定的独立顺序、并发 Stop 合并、提供者意外死亡、TERM 宽限、在 `cleanup_at` 发 KILL、有界回收／实时终结、后代残留、组长提前回收与 PGID 复用竞争、旧运行收据、持久意图后崩溃、P07 发布与新运行重置之间崩溃、意图重命名或父目录 fsync 卡住、实时确认后管理器重启以及日志故障。边界测试启动真实进程组，包含忽略 TERM 的子进程、先于后代退出的进程、已选 EOS 与 MuJoCo 两个场景、GUI 不可用、仿真器崩溃及 socket 清理。Restart 测试注入候选失败及回滚失败，比较新旧运行 ID、授权和就绪事件。断言旧停止未知后候选没有启动，且未知结果不写作 `deployment_stopped`。
+单元测试使用假单调时钟、可注入的发信号／回收边界及 EOS 终结收据桩，覆盖逆依赖、确定的独立顺序、并发 Stop 合并、提供者意外死亡、TERM 宽限、在 `cleanup_at` 发 KILL、有界回收／实时终结、后代残留、组长提前回收与 PGID 复用竞争、旧运行收据、原始选中管道收据的形状与身份、JSON 重复／未知／缺失键、错误管道／第二条／过晚行、缺失 EOF、EOS 非零退出、较短 EOS 宽限、持久意图后崩溃、P07 发布与新运行重置之间崩溃、意图重命名或父目录 fsync 卡住、实时确认后管理器重启以及日志故障。边界测试启动真实进程组，包含忽略 TERM 的子进程、先于后代退出的进程、已选 EOS 与 MuJoCo 两个场景、GUI 不可用、仿真器崩溃及 socket 清理。Restart 测试注入候选失败及回滚失败，比较新旧运行 ID、授权和就绪事件。断言旧停止未知后候选没有启动，且未知结果不写作 `deployment_stopped`。
 
-独立归属方评审须先确定 EOS 终结收据身份及优雅停止界限。实现后运行 IsOS Cargo fmt、严格 Clippy、测试和构建、[用例检查器](../../../tests/fixtures/dependent_stop/check_cases.py)、干净 home 的 CLI/API/Ctrl+C/manager-shutdown 重放以及 EOS/MuJoCo R06 边界测试。完整输出存入忽略的 `logs/test/<run-id>/`，准确命令和结果写入本文，PR 合并前还须独立实现评审。桩测试通过不足以关闭 R06。
+IsOS 独立设计评审须核对冻结的 EOS 收据／解析器边界及宽限算术。实现后运行 IsOS Cargo fmt、严格 Clippy、测试和构建、[用例检查器](../../../tests/fixtures/dependent_stop/check_cases.py)、干净 home 的 CLI/API/Ctrl+C/manager-shutdown 重放以及 EOS/MuJoCo R06 边界测试。完整输出存入忽略的 `logs/test/<run-id>/`，准确命令和结果写入本文，PR 合并前还须独立实现评审。桩测试通过不足以关闭 R06。
 
 2026-11-02 设计校验基于 IsOS master `1db1aa52`：`/home/ashex/.cargo/bin/cargo fmt --all -- --check`、`/home/ashex/.cargo/bin/cargo clippy --all-targets -- -D warnings` 和 `/home/ashex/.cargo/bin/cargo test` 均通过（191 个单元、6 个 CLI 指南、1 个已移除命令和 9 个连线准入测试）。`python3 tests/fixtures/dependent_stop/check_cases.py` 检查 22 个冻结场景；Python 检查器解析所有改动 Markdown 的本地链接和 JSON 示例；`git diff --check` 通过。完整 Cargo 和文档输出在忽略的 `logs/test/20261102-r06-dependent-stop-design/`。这些仅为设计检查，不是 R06 实现或实体停止验证。
 
 2026-11-02 评审修订校验：`/home/ashex/.cargo/bin/cargo fmt --all -- --check`、`/home/ashex/.cargo/bin/cargo clippy --all-targets -- -D warnings` 与 `/home/ashex/.cargo/bin/cargo test` 在未改动的 Rust 源码上通过。`python3 tests/fixtures/dependent_stop/check_cases.py` 检查 31 个用例，包括 Stop 前退出但未回收的组长、组长已回收／PGID 复用竞争、2,000 ms 清理窗口、持久停止意图后崩溃及新运行重置边界。相对 Markdown 链接、JSON 示例和 `git diff --check` 均通过。完整输出在忽略的 `logs/test/20261102-r06-dependent-stop-design-review-fixes/`。EOS 收据身份和宽限时间仍待归属方同意。
 
-2026-11-02 终结栅栏修订校验：`/home/ashex/.cargo/bin/cargo fmt --all -- --check`、`/home/ashex/.cargo/bin/cargo clippy --all-targets -- -D warnings` 与 `/home/ashex/.cargo/bin/cargo test` 在未改动的 Rust 源码上通过（191 个单元、6 个 CLI 指南、1 个已移除命令、9 个连线准入测试）。`python3 tests/fixtures/dependent_stop/check_cases.py` 检查 35 个设计用例，包括未知响应后才完成的意图重命名与父目录 fsync、期限相等以及实时确认后管理器重启。相对 Markdown 链接、JSON 示例、用例 JSON 和 `git diff --check` 均通过。完整输出在忽略的 `logs/test/20261102-r06-finalization-fence/`。EOS 收据身份、信号语义及宽限界限仍待归属方同意；这不能验证实体停止。
+2026-11-02 终结栅栏修订校验：`/home/ashex/.cargo/bin/cargo fmt --all -- --check`、`/home/ashex/.cargo/bin/cargo clippy --all-targets -- -D warnings` 与 `/home/ashex/.cargo/bin/cargo test` 在未改动的 Rust 源码上通过（191 个单元、6 个 CLI 指南、1 个已移除命令、9 个连线准入测试）。`python3 tests/fixtures/dependent_stop/check_cases.py` 检查 35 个设计用例，包括未知响应后才完成的意图重命名与父目录 fsync、期限相等以及实时确认后管理器重启。相对 Markdown 链接、JSON 示例、用例 JSON 和 `git diff --check` 均通过。完整输出在忽略的 `logs/test/20261102-r06-finalization-fence/`。EOS 收据身份、信号语义及宽限界限后来已在 EOS R06 归属方设计中获准；此校验不能验证实体停止。
+
+2026-11-02 EOS 收据对齐校验：`/home/ashex/.cargo/bin/cargo fmt --all -- --check`、`/home/ashex/.cargo/bin/cargo clippy --all-targets -- -D warnings` 和 `/home/ashex/.cargo/bin/cargo test` 在未改动的 Rust 源码上通过（191 个单元、6 个 CLI 指南、1 个已移除命令、9 个连线准入测试）。`python3 tests/fixtures/dependent_stop/check_cases.py` 检查 56 个设计用例，包括原始管道身份、无效／过晚／第二条收据、缺失 EOF、缺失支持 token、EOS 零码退出以及 15／20／30 秒期限关系。两个规范 JSON 用例与经评审的 EOS 归属方契约示例一致。相对 Markdown 链接、JSON 示例和 `git diff --check` 均通过。完整输出在忽略的 `logs/test/20261102-r06-eos-receipt-alignment/`。这是设计检查；仍须使用真实 EOS 和 MuJoCo 验证。
