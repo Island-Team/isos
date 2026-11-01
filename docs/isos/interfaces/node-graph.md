@@ -35,7 +35,7 @@ Path: `cores/isos/layers/process/groups/component/nodes/<id>`. Current type: `is
 | `command` | `Vec<String>` | argv | Obsolete; rejected on Apply. Use `role` and `args`. |
 | `cwd` | `Option<PathBuf>` | path | Optional absolute working directory. |
 | `env` | `BTreeMap<String,String>` | environment | Optional child variables; keys ASCII alphanumeric or `_`, values exclude NUL. |
-| `env_from` (P04 target, `@v0.1` only) | `BTreeMap<String,String>` | environment variable names | Optional mapping from a child variable to an IsOS manager variable. Both names match `[A-Za-z_][A-Za-z0-9_]*`, each map has at most 32 entries, and a target key cannot also occur in `env`. Only names enter saved graph and generated metadata; the required value is read only immediately before spawning that child. Legacy component identities do not acquire this field implicitly. |
+| `env_from` (P04 implemented, `@v0.1` only) | `BTreeMap<String,String>` | environment variable names | Optional mapping from a child variable to an IsOS manager variable. Both names match `[A-Za-z_][A-Za-z0-9_]*`, each map has at most 32 entries, and a target key cannot also occur in `env`. Only names enter saved graph and generated metadata; the required value is read only immediately before spawning that child. Legacy component identities do not acquire this field implicitly. |
 | `ready_tcp` | `Option<String>` | host:port | TCP readiness probe; exclusive with `ready_unix`. |
 | `ready_unix` | `Option<PathBuf>` | Unix path | Socket readiness probe, absolute and at most 107 bytes; exclusive with `ready_tcp`. |
 | `start_timeout_ms` | `u64` | ms | Readiness deadline, default 30000, range 1–120000. |

@@ -21,7 +21,7 @@
 
 `ISOS_CONFIG` points to an absolute TOML file when set; otherwise IsOS reads its checkout `config/isos.toml`. For each supported TOML field, an explicitly set environment variable wins, then TOML, then the documented default. Relative source-artifact paths in TOML resolve from the IsOS checkout. `ISOS_HOME`/XDG select private state roots independently. Never store secrets in graph settings, generated snapshots, receipts, logs, or UI preferences. Service `env_from` imports a named process environment variable at launch; status prints the name, never its value. A missing required secret fails preflight without echoing it.
 
-## P04 generated configuration and launch preflight (target)
+## P04 generated configuration and launch preflight (implemented in IsOS)
 
 IsOS owns the saved-byte revision, generation selection, private files and child launch. EOS and EGIA own the contents returned by their schema-1 `setup render` adapters; IsOS never edits an owner overlay. Apply is the only writer. Validate may render into memory but publishes nothing. Run and Restart consume only the selected generation and never silently refresh it. P05 separately negotiates the actual reader feature and version sets.
 

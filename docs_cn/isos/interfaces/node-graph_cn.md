@@ -35,7 +35,7 @@ IsOS 将已验证的可执行文件、场景路径和 MuJoCo 库路径传给 EOS
 | `command` | `Vec<String>` | argv | 已废弃，Apply 会拒绝；请使用 `role` 和 `args`。 |
 | `cwd` | `Option<PathBuf>` | 路径 | 可选绝对工作目录。 |
 | `env` | `BTreeMap<String,String>` | 环境变量 | 可选；键仅允许 ASCII 字母、数字或 `_`，值不得含 NUL。 |
-| `env_from`（P04 目标，仅 `@v0.1`） | `BTreeMap<String,String>` | 环境变量名称 | 可选，映射子进程变量名到 IsOS 管理器变量名。两种名称均须符合 `[A-Za-z_][A-Za-z0-9_]*`，映射最多 32 项，目标键不得同时出现在 `env`。保存图和生成元数据只存名称；只在该子进程即将 spawn 时读取必需值。旧版组件身份不会隐式获得此字段。 |
+| `env_from`（P04 已实现，仅 `@v0.1`） | `BTreeMap<String,String>` | 环境变量名称 | 可选，映射子进程变量名到 IsOS 管理器变量名。两种名称均须符合 `[A-Za-z_][A-Za-z0-9_]*`，映射最多 32 项，目标键不得同时出现在 `env`。保存图和生成元数据只存名称；只在该子进程即将 spawn 时读取必需值。旧版组件身份不会隐式获得此字段。 |
 | `ready_tcp` | `Option<String>` | host:port | TCP 就绪探针，与 `ready_unix` 互斥。 |
 | `ready_unix` | `Option<PathBuf>` | Unix 路径 | 套接字就绪探针，绝对路径、最多 107 字节，与 `ready_tcp` 互斥。 |
 | `start_timeout_ms` | `u64` | 毫秒 | 就绪期限，默认 30000，范围 1–120000。 |
