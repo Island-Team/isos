@@ -1,34 +1,43 @@
 #!/usr/bin/env python3
-"""Design-fixture self-check for the P07 owner wire contract; no runtime oracle."""
+"""Executable design fixtures for P07 wire and durable scope transitions."""
 import json
 from pathlib import Path
 
-p = Path(__file__).with_name("cases.json")
-d = json.loads(p.read_text())
-assert d["contract"] == "isos-log-cursors-p07-v1"
-assert d["endpoint"] == "/api/isos/v1/logs" and d["view"] == "current"
-assert d["response_keys"] == ["scope", "anchor", "lines", "next_cursor", "rotated", "diagnostics"]
-assert d["scope_keys"] == ["kind", "run_id", "active_revision"]
-assert d["anchor_keys"] == ["kind", "state", "event"]
-assert d["filter_order"] == ["scope", "anchor", "run_id", "source", "level", "node_path", "correlation_id"]
-assert d["diagnostic_order"] == ["log_run_changed", "log_cursor_expired", "log_collector_gap", "log_anchor_unavailable"]
-assert d["bounds"] == {"default_limit": 100, "max_limit": 200, "max_scan_bytes": 65536, "max_cursor_ascii_bytes": 512}
+HERE = Path(__file__).parent
+wire = json.loads((HERE / "cases.json").read_text())
+assert wire["contract"] == "isos-log-cursors-p07-v1"
+assert wire["endpoint"] == "/api/isos/v1/logs" and wire["view"] == "current"
+assert wire["response_keys"] == ["scope", "anchor", "lines", "next_cursor", "rotated", "diagnostics"]
+assert wire["scope_keys"] == ["kind", "run_id", "active_revision"]
+assert wire["anchor_keys"] == ["kind", "state", "event"]
+assert wire["filter_order"] == ["scope", "anchor", "run_id", "source", "level", "node_path", "correlation_id"]
+assert wire["diagnostic_order"] == ["log_run_changed", "log_cursor_expired", "log_collector_gap", "log_anchor_unavailable"]
+assert wire["bounds"] == {"default_limit": 100, "max_limit": 200, "max_scan_bytes": 65536, "max_cursor_ascii_bytes": 512}
 expected_names = {
     "manager_package_failure_filter_bypass", "manager_apply_failure", "manager_validate_only_not_anchor",
     "run_pending_empty", "run_ready_first", "run_failure_before_ready", "run_filtered_anchor_and_progress",
     "rotation_retained", "rotation_expired", "new_admitted_run_rebase", "stop_retains_last_run",
     "failed_retains_last_run", "collector_outage_recovery", "anchor_write_failure",
     "legacy_socket_cannot_anchor", "cursor_filter_mismatch", "cursor_tampered", "legacy_cursor_rejected",
+    "node_path_invalid", "correlation_id_invalid", "scope_unrecoverable",
 }
-cases = d["cases"]
+cases = wire["cases"]
 assert len(cases) == len(expected_names)
 assert {c["name"] for c in cases} == expected_names
 for c in cases:
-    assert set(c) == {"name", "phase", "query", "expected"} or set(c) == {"name", "phase", "query", "expected_error"}
+    assert set(c) in ({"name", "phase", "query", "expected"}, {"name", "phase", "query", "expected_error"})
     if "expected_error" in c:
-        assert c["expected_error"]["http"] == 400
-        assert c["expected_error"]["path"] == "/query/cursor"
-        assert c["expected_error"]["code"] in {"log_cursor_invalid", "log_cursor_filter_mismatch"}
+        error = c["expected_error"]
+        if error["code"] == "log_scope_unavailable":
+            assert (error["http"], error["path"]) == (503, "/scope")
+        else:
+            assert error["http"] == 400
+            assert (error["code"], error["path"]) in {
+                ("log_cursor_invalid", "/query/cursor"),
+                ("log_cursor_filter_mismatch", "/query/cursor"),
+                ("log_node_path_invalid", "/query/node_path"),
+                ("log_correlation_id_invalid", "/query/correlation_id"),
+            }
         continue
     e = c["expected"]
     assert e["scope_kind"] in {"manager_session", "deployment_run"}
@@ -38,9 +47,66 @@ for c in cases:
     if e["anchor_state"] == "unavailable":
         assert any(x["code"] == "log_anchor_unavailable" for x in e["diagnostics"])
     codes = [x["code"] for x in e["diagnostics"]]
-    assert codes == sorted(codes, key=d["diagnostic_order"].index)
+    assert codes == sorted(codes, key=wire["diagnostic_order"].index)
     assert all(x["count"] is None or (isinstance(x["count"], int) and x["count"] >= 0) for x in e["diagnostics"])
 assert next(c for c in cases if c["name"] == "manager_package_failure_filter_bypass")["expected"]["anchor_source"] == "packages"
-assert next(c for c in cases if c["name"] == "stop_retains_last_run")["expected"]["process_status_run_id"] == "r7"
-assert next(c for c in cases if c["name"] == "failed_retains_last_run")["expected"]["process_status_run_id"] == "r7"
-print(f"P07 contract fixtures OK: {len(cases)} cases")
+for name in ("stop_retains_last_run", "failed_retains_last_run"):
+    assert next(c for c in cases if c["name"] == name)["expected"]["process_status_run_id"] == "r7"
+
+
+def resolve(state, retained, history_complete=False):
+    """Reference scope selector. The durable last-run ID survives log rotation."""
+    last = state.get("last_run_id") if state["valid"] else None
+    if last is None and not state["valid"]:
+        admitted = {e["run_id"] for e in retained if e["event_code"] == "deployment_starting"}
+        if history_complete and len(admitted) == 1:
+            last = admitted.pop()
+    if last is None and (not state["valid"] or not state.get("never_run", False)):
+        return {"http": 503, "code": "log_scope_unavailable", "path": "/scope",
+                "run_id_state": "unavailable", "scope_kind": None, "scope_run_id": None}
+    if last is None:
+        return {"http": 200, "run_id_state": "none", "scope_kind": "manager_session",
+                "scope_run_id": state["manager_session"]}
+    out = {"http": 200, "run_id_state": "known", "scope_kind": "deployment_run", "scope_run_id": last}
+    anchor = state.get("anchor") if state["valid"] else None
+    if anchor and anchor["run_id"] == last:
+        out["anchor_code"] = anchor["event_code"]
+        out["lines"] = [e["event_code"] for e in retained if e["run_id"] == last and e["event_code"] != anchor["event_code"]]
+    elif not state["valid"] or state.get("admission_interrupted"):
+        out["anchor_state"] = "unavailable"
+        out["diagnostic"] = "log_anchor_unavailable"
+    return out
+
+
+def admit(state, candidate, publication):
+    """Reference admission barrier: no spawn until durable publication succeeds."""
+    result = {"http": 500, "code": "log_scope_publish_failed", "path": "/run_id", "spawned": False}
+    durable = dict(state)
+    if publication == "write_failed":
+        result["durable_last_run_id"] = state["last_run_id"]
+    elif publication == "parent_fsync_uncertain_survives":
+        durable["last_run_id"] = candidate
+        durable["anchor"] = None
+        durable["admission_interrupted"] = True
+        result["durable_last_run_id"] = candidate
+        recovered = resolve(durable, [])
+        result["recovered_scope_kind"] = recovered["scope_kind"]
+        result["recovered_scope_run_id"] = recovered["scope_run_id"]
+        result["recovered_anchor_state"] = recovered["anchor_state"]
+        result["recovered_diagnostic"] = recovered["diagnostic"]
+    else:
+        raise AssertionError(publication)
+    return result
+
+
+state_cases = json.loads((HERE / "state-scenarios.json").read_text())
+assert state_cases["contract"] == "isos-log-cursors-p07-state-v1"
+assert len(state_cases["cases"]) == 7
+for scenario in state_cases["cases"]:
+    if "publication" in scenario:
+        actual = admit(scenario["state"], scenario["candidate_run_id"], scenario["publication"])
+    else:
+        actual = resolve(scenario["state"], scenario["retained_events"], scenario.get("retained_history_complete", False))
+    assert actual == scenario["expected"], (scenario["name"], actual, scenario["expected"])
+
+print(f"P07 contract fixtures OK: {len(cases)} wire cases, {len(state_cases['cases'])} state scenarios")
