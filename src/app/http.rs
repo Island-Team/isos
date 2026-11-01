@@ -638,6 +638,15 @@ async fn apply_node_graph(
         .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
     let _lock = lock::Lock::take(&app.paths)
         .map_err(|error| err(StatusCode::INTERNAL_SERVER_ERROR, error))?;
+    if let Err(error) = packages::verify_graph_packages(&app.paths, &graph) {
+        let diagnostic = graph_migration::package_diagnostic(&error);
+        let message = diagnostic.message.clone();
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"schema_version":1,"ok":false,
+                "data":{"diagnostics":[diagnostic]},"error":message})),
+        ));
+    }
     let path = app.paths.node_graph_path(&app.deployment);
     let previous = fs::read(&path).ok();
     if let Some(bytes) = &previous {

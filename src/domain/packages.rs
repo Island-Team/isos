@@ -86,7 +86,10 @@ fn descriptor_failure(id: &str, version: &str, error: &anyhow::Error) -> anyhow:
         .join(" ");
     let code = if text.contains("symlink") || text.contains("unsafe") {
         "package_unsafe_path"
-    } else if text.contains("No such file") || text.contains("not found") {
+    } else if text.contains("No such file")
+        || text.contains("not found")
+        || text.contains("missing scene asset")
+    {
         "package_missing_file"
     } else {
         "package_invalid_descriptor"
@@ -344,6 +347,88 @@ fn checked_manifest_path(path: &Path) -> Result<PathBuf> {
     Ok(file)
 }
 
+fn scene_attribute<'a>(source: &'a str, name: &str) -> Result<Option<&'a str>> {
+    let Some((_, tail)) = source.split_once(name) else {
+        return Ok(None);
+    };
+    let quote = tail.chars().next().context("empty scene attribute")?;
+    ensure!(
+        quote == '"' || quote == '\'',
+        "scene attribute must be quoted"
+    );
+    let value = tail[1..]
+        .split(quote)
+        .next()
+        .context("unterminated scene attribute")?;
+    ensure!(!value.is_empty(), "empty scene file reference");
+    Ok(Some(value))
+}
+
+fn scene_relative_path(parent: &Path, reference: &str) -> Result<PathBuf> {
+    let mut normalized = parent.to_path_buf();
+    for component in Path::new(reference).components() {
+        match component {
+            Component::Normal(name) => normalized.push(name),
+            Component::CurDir => (),
+            Component::ParentDir => ensure!(normalized.pop(), "scene asset escapes package"),
+            _ => anyhow::bail!("scene asset escapes package"),
+        }
+    }
+    ensure!(
+        !normalized.as_os_str().is_empty(),
+        "scene asset escapes package"
+    );
+    Ok(normalized)
+}
+
+/// Check the bounded transitive closure of scene XML file references before publication.
+fn verify_scene_references(root: &Path, scene: &str) -> Result<()> {
+    let mut pending = vec![PathBuf::from(scene)];
+    let mut visited = BTreeSet::new();
+    while let Some(xml) = pending.pop() {
+        ensure!(visited.len() < 512, "scene references too many XML files");
+        if !visited.insert(xml.clone()) {
+            continue;
+        }
+        let xml_path = checked_file(
+            root,
+            xml.to_str().context("scene path is not UTF-8")?,
+            false,
+        )?;
+        let source = String::from_utf8(read_bounded(&xml_path, 4_194_304)?)?;
+        let parent = xml.parent().context("scene has no parent")?;
+        let meshdir = scene_attribute(&source, "meshdir=")?;
+        let texturedir = scene_attribute(&source, "texturedir=")?;
+        for (index, (offset, _)) in source.match_indices("file=").enumerate() {
+            ensure!(index < 512, "scene references too many files");
+            let reference = scene_attribute(&source[offset..], "file=")?
+                .context("scene file reference is missing")?;
+            let direct = scene_relative_path(parent, reference)?;
+            let mut candidates = vec![direct];
+            for directory in [meshdir, texturedir].into_iter().flatten() {
+                let directory = scene_relative_path(parent, directory)?;
+                candidates.push(scene_relative_path(&directory, reference)?);
+            }
+            let selected = candidates
+                .into_iter()
+                .find(|candidate| root.join(candidate).exists())
+                .context("missing scene asset")?;
+            checked_file(
+                root,
+                selected.to_str().context("scene asset path is not UTF-8")?,
+                false,
+            )?;
+            if selected
+                .extension()
+                .is_some_and(|extension| extension == "xml")
+            {
+                pending.push(selected);
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_payload(root: &Path, release: &Release) -> Result<()> {
     if release.kind == "backend"
         && release.adapters.is_empty()
@@ -381,6 +466,7 @@ fn validate_payload(root: &Path, release: &Release) -> Result<()> {
                 "duplicate or empty scene ID"
             );
             checked_file(root, &scene.path, false)?;
+            verify_scene_references(root, &scene.path)?;
         }
     }
     Ok(())
@@ -389,7 +475,21 @@ fn validate_payload(root: &Path, release: &Release) -> Result<()> {
 /// Revalidate an exact schema-2 receipt and return only verified payload paths.
 pub fn verify(paths: &Paths, id: &str, version: &str) -> Result<VerifiedPackage> {
     let store = package_path(paths, id, version)?;
-    let bytes = read_bounded(&store.join("receipt.json"), 65_536)
+    let store = checked_root(&store).map_err(|error| {
+        failure(
+            id,
+            version,
+            if error.to_string().contains("symlink") {
+                "package_unsafe_path"
+            } else {
+                "package_missing_file"
+            },
+            "manifest",
+        )
+    })?;
+    let receipt_path = checked_file(&store, "receipt.json", false)
+        .map_err(|_| failure(id, version, "package_unsafe_path", "manifest"))?;
+    let bytes = read_bounded(&receipt_path, 65_536)
         .map_err(|_| failure(id, version, "package_invalid_manifest", "manifest"))?;
     let receipt: Receipt = serde_json::from_slice(&bytes)
         .map_err(|_| failure(id, version, "package_invalid_manifest", "manifest"))?;
@@ -403,7 +503,9 @@ pub fn verify(paths: &Paths, id: &str, version: &str) -> Result<VerifiedPackage>
     {
         return Err(failure(id, version, "package_invalid_manifest", "manifest"));
     }
-    let release_bytes = read_bounded(&store.join("release.json"), 4_194_304)
+    let release_path = checked_file(&store, "release.json", false)
+        .map_err(|_| failure(id, version, "package_unsafe_path", "manifest"))?;
+    let release_bytes = read_bounded(&release_path, 4_194_304)
         .map_err(|_| failure(id, version, "package_changed", "manifest"))?;
     if receipt.release_sha256.as_deref() != Some(digest(&release_bytes).as_str()) {
         return Err(failure(id, version, "package_changed", "manifest"));
@@ -466,6 +568,18 @@ pub fn verify(paths: &Paths, id: &str, version: &str) -> Result<VerifiedPackage>
     let sidecar = store.join("node-types.json");
     match projection {
         Some(expected) => {
+            let sidecar = checked_file(&store, "node-types.json", false).map_err(|error| {
+                failure(
+                    id,
+                    version,
+                    if error.to_string().contains("symlink") {
+                        "package_unsafe_path"
+                    } else {
+                        "package_invalid_sidecar"
+                    },
+                    "sidecar",
+                )
+            })?;
             let actual = read_bounded(&sidecar, 4_194_304)
                 .map_err(|_| failure(id, version, "package_invalid_sidecar", "sidecar"))?;
             if actual != expected
@@ -474,7 +588,7 @@ pub fn verify(paths: &Paths, id: &str, version: &str) -> Result<VerifiedPackage>
                 return Err(failure(id, version, "package_invalid_sidecar", "sidecar"));
             }
         }
-        None if sidecar.exists() || receipt.sidecar_sha256.is_some() => {
+        None if fs::symlink_metadata(&sidecar).is_ok() || receipt.sidecar_sha256.is_some() => {
             return Err(failure(id, version, "package_invalid_sidecar", "sidecar"));
         }
         None => (),
@@ -922,6 +1036,11 @@ pub fn link_with_manifest(
     {
         return Err(failure(id, version, "package_invalid_manifest", "manifest"));
     }
+    if let Some(release) = &release {
+        release
+            .select_asset(&release::Platform::current())
+            .map_err(|_| failure(id, version, "package_platform_mismatch", "asset"))?;
+    }
     let target = package_path(paths, id, version)?;
     if target.exists() {
         return Err(failure(id, version, "package_version_exists", "admission"));
@@ -1187,6 +1306,15 @@ pub fn listing(paths: &Paths) -> Result<Vec<serde_json::Value>> {
                     .and_then(|receipt| serde_json::to_value(receipt).ok())
                     .unwrap_or_else(|| serde_json::json!({"id":id,"version":version}));
                 row["available"] = serde_json::json!(checked.is_ok());
+                row["status"] = serde_json::json!(if checked.is_ok() {
+                    "verified"
+                } else if receipt.as_ref().is_some_and(|receipt| {
+                    receipt.schema_version == 1 && receipt.local_link.is_some()
+                }) {
+                    "unverified_legacy_link"
+                } else {
+                    "unavailable"
+                });
                 row["reason"] = if checked.is_ok() {
                     serde_json::Value::Null
                 } else {
@@ -1695,6 +1823,139 @@ mod verification_tests {
         );
         assert!(
             !package_path(&paths, "test/verified", "0.1.1")
+                .unwrap()
+                .exists()
+        );
+    }
+
+    #[test]
+    fn link_rejects_wrong_host_asset_before_receipt() {
+        let (_temp, paths, source) = fixture();
+        let mut release: serde_json::Value =
+            serde_json::from_slice(&fs::read(source.join("release.json")).unwrap()).unwrap();
+        release["assets"][0]["arch"] = serde_json::json!("other-architecture");
+        fs::write(
+            source.join("release.json"),
+            serde_json::to_vec(&release).unwrap(),
+        )
+        .unwrap();
+        let error =
+            link_with_manifest(&paths, "test/verified", "0.1.1", &source, None).unwrap_err();
+        let failure = error.downcast_ref::<PackageFailure>().unwrap();
+        assert_eq!(
+            (failure.code, failure.stage),
+            ("package_platform_mismatch", "asset")
+        );
+        assert!(
+            !package_path(&paths, "test/verified", "0.1.1")
+                .unwrap()
+                .exists()
+        );
+    }
+
+    #[test]
+    fn verifier_rejects_symlinked_metadata_and_store_root() {
+        for name in ["receipt.json", "release.json", "node-types.json", "store"] {
+            let (temp, paths, source) = fixture();
+            let store =
+                link_with_manifest(&paths, "test/verified", "0.1.1", &source, None).unwrap();
+            if name == "store" {
+                let outside = temp.path().join("relocated-store");
+                fs::rename(&store, &outside).unwrap();
+                symlink(&outside, &store).unwrap();
+            } else {
+                let outside = temp.path().join(name);
+                fs::copy(store.join(name), &outside).unwrap();
+                fs::remove_file(store.join(name)).unwrap();
+                symlink(&outside, store.join(name)).unwrap();
+            }
+            let error = verify(&paths, "test/verified", "0.1.1").unwrap_err();
+            let failure = error.downcast_ref::<PackageFailure>().unwrap();
+            assert_eq!(failure.code, "package_unsafe_path", "{name}");
+            assert_eq!(
+                failure.stage,
+                if name == "node-types.json" {
+                    "sidecar"
+                } else {
+                    "manifest"
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn scene_closure_checks_nested_missing_and_escaping_assets() {
+        let (temp, _paths, source) = fixture();
+        fs::create_dir_all(source.join("assets/meshes")).unwrap();
+        fs::write(
+            source.join("assets/scene.xml"),
+            "<include file=\"part.xml\"/>",
+        )
+        .unwrap();
+        fs::write(
+            source.join("assets/part.xml"),
+            "<compiler meshdir=\"meshes\"/><mesh file=\"part.stl\"/>",
+        )
+        .unwrap();
+        fs::write(source.join("assets/meshes/part.stl"), b"mesh").unwrap();
+        verify_scene_references(&source, "assets/scene.xml").unwrap();
+        fs::remove_file(source.join("assets/meshes/part.stl")).unwrap();
+        assert!(verify_scene_references(&source, "assets/scene.xml").is_err());
+        fs::write(temp.path().join("outside.stl"), b"mesh").unwrap();
+        fs::write(
+            source.join("assets/part.xml"),
+            "<mesh file=\"../../../outside.stl\"/>",
+        )
+        .unwrap();
+        assert!(verify_scene_references(&source, "assets/scene.xml").is_err());
+        fs::create_dir_all(source.join("assets/scenes/navigation")).unwrap();
+        fs::create_dir_all(source.join("assets/menagerie")).unwrap();
+        fs::write(source.join("assets/menagerie/mesh.stl"), b"mesh").unwrap();
+        fs::write(
+            source.join("assets/scenes/navigation/scene.xml"),
+            "<mesh file=\"../../menagerie/mesh.stl\"/>",
+        )
+        .unwrap();
+        verify_scene_references(&source, "assets/scenes/navigation/scene.xml").unwrap();
+    }
+
+    #[test]
+    fn link_rejects_missing_scene_asset_before_receipt() {
+        let (_temp, paths, source) = fixture();
+        fs::create_dir(source.join("bin")).unwrap();
+        fs::create_dir(source.join("assets")).unwrap();
+        let executable = source.join("bin/sim");
+        fs::write(&executable, b"#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(
+            source.join("assets/scene.xml"),
+            "<mesh file=\"missing.stl\"/>",
+        )
+        .unwrap();
+        fs::write(source.join("backend-v2.json"), serde_json::to_vec(&serde_json::json!({
+            "schema_version":"2.0.0", "package":{"id":"island/mujoco-sim","version":"0.1.1"},
+            "entrypoint":"bin/sim", "protocol":"mujoco-v2",
+            "scenes":[{"id":"demo","path":"assets/scene.xml"}],
+            "devices":{}, "runtime":{"mujoco_version":"3.16.0", "environment_variable":"MUJOCO_ROOT", "library":"lib/libmujoco.so.3.16.0"}
+        })).unwrap()).unwrap();
+        let mut release: serde_json::Value =
+            serde_json::from_slice(&fs::read(source.join("release.json")).unwrap()).unwrap();
+        release["id"] = serde_json::json!("island/mujoco-sim");
+        release["kind"] = serde_json::json!("backend");
+        fs::write(
+            source.join("release.json"),
+            serde_json::to_vec(&release).unwrap(),
+        )
+        .unwrap();
+        let error =
+            link_with_manifest(&paths, "island/mujoco-sim", "0.1.1", &source, None).unwrap_err();
+        let failure = error.downcast_ref::<PackageFailure>().unwrap();
+        assert_eq!(
+            (failure.code, failure.stage),
+            ("package_missing_file", "descriptor")
+        );
+        assert!(
+            !package_path(&paths, "island/mujoco-sim", "0.1.1")
                 .unwrap()
                 .exists()
         );
