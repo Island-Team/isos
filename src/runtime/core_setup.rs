@@ -838,7 +838,9 @@ mod tests {
         assert!(prepare_run(&paths, "default", "stale").is_err());
         assert!(!paths.generated("default").exists());
         let revision = crate::starter::revision(&paths.node_graph_path("default")).unwrap();
-        prepare_run(&paths, "default", &revision).unwrap();
+        let error = prepare_run(&paths, "default", &revision).unwrap_err();
+        assert!(error.to_string().contains("/robot/id"));
+        assert!(!paths.generated("default").exists());
     }
 
     #[test]

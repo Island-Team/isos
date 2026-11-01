@@ -1351,12 +1351,33 @@ mod tests {
                 .unwrap(),
             ))
             .unwrap();
-        let response = router(app).oneshot(apply).await.unwrap();
+        let response = router(app.clone()).oneshot(apply).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let body: Value =
             serde_json::from_slice(&to_bytes(response.into_body(), 1_000_000).await.unwrap())
                 .unwrap();
         assert_eq!(body["data"]["diagnostics"][0]["path"], expected);
+        let status = Request::builder()
+            .uri("/api/isos/v1/setup-status")
+            .header(header::HOST, "127.0.0.1:16000")
+            .body(Body::empty())
+            .unwrap();
+        let response = router(app.clone()).oneshot(status).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 1_000_000).await.unwrap())
+                .unwrap();
+        assert_eq!(body["data"]["ready"], false);
+        assert!(
+            body["data"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue
+                    .as_str()
+                    .is_some_and(|message| message.contains(expected)
+                        && message.contains("unmapped_node_type")))
+        );
         assert_eq!(fs::read(path).unwrap(), unmapped);
     }
 
