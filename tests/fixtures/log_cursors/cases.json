@@ -26,6 +26,7 @@
     {"name":"legacy_socket_cannot_anchor","phase":"legacy_socket_only","query":{"source":"all"},"expected":{"scope_kind":"deployment_run","anchor_state":"pending","anchor_code":null,"lines":[],"diagnostics":[]}},
     {"name":"cursor_filter_mismatch","phase":"running","query":{"source":"egia","cursor":"lc1.ALL_FILTER"},"expected_error":{"http":400,"path":"/query/cursor","code":"log_cursor_filter_mismatch"}},
     {"name":"cursor_tampered","phase":"running","query":{"source":"all","cursor":"lc1.TAMPERED"},"expected_error":{"http":400,"path":"/query/cursor","code":"log_cursor_invalid"}},
+    {"name":"cursor_key_rotated","phase":"running","query":{"source":"all","cursor":"lc1.OLD_KEY"},"expected_error":{"http":400,"path":"/query/cursor","code":"log_cursor_invalid"}},
     {"name":"legacy_cursor_rejected","phase":"running","query":{"source":"all","cursor":"123:456:789"},"expected_error":{"http":400,"path":"/query/cursor","code":"log_cursor_invalid"}},
     {"name":"node_path_invalid","phase":"running","query":{"node_path":"/cores/eos/layers/control/groups/manual/nodes/a/inputs/x"},"expected_error":{"http":400,"path":"/query/node_path","code":"log_node_path_invalid"}},
     {"name":"correlation_id_invalid","phase":"running","query":{"correlation_id":"with space"},"expected_error":{"http":400,"path":"/query/correlation_id","code":"log_correlation_id_invalid"}},

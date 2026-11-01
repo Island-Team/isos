@@ -42,6 +42,11 @@ struct State {
     loss_uncertain: bool,
 }
 
+struct LoadedState {
+    state: State,
+    anchor_proven: bool,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SessionIntent {
@@ -283,7 +288,7 @@ fn typed_package_failure(code: &str) -> bool {
     )
 }
 
-fn validate_anchor(store: &LogStore, anchor: &Anchor, run: &str, manager: bool) -> Result<()> {
+fn validate_anchor(store: &LogStore, anchor: &Anchor, run: &str, manager: bool) -> Result<bool> {
     ensure!(
         anchor.segment.len() <= 96
             && anchor.segment.split('-').count() == 3
@@ -297,8 +302,6 @@ fn validate_anchor(store: &LogStore, anchor: &Anchor, run: &str, manager: bool) 
         anchor.after_offset > 0 && anchor.after_offset <= 100_000_000,
         "anchor accepted position"
     );
-    let expected = anchor_seal(store, &anchor.event, &anchor.segment, anchor.after_offset)?;
-    ensure!(anchor.seal == expected, "anchor seal mismatch");
     event_policy::validate_stored(&anchor.event)?;
     ensure!(
         anchor.event["run_id"].as_str() == Some(run),
@@ -326,10 +329,18 @@ fn validate_anchor(store: &LogStore, anchor: &Anchor, run: &str, manager: bool) 
                     || (source == "isos" && code == "deployment_failed")))
     };
     ensure!(eligible, "anchor event is not eligible for scope");
-    anchor_record_matches(store, anchor)
+    // A rotated or unreadable cursor key invalidates the anchor proof and
+    // old page tokens, but it does not revoke the separately durable run ID.
+    if !anchor_seal(store, &anchor.event, &anchor.segment, anchor.after_offset)
+        .is_ok_and(|expected| anchor.seal == expected)
+    {
+        return Ok(false);
+    }
+    anchor_record_matches(store, anchor)?;
+    Ok(true)
 }
 
-fn validate_state(store: &LogStore, state: &State, name: &str) -> Result<()> {
+fn validate_state(store: &LogStore, state: &State, name: &str) -> Result<bool> {
     ensure!(
         state.schema_version == 1 && state.deployment == name,
         "cursor state identity"
@@ -361,15 +372,16 @@ fn validate_state(store: &LogStore, state: &State, name: &str) -> Result<()> {
     } else {
         ensure!(state.run_anchor.is_none(), "cursor anchor state mismatch");
     }
+    let mut anchor_proven = true;
     if let Some(anchor) = state.manager_anchor.as_ref() {
         ensure!(
             state.last_run_id.is_none(),
             "manager anchor after run admission"
         );
-        validate_anchor(store, anchor, &state.manager_session, true)?;
+        anchor_proven &= validate_anchor(store, anchor, &state.manager_session, true)?;
     }
     if let Some(anchor) = state.run_anchor.as_ref() {
-        validate_anchor(
+        anchor_proven &= validate_anchor(
             store,
             anchor,
             state
@@ -379,7 +391,7 @@ fn validate_state(store: &LogStore, state: &State, name: &str) -> Result<()> {
             false,
         )?;
     }
-    Ok(())
+    Ok(anchor_proven)
 }
 
 fn save_state(store: &LogStore, state: &State) -> Result<()> {
@@ -450,32 +462,38 @@ impl Segment {
     }
 }
 
-fn load_state(store: &LogStore) -> Result<State> {
+fn load_state(store: &LogStore) -> Result<LoadedState> {
     let name = deployment(store)?;
     let bytes = private_read(&state_path(store), STATE_MAX)?;
     let state: State = serde_json::from_slice(&bytes)?;
-    validate_state(store, &state, &name)?;
+    let anchor_proven = validate_state(store, &state, &name)?;
     if let Some(intent) = read_intent(store, &name)? {
         ensure!(
             intent == state.manager_session,
             "manager session publication pending"
         );
     }
-    Ok(state)
+    Ok(LoadedState {
+        state,
+        anchor_proven,
+    })
 }
 
 pub(super) fn manager_scope_id(store: &LogStore) -> Option<String> {
     let _guard = store.lock.lock().unwrap();
-    load_state(store).ok().map(|state| state.manager_session)
+    load_state(store)
+        .ok()
+        .map(|loaded| loaded.state.manager_session)
 }
 
 pub(super) fn begin_manager_session(store: &LogStore) -> Result<()> {
     let _guard = store.lock.lock().unwrap();
-    let Ok(mut state) = load_state(store) else {
+    let Ok(loaded) = load_state(store) else {
         // An upgraded P06 log directory has no proven prior identity. Keep
         // reads closed while allowing this manager to admit a new run.
         return Ok(());
     };
+    let mut state = loaded.state;
     if state.manager_session != crate::manager::manager_session_id() {
         write_intent(
             store,
@@ -486,11 +504,12 @@ pub(super) fn begin_manager_session(store: &LogStore) -> Result<()> {
         state.manager_anchor = None;
         if state.last_run_id.is_none() {
             state.loss_baseline = loss_total(store);
-        } else if state.run_anchor_state == "pending" {
+        } else if state.run_anchor_state == "pending" || !loaded.anchor_proven {
             // A prior manager published an admitted run but never durably
             // collected its first eligible result. A restart cannot keep
             // such a page pending forever.
             state.run_anchor_state = "unavailable".into();
+            state.run_anchor = None;
         }
         if state.last_run_id.is_some() {
             // P06's process counters reset with the manager. Without an
@@ -506,7 +525,7 @@ pub(super) fn begin_manager_session(store: &LogStore) -> Result<()> {
 pub(super) fn status(store: &LogStore) -> (Option<String>, &'static str) {
     let _guard = store.lock.lock().unwrap();
     match load_state(store) {
-        Ok(state) => match state.last_run_id {
+        Ok(loaded) => match loaded.state.last_run_id {
             Some(run) => (Some(run), "known"),
             None => (None, "none"),
         },
@@ -521,7 +540,7 @@ pub(super) fn publish_run(store: &LogStore, run_id: &str) -> Result<()> {
     );
     let _guard = store.lock.lock().unwrap();
     let mut state = match load_state(store) {
-        Ok(state) => state,
+        Ok(loaded) => loaded.state,
         Err(_) => {
             // An older P06 log directory has no P07 never-run marker. It
             // cannot be read as manager scope, but a newly admitted run can
@@ -598,7 +617,12 @@ pub(super) fn record_accept(store: &LogStore, event: &Value, apply_failure: bool
     {
         return Ok(());
     }
-    let mut state = load_state(store)?;
+    let loaded = load_state(store)?;
+    // A later event cannot replace an unprovable copy of the first event.
+    if !loaded.anchor_proven {
+        return Ok(());
+    }
+    let mut state = loaded.state;
     let manager_eligible = state.last_run_id.is_none()
         && state.manager_anchor.is_none()
         && run_id == state.manager_session
@@ -632,23 +656,20 @@ pub(super) fn record_accept(store: &LogStore, event: &Value, apply_failure: bool
 
 fn key(store: &LogStore) -> Result<[u8; 32]> {
     let path = store.root.join("cursor-key");
-    if !path.exists() {
-        let mut random = [0_u8; 32];
-        File::open("/dev/urandom")?.read_exact(&mut random)?;
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&path)?;
-        file.write_all(&random)?;
-        file.sync_all()?;
-        File::open(&store.root)?.sync_all()?;
+    if let Ok(bytes) = private_read(&path, 32)
+        && bytes.len() == 32
+    {
+        let mut result = [0_u8; 32];
+        result.copy_from_slice(&bytes);
+        return Ok(result);
     }
-    let bytes = private_read(&path, 32)?;
-    ensure!(bytes.len() == 32, "cursor key length");
-    let mut result = [0_u8; 32];
-    result.copy_from_slice(&bytes);
-    Ok(result)
+    // A missing, malformed or unreadable owner-only key rotates the token
+    // namespace. The state reader keeps its durable scope ID and treats old
+    // anchor seals as unprovable. Replacement is atomic and private.
+    let mut random = [0_u8; 32];
+    File::open("/dev/urandom")?.read_exact(&mut random)?;
+    private_write(&path, &random)?;
+    Ok(random)
 }
 
 fn mac(key: &[u8; 32], data: &[u8]) -> [u8; 32] {
@@ -786,20 +807,22 @@ pub(super) fn read_current(
         query.correlation_id,
     );
     let _guard = store.lock.lock().unwrap();
-    let state = load_state(store).map_err(|_| scope_error())?;
+    let loaded = load_state(store).map_err(|_| scope_error())?;
+    let state = loaded.state;
+    let anchor_proven = loaded.anchor_proven;
     let (kind, run_id, anchor_kind, anchor) = if let Some(run) = state.last_run_id.as_deref() {
         (
             "deployment_run",
             run,
             "first_ready_or_failure",
-            state.run_anchor.as_ref(),
+            state.run_anchor.as_ref().filter(|_| anchor_proven),
         )
     } else {
         (
             "manager_session",
             state.manager_session.as_str(),
             "first_prelaunch_failure",
-            state.manager_anchor.as_ref(),
+            state.manager_anchor.as_ref().filter(|_| anchor_proven),
         )
     };
     let name = deployment(store).map_err(|_| scope_error())?;
@@ -829,7 +852,7 @@ pub(super) fn read_current(
         }
     }
     let loss_now = loss_total(store);
-    let mut gap_count = if state.loss_uncertain {
+    let mut gap_count = if state.loss_uncertain || !anchor_proven {
         None
     } else {
         old.as_ref().map_or_else(
@@ -838,7 +861,9 @@ pub(super) fn read_current(
         )
     };
     let mut collector_gap = gap_count.is_none() || gap_count.is_some_and(|count| count > 0);
-    let mut anchor_state = if anchor.is_some() {
+    let mut anchor_state = if !anchor_proven {
+        "unavailable"
+    } else if anchor.is_some() {
         "found"
     } else if state.last_run_id.is_some() {
         state.run_anchor_state.as_str()
@@ -1266,6 +1291,67 @@ mod tests {
             anchor_seal(&store, &anchor.event, &anchor.segment, anchor.after_offset).unwrap();
         save_state(&store, &bad).unwrap();
         assert_eq!(store.run_identity(), (None, "unavailable"));
+    }
+
+    #[test]
+    fn cursor_key_loss_keeps_durable_run_but_invalidates_old_pages() {
+        for (name, damage) in [
+            ("p07-key-replaced", "replaced"),
+            ("p07-key-deleted", "deleted"),
+            ("p07-key-unreadable", "unreadable"),
+        ] {
+            let (temp, store) = store(name);
+            let run = "r812";
+            store.publish_run(run).unwrap();
+            append(&store, run, "deployment_ready", "info");
+            append(&store, run, "deployment_stopped", "info");
+            let old = page(&store, None, "all")["next_cursor"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            let path = store.root.join("cursor-key");
+            match damage {
+                "replaced" => fs::write(&path, [17_u8; 32]).unwrap(),
+                "deleted" => fs::remove_file(&path).unwrap(),
+                "unreadable" => {
+                    fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap()
+                }
+                _ => unreachable!(),
+            }
+
+            let paths = Paths {
+                config: temp.path().join("config"),
+                data: temp.path().join("data"),
+                runtime: temp.path().join("run"),
+            };
+            let restarted = LogStore::new(&paths, name).unwrap();
+            restarted.begin_manager_session().unwrap();
+            assert_eq!(restarted.run_identity(), (Some(run.into()), "known"));
+            assert_eq!(
+                restarted
+                    .read_current(CurrentQuery {
+                        source: "all",
+                        level: "info",
+                        node_path: None,
+                        correlation_id: None,
+                        cursor: Some(&old),
+                        limit: 100,
+                        active_revision: None,
+                    })
+                    .unwrap_err()
+                    .code,
+                "log_cursor_invalid"
+            );
+            let fresh = page(&restarted, None, "all");
+            assert_eq!(fresh["scope"]["run_id"], run);
+            assert_eq!(fresh["anchor"]["state"], "unavailable");
+            assert!(fresh["anchor"]["event"].is_null());
+            assert!(fresh["lines"].as_array().unwrap().is_empty());
+            assert_eq!(fresh["diagnostics"][0]["code"], "log_collector_gap");
+            assert!(fresh["diagnostics"][0]["count"].is_null());
+            assert_eq!(fresh["diagnostics"][1]["code"], "log_anchor_unavailable");
+            assert!(fresh["next_cursor"].as_str().unwrap().starts_with("lc1."));
+        }
     }
 
     #[test]

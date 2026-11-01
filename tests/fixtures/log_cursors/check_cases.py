@@ -19,7 +19,7 @@ expected_names = {
     "rotation_retained", "rotation_expired", "new_admitted_run_rebase", "stop_retains_last_run",
     "failed_retains_last_run", "collector_outage_recovery", "anchor_write_failure",
     "legacy_socket_cannot_anchor", "cursor_filter_mismatch", "cursor_tampered", "legacy_cursor_rejected",
-    "node_path_invalid", "correlation_id_invalid", "scope_unrecoverable",
+    "node_path_invalid", "correlation_id_invalid", "scope_unrecoverable", "cursor_key_rotated",
 }
 cases = wire["cases"]
 assert len(cases) == len(expected_names)
@@ -65,7 +65,10 @@ def resolve(state, retained):
                 "scope_run_id": state["manager_session"]}
     out = {"http": 200, "run_id_state": "known", "scope_kind": "deployment_run", "scope_run_id": last}
     anchor = state.get("anchor") if state["valid"] else None
-    if anchor and anchor["run_id"] == last:
+    if anchor and anchor["run_id"] == last and not state.get("anchor_proven", True):
+        out["anchor_state"] = "unavailable"
+        out["diagnostics"] = ["log_collector_gap", "log_anchor_unavailable"]
+    elif anchor and anchor["run_id"] == last:
         out["anchor_code"] = anchor["event_code"]
         out["lines"] = [e["event_code"] for e in retained if e["run_id"] == last and e["accepted_position"] > anchor["accepted_position"]]
     elif not state["valid"] or state.get("admission_interrupted"):
@@ -97,7 +100,7 @@ def admit(state, candidate, publication):
 
 state_cases = json.loads((HERE / "state-scenarios.json").read_text())
 assert state_cases["contract"] == "isos-log-cursors-p07-state-v1"
-assert len(state_cases["cases"]) == 10
+assert len(state_cases["cases"]) == 11
 for scenario in state_cases["cases"]:
     retained = scenario.get("retained_events", [])
     positions = [e["accepted_position"] for e in retained]
