@@ -26,7 +26,7 @@ IsOS 实现候选（2026-11-02）：`cargo fmt --all -- --check`、`cargo clippy
 
 ## 验收状态（2026-11-02）
 
-IsOS 选择所有者版本 `df481774d80e8988cb8e17170fa071dfbf267672` 已通过独立审查。干净 home 重放将该精确版本与 IsOS 事件版本 `7414f04b3e824ed29eb70cd799a9a2be4e94a546`、候选预检版本 `6e2bb328c61585e271e2f7c51f253c535e03bcc7` 和已审查的 EOS foundation、service、私有预检版本组合。P01 链接的原生 C guest 使候选 Restart 在停止旧子进程前返回 HTTP 422 `skill_catalog_preflight_rejected`，旧的类型化 SkillService 仍可使用，run ID、revision、三个 PID 与 grant 均不变。JSONL 轮转后仍可查到管理器会话故障与旧的就绪锚点。完整输入、命令与输出见 EOS 忽略目录 `logs/test/20261102-r04-oversize-cross-owner/qualification.md`。
+IsOS 选择所有者版本 `df481774d80e8988cb8e17170fa071dfbf267672` 已通过独立审查。干净 home 重放将该精确版本与 IsOS 事件版本 `7414f04b3e824ed29eb70cd799a9a2be4e94a546`、候选预检版本 `6e2bb328c61585e271e2f7c51f253c535e03bcc7` 和已审查的 EOS foundation、service、私有预检版本组合。P01 链接的原生 C guest 使候选 Restart 在停止旧子进程前返回 HTTP 422 `skill_catalog_preflight_rejected`，旧的类型化 SkillService 仍可使用，run ID、revision 与三个 PID 均不变；候选授权目录撤销后，旧授权目录仍是唯一的授权目录。JSONL 轮转后仍可查到管理器会话故障与旧的就绪锚点。完整输入、命令与输出见 EOS 忽略目录 `logs/test/20261102-r04-oversize-cross-owner/qualification.md`。
 
 另一组干净 home TOCTOU 重放在私有 `ok:true` 之后修改链接库字节：旧进程停止前，Restart 返回 `package_changed` 且保留旧运行；旧进程停止后，候选启动失败，恢复原字节后旧 revision 在新运行中恢复。IsOS 交接之后的自动 EOS 重启遇到修改字节时，在就绪前被 EOS 新一轮准入拒绝。精确 hook、命令、结果与局限见 EOS 忽略目录 `logs/test/20261102-r04-toctou-final-heads/qualification.md`。组合后的 IsOS tree 通过 `cargo fmt --all -- --check`、严格 Clippy、`cargo test --no-fail-fast`（220 个单元、七个 CLI、一个移除命令和九个边检查测试）、`cargo build --all-targets`，以及 20 个选择、18 个预检和 31 个事件/10 个游标 fixture 检查；命令与完整输出见 EOS 忽略目录 `logs/test/20261102-r04-sequential-review/qualification.md`。这些均为临时组合；每次前置 squash 后仍须更新并独立审查依赖 PR，在最终合并版本上重放后才能关闭 R04。
 
