@@ -20,4 +20,4 @@ EOS、EGIA 和 IsosUI 各自负责构建。IsOS 为每个核心使用一个已�
 
 ## 待完成工作
 
-[0.x 架构 TODO](../design/system_cn.md#按依赖顺序的实现-todo)按依赖顺序列出图兼容、包选择器、配置／版本／日志契约、EOS–EGIA–MuJoCo 集成、UI、清理和发行验证。现有仅所有者可访问的 `log_append` 是提交选定事件的小型本地接口；目标统一事件通过可选字段扩展，旧调用方仍有效。发布获批资产前须在支持目标上验证真实 MuJoCo 和 Island-models 部署。服务保持独立，不成为 EOS／EGIA 图的隐式依赖。
+[0.x 实现里程碑](roadmap_cn.md)按依赖顺序列出图兼容、包选择器、配置／版本／日志契约、EOS–EGIA–MuJoCo 集成、UI、清理和发行验证。现有仅所有者可访问的 `log_append` 是提交选定事件的小型本地接口；目标统一事件通过可选字段扩展，旧调用方仍有效。发布获批资产前须在支持目标上验证真实 MuJoCo 和 Island-models 部署。服务保持独立，不成为 EOS／EGIA 图的隐式依赖。

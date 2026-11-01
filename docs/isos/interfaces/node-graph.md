@@ -2,6 +2,8 @@
 
 [中文](../../../docs_cn/isos/interfaces/node-graph_cn.md)
 
+Find each IsOS-owned kind by `core → layer → group → node` in the [node catalog](../layers/README.md). This page remains the authority for serialized fields, validation and compatibility.
+
 **Implementation status:** The `1.0.0` graph and `@v1.*` types below are implemented. The `0.1.0`/`@v0.1` contract and compatibility reader in the final sections are the release target, not current behavior. Product versions, graph versions, node type IDs, HTTP paths, and simulator socket protocol are independent.
 
 One `1.0.0` graph at `~/.config/isos/deployments/<name>.nodes.json` (or `ISOS_HOME/config/deployments/`) configures IsOS, EOS, and the design-only EGIA nodes. A node type declares its core, layer, group, fields, and ports; an instance supplies its ID and settings. Node type versions are independent; the IsOS managed process type is `v1.1` and current EOS hardware types are `v1.0`. Run `aether-profile validate --file <graph>` before apply and again before run. IsOS validates the package projection after registry admission. The graph SHA-256 is the saved revision; an active process set retains its revision until restart.
@@ -42,18 +44,18 @@ Path: `cores/isos/layers/process/groups/component/nodes/<id>`. Current type: `is
 
 The manager starts direct children in dependency order, waits for readiness, and stops process groups in reverse order with TERM then KILL after two seconds. Provider failure stops dependents before recovery. IsOS diagnostics and selected structured child events are stored in rotating `$XDG_DATA_HOME/isos/logs/<deployment>/<source>.log` files; plain child output is not mirrored. Status includes saved/active revision, pinned package, process PID/restarts, and last supervisor error. The private Unix manager API retains its schema 1 envelope and uses `deployment_start`, `deployment_restart`, `deployment_stop`, and `deployment_status` operations.
 
-## Optional EOS control nodes
+## Current EOS control nodes and legacy skill compatibility
 
-An authored graph may declare `manual_0`, `base_velocity_0`, `arm_joint_0`, and `demo_0` under `cores/eos/layers/control`. Their types are `eos.control.manual@v1.0`, `eos.control.primitive@v1.0`, and `eos.control.skill@v1.0`. They describe configured command sources; runtime requests and outcomes remain separate typed data. Each control references the canonical EOS dispatcher path. Manual and primitive nodes also reference their target hardware node; a skill references its primitive steps. These references do not create an actuator route: the existing dispatcher output remains the only hardware command input.
+Existing `1.0.0` graphs may contain `manual_0`, `base_velocity_0`, `arm_joint_0`, and `demo_0` under `cores/eos/layers/control`. Their historical types are `eos.control.manual@v1.0`, `eos.control.primitive@v1.0`, and `eos.control.skill@v1.0`. `demo_0` and `eos.control.skill@v1.0` are **compatibility-only**: new `0.1.0` graphs do not author a graph skill sequence or workflow node. These nodes describe configured command sources; runtime requests and outcomes remain separate typed data. Each control references the canonical EOS dispatcher path. Manual and primitive nodes also reference their target hardware node; a skill references its primitive steps. These references do not create an actuator route: the existing dispatcher output remains the only hardware command input.
 
 | Setting | Rust type | Unit | Purpose and validation |
 | --- | --- | --- | --- |
 | Manual `target` | `String` | canonical node path | Required base or manipulator target; must name an admitted hardware node and appear in `references`. |
 | Primitive `target` | `String` | canonical node path | Required hardware target; must name an admitted base or manipulator node and appear in `references`. |
 | Primitive `movement_type` | `String` enum | movement mode | Required `body_velocity` for base or `joint_positions` for manipulator; must be supported by the target. |
-| Skill `steps` | `Vec<String>` | ordered canonical node paths | Required ordered primitive references; each path must be present in `references` and resolve to a registered primitive node. |
+| Legacy skill `steps` (compatibility-only) | `Vec<String>` | ordered canonical node paths | Required ordered primitive references; each path must be present in `references` and resolve to a registered primitive node. |
 
-Manual and primitive nodes require a `status: Status` input from the dispatcher and a typed observation input from their target: `base_observation: BaseObservation` or `manipulator_observation: ManipulatorObservation`. Skill nodes require `status: Status` from the dispatcher. Manual and primitive nodes expose `request: ControlRequest` and `outcome: CommandOutcome` outputs; skill nodes expose `outcome: SkillOutcome`. The node ID is the final type name plus an index by default, such as `manual_0` or `demo_0`; it is a graph identity, not a movement payload.
+Manual and primitive nodes require a `status: Status` input from the dispatcher and a typed observation input from their target: `base_observation: BaseObservation` or `manipulator_observation: ManipulatorObservation`. Skill nodes require `status: Status` from the dispatcher. Manual and primitive nodes expose `request: ControlRequest` and `outcome: CommandOutcome` outputs; skill nodes expose `outcome: SkillOutcome`. The node ID is the final type name plus an index by default; `manual_0` is a current example, while `demo_0` is a legacy compatibility example. It is a graph identity, not a movement payload.
 
 See [backend package design](../design/backend.md) and [local API](local-api.md).
 
@@ -79,9 +81,9 @@ Newly authored graphs write `version: "0.1.0"`; new type registrations use `@v0.
 | `node.settings` | object / type-specific | Node type owner declares settings; IsOS validates package selectors | Empty object when no settings; unknown settings rejected by type contract | Optional setting additions have defaults |
 | `node.inputs` | object of port names to source or source array / — | Registry validates typed connections | Empty when no inputs; each source must resolve to a compatible output, cardinality must match | Optional edge metadata below |
 | `node.references` | string array / canonical paths | Owner declares non-data dependencies | Empty by default; paths exist, unique where type requires | Additive references must not create actuator routes |
-| `node.adapter`, `capabilities`, `health_timing`, `observation`, `movement`, `frame_id`, `joint_names` | typed objects/arrays/strings / type-specific | EOS hardware profile fields | Follow the [EOS hardware interface](https://github.com/Island-Team/Aether-EOS-R/blob/master/docs/eos/interfaces/hardware.md); IsOS forwards without inventing hardware meaning | EOS defines compatible defaults |
+| `node.adapter`, `capabilities`, `health_timing`, `observation`, `movement`, `frame_id`, `joint_names` | typed objects/arrays/strings / type-specific | EOS hardware profile fields | Follow the [EOS hardware interface](https://github.com/Island-Team/Island-eos) (`docs/eos/interfaces/hardware.md`); IsOS forwards without inventing hardware meaning | EOS defines compatible defaults |
 
-The registered **type** has a separate, nonblank `description` for new `@v0.1` types. It explains function, inputs, outputs, and operator-visible effects. Old verified sidecars lacking this field receive a generated catalog-only fallback; IsOS and EOS never modify the sidecar bytes. A setting's optional `selector` is defined by the [EOS node contribution contract](https://github.com/Island-Team/Aether-EOS-R/blob/master/docs/eos/interfaces/node-contributions.md); IsOS owns the [resolved options response](local-api.md#release-target-setting-options--not-implemented).
+The registered **type** has a separate, nonblank `description` for new `@v0.1` types. It explains function, inputs, outputs, and operator-visible effects. Old verified sidecars lacking this field receive a generated catalog-only fallback; IsOS and EOS never modify the sidecar bytes. A setting's optional `selector` is defined by the [EOS node contribution contract](https://github.com/Island-Team/Island-eos) (`docs/eos/interfaces/node-contributions.md`); IsOS owns the [resolved options response](local-api.md#release-target-setting-options--not-implemented).
 
 Each `node.inputs.<port>` source adds optional scheduling metadata:
 

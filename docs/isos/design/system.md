@@ -39,13 +39,6 @@ For each registered `Setting.selector`, identify its provider (`package`, `regis
 
 IsOS validates each edge's source, destination type, `priority` and `frequency_hz`. EOS owns routed delivery: a monotonic per-edge token bucket caps updates; weighted fair service and bounded queues prevent high-priority streams from starving others; overflow is counted and logged at a bounded rate. `expected_rate_hz` is producer metadata and never silently becomes an edge cap. A design-only edge is visible in IsosUI but has no claimed runtime scheduler. Priority cannot bypass dispatcher safety or actuator stop.
 
-## Ordered implementation TODO
+## Implementation milestones
 
-1. **Contracts and compatibility:** freeze the field tables and examples; implement `0.1.0` graph reader/writer, explicit revision-checked migration, safe `1.0.0` read, type description defaults, supported-version identity arrays and diagnostics. Keep current wire paths and protobuf field numbers.
-2. **Package/options:** validate optional selector descriptors and stable asset IDs in v4 package contributions; resolve registry installs and linked content; extend node-options without removing existing arrays; add missing/unavailable option diagnostics and tests.
-3. **Configuration/logging:** implement immutable generated snapshots, version preflight against actual pins, shared sanitized JSONL fields, bounded ingestion/cursor/rotation, and first-ready/state-change events across IsOS/EOS/EGIA/MuJoCo.
-4. **Runtime integration:** wire EOS Rust gRPC gateway to EGIA's existing typed client; complete EGIA stage graph and health readiness; validate MuJoCo socket request identity, deduplication, failure and safe stop; implement edge scheduling only for routed connections.
-5. **UI and cleanup:** render selector controls and priority/frequency labels; provide dockable work and visual panels with log access; remove obsolete C++ runtime and stale guides only after last-caller and equivalent-test checks in its owning repository. Preserve active CXX adapter boundary and proto resources.
-6. **Release:** use focused `refactor(v2)/<topic>` branches and integration PRs. Qualify the IsOS → EOS → MuJoCo → EGIA start/failure/restart/stop path and UI editing. Save full logs in `logs/test/<run-id>/`, document commands/results, then publish approved `0.x` assets while leaving historical tags intact.
-
-Acceptance requires new and legacy graph fixtures; package sidecar, selector and unavailable-value tests; mismatched core diagnostics; edge rate/priority/overflow tests; log redaction/rotation/cursor tests; IsosUI editor and floating-panel persistence tests; and the full lifecycle integration run. Physical ROS/vendor deployment and `egia.tensor` remain later work.
+The ordered dependencies, outputs and acceptance gates are maintained in the [single IsOS milestone plan](../maintenance/roadmap.md). This design page owns the algorithms above; contract fields stay in `interfaces/` and node behavior is indexed in the [node catalog](../layers/README.md). No WorkflowService, ActionList or workflow DAG is part of this release.

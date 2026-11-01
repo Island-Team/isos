@@ -4,7 +4,7 @@
 
 ## Follow the running system
 
-**Works today:** The commands below use the current `1.0.0` graph reader and installed `@v1.*` types. The proposed `0.1.0` graph writer, setting selectors, shared event fields, and EGIA integration are [implementation TODO](../design/system.md#ordered-implementation-todo). A new operator should read status first, then logs for the same step; a startup line is evidence of a transition, while status is the live authority.
+**Works today:** The commands below use the current `1.0.0` graph reader and installed `@v1.*` types. The proposed `0.1.0` graph writer, setting selectors, shared event fields, and EGIA integration are [implementation milestones](../maintenance/roadmap.md). A new operator should read status first, then logs for the same step; a startup line is evidence of a transition, while status is the live authority.
 
 1. Install IsOS and run plain `isos`. It creates missing development configuration and graph, starts the API on 16000 and IsosUI on 16001, and opens the browser. EOS, EGIA, and MuJoCo remain stopped. Running `isos` again reuses the workbench. `isos init` performs only the file initialization and exits.
 
