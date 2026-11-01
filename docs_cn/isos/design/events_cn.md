@@ -18,6 +18,16 @@ API、CLI 与 Unix 管理器在工作前选定部署和请求关联。启动前�
 
 ## 验证切片
 
+### R04 所选技能事件准入设计
+
+本设计基于 IsOS `df481774` 与 EOS SkillService 精确提交 `ab46b35e0b41c2e4dcfaeb1966169c0bf03213cb`；当前收集器仍拒绝两个技能码。[归属接口](../interfaces/events_cn.md#r04-原生技能子进程事件目标尚未准入)与[冻结夹具](../../../tests/fixtures/r04_skill_events/README_cn.md)规定实现边界。只扩展编译进 IsOS 的 `eos` runtime 事件码分支与专用字段校验器。保留 P06 角色表、顶层解析、活动运行核对、已准入节点核对、观察到的 PID 注入、旧套接字规范化、大小界限以及 EGIA／bridge／config 策略。图或子进程描述符都是数据，不能成为事件策略来源。
+
+两个日志写入之前先校验完整的事件码专属字段：精确字段集、阶段／级别／原因配对及固定消息。在 Supervisor 边界把 `package_id` 与 `package_version` 核对为已准入 P04 generation 中的一项所选 P01 技能 pin；空选择不能发出 `eos_skill_execution`。所选技能版本超过 EOS 96／64 字节限制或版本语法无效时，候选部署预检必须在停止旧部署**之前**拒绝；该预检仍属于另一个 IsOS 实现切片。`worker_reaped:true` 不表示物理停止已确认。即使随后出现 `eos_stopped`，未确认停止事件仍是失败标记。
+
+回放门禁使用上述 SHA 的 EOS 二进制和带 build metadata 包版本的所选 C guest，经真实 IsOS 所选子进程管道验证 queued、running、completed、failed 在分类及统一日志各出现一次且 PID 来自 Supervisor，再注入所有拒绝夹具并确认两种日志均不写入。依次验证 P07 首事件前、首条已接纳技能失败后、保留备份跨轮转、游标过期、收集／写入缺口及 Stop 后的当前运行页面。来源／级别／关联筛选不能改变固定首事件；之后同码事件仍是独立行；实时状态以 status 为准。完整命令及输出保存到忽略的 `logs/test/<run-id>/`，代码切片完成后请求独立实现审查。本文档及夹具本身不完成 R04 或 EOS R06 物理停止顺序门禁。
+
+**设计证据（2026-11-02）。** `python3 tests/fixtures/r04_skill_events/check_cases.py` 通过 30 个子进程案例和十个游标场景。现有 `python3 tests/fixtures/jsonl_events/check_cases.py`（37 案例）与 `python3 tests/fixtures/log_cursors/check_cases.py`（22 个线路案例、十二个状态场景）通过。`python3 -m py_compile tests/fixtures/r04_skill_events/check_cases.py`、14 个修改／新增 Markdown 文件的本地链接检查、`/home/ashex/.cargo/bin/cargo fmt --all -- --check`、`/home/ashex/.cargo/bin/cargo clippy --all-targets -- -D warnings`、`/home/ashex/.cargo/bin/cargo test --no-fail-fast`（207 单元、七 CLI、一个移除命令与九边界测试）及 `git diff --check` 均通过。完整输出在忽略的 `logs/test/20261102-r04-skill-events-design/`。没有改动 IsOS 运行时代码。独立设计审查与真实所选子进程回放仍待完成。
+
 [冻结夹具](../../../tests/fixtures/jsonl_events/README_cn.md)覆盖管理器会话失败、包来源、运行身份、所选子进程角色绑定、错误及超长行、不安全载荷拒绝、抑制、轮转和写入失败下停止。单元测试使用 stub 子进程管道及所选进程边界测试；合并后的真实 EOS runtime 二进制通过收集器回放启动失败路径。EGIA 经审核的 16 个事件码与归属夹具核对；合并后的 EGIA 启动器作为所选受管子进程回放，其接收事件在分类与统一日志间对比。完整输出保存于忽略 Git 的 `logs/test/<run-id>/`。
 
 2026-11-01 在 `7898735` 加本文档分支上完成设计校验：`python3 tests/fixtures/jsonl_events/check_cases.py` 检查 30 个冻结案例与原始／存储字节边界；12 个修改后的 Markdown 文件相对链接、JSON 解析及 `git diff --check` 通过。仓库检查 `cargo fmt --check`、`cargo clippy --all-targets -- -D warnings` 和 `cargo test` 通过。完整输出位于忽略 Git 的 `logs/test/p06-design-20261101/`（`docs-gates.log`、`cargo-fmt.log`、`cargo-clippy.log`、`cargo-test.log`）。这些检查不能代替上述 P06 运行时和边界测试。

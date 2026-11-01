@@ -24,6 +24,10 @@ P06 目前从 Validate 和 Apply 均发出 `deployment_preflight_failed`。向 P
 
 ## 验证
 
+### R04 技能事件游标回放门禁
+
+精确 EOS 技能事件码通过 P06 所选子进程准入后，P07 不增加范围类别或 token 格式。以所选 `eos_skill_execution` 失败作为运行中首条合格事件回放，证明封印副本在来源、级别、关联筛选前作为 `anchor.event` 返回。只有 queued／running／completed 时锚点仍待定。被拒绝或错误角色的技能记录不能成为锚点或分页行。其后同码事件具有不同接纳位置，必须在锚点后的 `lines` 中返回。先在保留游标段的情况下轮转 `events.log`，再使该段过期；前者连续分页并有 `rotated:true`，后者报告 `log_cursor_expired` 且保留原封印锚点。注入收集／写入缺口并保持真实计数或 null。Stop 后技能停止故障仍属于最后准入运行。[R04 夹具](../../../tests/fixtures/r04_skill_events/README_cn.md)规定案例；实现必须使用 EOS `ab46b35e0b41c2e4dcfaeb1966169c0bf03213cb` 经真实 `LogStore` 与 HTTP／CLI 当前视图验证。
+
 [P07 固定样例](../../../tests/fixtures/log_cursors/README_cn.md)固定响应键、管理器／运行锚点、筛选、分页进度、跨备份、过期游标、换运行、收集中断和终结保留。单元测试使用临时保留文件段与有界读取。边界测试使用真实 `LogStore`、HTTP 路由、管理器子进程屏障以及所选 P06 EOS／EGIA 子进程流。发布与锚点故障、状态损坏及管理器会话变化均按关闭原则处理。完整 IsOS format、Clippy、test 和 build 输出位于忽略的 `logs/test/<run-id>/`；IsosUI 呈现边界属于其独立切片。此前的设计提交先于实现提供契约证据。
 
 **设计证据（2026-11-01）。** `python3 tests/fixtures/log_cursors/check_cases.py` 的 21 个线路案例和 9 个状态场景通过；`python3 -m json.tool tests/fixtures/log_cursors/cases.json`、`python3 -m py_compile tests/fixtures/log_cursors/check_cases.py`、对 12 个变更页面的本地 Markdown 链接检查及 `git diff --check` 均通过。完整命令输出保存在被忽略的 `logs/test/20261101-p07-log-cursors-design/`。本设计切片没有改动运行时代码或边界测试。 使用 `/home/ashex/.cargo/bin/cargo` 运行的 `cargo fmt --all -- --check` 通过。

@@ -11,11 +11,13 @@
 | 字段 | 类型 / 单位 | 用途与校验 |
 | --- | --- | --- |
 | `settings.skill_libraries` | 数组 / 条目 | 可选，最多 16 项，仅限 EOS `@v0.1` component。生成文件按 `(package.id,package.version,library)` 排序；重复元组失败。保存图的字节和数组顺序仅在显式 Apply 时更新。 |
-| `package.id` | 字符串 / 软件包 ID | 必填，规范 `namespace/name`，P01 精确验证。 |
-| `package.version` | 字符串 / 发布版本 | 必填，P01 接受的精确版本，不使用 latest 或范围。 |
+| `package.id` | 字符串 / 软件包 ID | 必填，规范小写 `namespace/name`，P01 精确验证。所选技能另限最多 96 ASCII 字节，与 EOS 生命周期事件限制一致。 |
+| `package.version` | 字符串 / 发布版本 | 必填，P01 接受的精确版本，不使用 latest 或范围。所选技能另限最多 64 ASCII 字节，数字开头、至少三个非空点分段，只允许 ASCII 字母、数字、`.`、`-`、`+`。保留包括大写字母在内的原始 build metadata。 |
 | `library` | 字符串 / POSIX 相对路径 | 必填 UTF-8，1–256 字节；分量不得为空、`.` 或 `..`，不得有反斜杠或 NUL，后缀为 `.skill.so`。目标必须是 1–64 MiB 的非符号链接普通文件；不扫描目录或递归发现。 |
 
 P01 图 pin 收集器把每个选中 `package` 计入，并使用精确 `/cores/isos/layers/process/groups/component/nodes/<id>/settings/skill_libraries/<index>/package` 指针。IsOS 对每项重新取得 P01 `VerifiedPackage`，要求发布 `kind:"skill"`，检查 payload 根、文件身份与 SHA-256；变更的链接 payload 失败。只有明列的库被选中。EOS 随后检查所有库中重复的技能身份。旧 `1.0.0` 图和 `eos.control.skill@v1.0` 不因此获得执行行为。
+
+**剩余候选预检门禁：**当前实现候选尚未执行上述所选技能专属的 96／64 字节与版本语法限制。Validate／Apply 必须在发布前于数组索引下的 `package/id` 或 `package/version` 指针拒绝；Run／Restart 必须在停止活动部署前重新检查。这样可防止包已通过 IsOS 却在启动后使 EOS 事件发射器拒绝。此门禁关联[R04 事件设计](../design/events_cn.md#r04-所选技能事件准入设计)与[夹具](../../../tests/fixtures/r04_skill_events/README_cn.md)；通用 P01 包语法不变。
 
 对于选中的技能发布，IsOS 还检查打开的库文件、P01 `receipt.json` 与 `release.json`，以及已验证 payload 树中的每个普通文件。每个文件都必须由 IsOS 的有效 UID 拥有，且 group/other 均不可写（`mode & 0o022 == 0`）。选中库另需满足 1–64 MiB 限制；元数据与 payload 文件沿用 P01/EOS 大小限制。不安全文件在 Apply 发布或 Run/Restart 停止旧进程前失败；EOS 暂存前重复相同的所有者与权限检查。即使未选中的 payload 文件可被其他用户写入，整个技能包也会被拒绝。
 

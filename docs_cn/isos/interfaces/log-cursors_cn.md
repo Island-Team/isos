@@ -55,4 +55,6 @@ IsOS 按时间顺序读取当前 `events.log` 及配置的 `1..10` 个备份（�
 
 独立且稳定的归属方专用 `scope-key`（`0600`）对完整私有范围状态签名，包括最后已准入运行 ID 和锚点副本；它与可轮换的 `cursor-key` 分离。IsOS 在首次发布状态前持久创建该密钥，现有状态的密钥丢失后绝不悄悄重建。密钥缺失、范围封印变更或状态语义无效使范围不可用；只有范围封印通过后，`cursor-key` 变更才可降级锚点证明。现有无效状态不能被当作旧 P06 目录来发布新运行；P06 升级路径仅适用于状态文件和范围密钥均不存在的情形。
 
+**R04 目标，IsOS 尚未准入：**所选 EOS runtime 角色接纳精确的[原生技能事件](events_cn.md#r04-原生技能子进程事件目标尚未准入)后，首条 `stage:failed` 的 `eos_skill_execution` 或 `eos_skill_stop_unconfirmed` 是普通已接纳归属 `error`，若没有更早的合格事件就能固定部署运行锚点。queued／running／completed 不是就绪码，不能成为锚点。被拒绝的技能行既不能成为锚点也不能进入 `lines`，只增加 P06 拒绝计数。锚点副本保留含观察到 PID 的完整已校验事件；之后同码事件按接纳位置保留为独立行。Stop 与分类日志轮转后仍保留当前运行及其锚点。游标跨保留段轮转时 `rotated:true` 且没有过期诊断；段过期时报告 `log_cursor_expired`，封印锚点仍在。收集／追加失败时 `log_collector_gap` 使用真实已知计数或 null；页面不能证明技能成功或实时就绪。[R04 夹具](../../../tests/fixtures/r04_skill_events/README_cn.md)包含游标／轮转证据。
+
 CLI 新增 `isos logs [source] --current --level info --lines 100` 单次读取当前范围：先打印不受筛选的锚点，再打印筛选行，并将缺口诊断写向 stderr。不带 `--current` 的现有尾部行为不变。P07 不新增图创作日志路由，也不根据事件顺序推断健康。
