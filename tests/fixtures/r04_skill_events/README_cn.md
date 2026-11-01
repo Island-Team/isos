@@ -1,8 +1,8 @@
 # R04 所选 EOS 技能事件——设计夹具
 
-[English](README.md) · [IsOS 事件归属契约](../../../docs_cn/isos/interfaces/events_cn.md#r04-原生技能子进程事件目标尚未准入) · [游标归属契约](../../../docs_cn/isos/interfaces/log-cursors_cn.md) · [EOS 归属契约](../../../../Island-eos/docs/eos/interfaces/events.md)
+[English](README.md) · [IsOS 事件归属契约](../../../docs_cn/isos/interfaces/events_cn.md#r04-原生技能子进程事件实现复核) · [游标归属契约](../../../docs_cn/isos/interfaces/log-cursors_cn.md) · [EOS 归属契约](../../../../Island-eos/docs/eos/interfaces/events.md)
 
-`cases.json` 固定 EOS SkillService 精确提交 `192fbfa6fbed1e9b6a20dd8dc95501625b02d081`，包含 30 个所选子进程接纳／拒绝案例和十个 P07 游标场景。`python3 tests/fixtures/r04_skill_events/check_cases.py` 检查夹具结构与参考归属策略；它**不**运行 IsOS。基线 `src/runtime/event_policy.rs` 拒绝两个新码，实现测试须只更改所选 EOS runtime 分支，并保持旧 P06 案例通过。
+`cases.json` 固定 EOS SkillService 精确提交 `192fbfa6fbed1e9b6a20dd8dc95501625b02d081`，包含 30 个所选子进程接纳／拒绝案例和十个 P07 游标场景。`python3 tests/fixtures/r04_skill_events/check_cases.py` 检查夹具结构与参考归属策略；它**不**运行 IsOS。实现测试覆盖所选 EOS runtime 分支，并保持旧 P06 案例通过。
 
 正例包括 queued、running、completed、物理结果不确定的 failed、worker 未回收的 failed 及固定停止故障。所选技能版本含 build metadata；MuJoCo 专属包字段规则或只允许小写版本的规则都不适用。负例拒绝 bridge／EGIA 冒充、错误运行、节点声明、消息／级别／阶段／原因不匹配、任意 `worker.*` 后缀、内部错误码、缺失或多余字段、错误类型、无效包版本和执行 ID、原始 PID 冒充、停止字段变化、共享抑制码及未知 guest 事件码。权威来自所选 EOS 角色，而不是图或子进程 capability 声称。
 

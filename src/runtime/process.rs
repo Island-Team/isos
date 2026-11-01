@@ -1379,6 +1379,16 @@ impl Supervisor {
         } else {
             format!("unselected-{}", spec.id)
         };
+        let skill_pins = spec
+            .settings
+            .skill_libraries
+            .iter()
+            .map(|entry| (entry.package.id.clone(), entry.package.version.clone()))
+            .collect::<BTreeSet<_>>();
+        let admission = Arc::new(log_store::ChildAdmission {
+            nodes: Some(self.admitted_nodes.clone()),
+            skill_pins,
+        });
         if let Some(stdout) = child.stdout.take() {
             log_store::capture(
                 stdout,
@@ -1387,7 +1397,7 @@ impl Supervisor {
                 "stdout",
                 self.run_id.clone(),
                 pid,
-                Some(self.admitted_nodes.clone()),
+                Some(admission.clone()),
             );
         }
         if let Some(stderr) = child.stderr.take() {
@@ -1398,7 +1408,7 @@ impl Supervisor {
                 "stderr",
                 self.run_id.clone(),
                 pid,
-                Some(self.admitted_nodes.clone()),
+                Some(admission),
             );
         }
         Ok(child)

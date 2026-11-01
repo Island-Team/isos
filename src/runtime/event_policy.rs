@@ -8,7 +8,7 @@ use serde::{
     de::{MapAccess, Visitor},
 };
 use serde_json::{Map, Value, json};
-use std::{fmt, sync::OnceLock};
+use std::{collections::BTreeSet, fmt, sync::OnceLock};
 
 pub const MAX_RAW_LINE: usize = 8_064;
 pub const MAX_STORED_LINE: usize = 8_192;
@@ -124,6 +124,8 @@ fn allowed(role: &str, event_code: &str) -> bool {
                 | "eos_backend_lost"
                 | "eos_stop_unconfirmed"
                 | "eos_events_suppressed"
+                | "eos_skill_execution"
+                | "eos_skill_stop_unconfirmed"
         ),
         "bridge" => matches!(
             event_code,
@@ -235,6 +237,9 @@ fn validate_egia(event: &RawEvent) -> Result<()> {
 
 fn validate_eos(event: &RawEvent) -> Result<()> {
     let code = event.event_code.as_str();
+    if matches!(code, "eos_skill_execution" | "eos_skill_stop_unconfirmed") {
+        return validate_skill(event);
+    }
     let prefix = event.source.as_str();
     let (level, message, required, optional, node_allowed) = match code {
         "eos_starting" | "bridge_starting" | "config_starting" => (
@@ -447,12 +452,184 @@ fn validate_eos(event: &RawEvent) -> Result<()> {
     Ok(())
 }
 
+fn skill_package_id(value: &str) -> bool {
+    if value.len() > 96 {
+        return false;
+    }
+    let Some((namespace, name)) = value.split_once('/') else {
+        return false;
+    };
+    [namespace, name].into_iter().all(|part| {
+        !part.is_empty()
+            && part
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    })
+}
+
+fn skill_package_version(value: &str) -> bool {
+    value.len() <= 64
+        && value.as_bytes().first().is_some_and(u8::is_ascii_digit)
+        && value.split('.').count() >= 3
+        && value.split('.').all(|part| !part.is_empty())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+'))
+}
+
+fn validate_skill(event: &RawEvent) -> Result<()> {
+    ensure!(event.node_path.is_none(), "skill node path forbidden");
+    let fields = &event.fields;
+    if event.event_code == "eos_skill_stop_unconfirmed" {
+        ensure!(
+            event.level == "error" && event.message == "EOS native skill stop unconfirmed",
+            "skill stop envelope mismatch"
+        );
+        ensure!(
+            fields.len() == 2
+                && fields.get("state").and_then(Value::as_str) == Some("failed")
+                && fields.get("reason_code").and_then(Value::as_str)
+                    == Some("skill_stop_unconfirmed"),
+            "skill stop fields mismatch"
+        );
+        return Ok(());
+    }
+    const KEYS: [&str; 7] = [
+        "execution_id",
+        "package_id",
+        "package_version",
+        "stage",
+        "reason_code",
+        "worker_reaped",
+        "worker_exit_code",
+    ];
+    ensure!(
+        fields.len() == KEYS.len() && KEYS.iter().all(|key| fields.contains_key(*key)),
+        "skill execution fields mismatch"
+    );
+    ensure!(
+        event.message == "EOS native skill execution lifecycle",
+        "skill execution message mismatch"
+    );
+    let correlation = event
+        .correlation_id
+        .as_deref()
+        .context("skill correlation missing")?;
+    ensure!(
+        correlation.len() == 38
+            && correlation.starts_with("skill_")
+            && correlation[6..]
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+        "skill correlation invalid"
+    );
+    let execution_id = fields["execution_id"]
+        .as_str()
+        .context("skill execution ID")?;
+    ensure!(
+        execution_id.starts_with("ex-")
+            && execution_id.len() <= 80
+            && execution_id.bytes().all(|byte| {
+                byte.is_ascii_lowercase()
+                    || byte.is_ascii_digit()
+                    || matches!(byte, b'.' | b'_' | b'-')
+            }),
+        "skill execution ID invalid"
+    );
+    ensure!(
+        fields["package_id"].as_str().is_some_and(skill_package_id)
+            && fields["package_version"]
+                .as_str()
+                .is_some_and(skill_package_version),
+        "skill package pin invalid"
+    );
+    let stage = fields["stage"].as_str().context("skill stage")?;
+    let reason = fields["reason_code"].as_str().context("skill reason")?;
+    let pairing = match stage {
+        "queued" => event.level == "info" && reason == "worker.queued",
+        "running" => event.level == "info" && reason == "worker.running",
+        "completed" => event.level == "info" && reason == "worker.succeeded",
+        "failed" => {
+            event.level == "error"
+                && matches!(
+                    reason,
+                    "worker.cancelled"
+                        | "worker.deadline"
+                        | "worker.failed"
+                        | "worker.outcome_unknown"
+                        | "worker.primitive_denied"
+                        | "worker.protocol_invalid"
+                        | "worker.reap_failed"
+                        | "worker.rejected"
+                        | "worker.result_capacity"
+                        | "worker.result_invalid"
+                        | "worker.shutdown"
+                )
+        }
+        _ => false,
+    };
+    ensure!(pairing, "skill stage, reason or severity mismatch");
+    let reaped = &fields["worker_reaped"];
+    let exit = &fields["worker_exit_code"];
+    ensure!(
+        reaped.is_null() || reaped.is_boolean(),
+        "skill worker reap type invalid"
+    );
+    ensure!(
+        exit.is_null()
+            || exit
+                .as_i64()
+                .is_some_and(|code| i32::try_from(code).is_ok()),
+        "skill worker exit type invalid"
+    );
+    ensure!(
+        !matches!(stage, "queued" | "running") || (reaped.is_null() && exit.is_null()),
+        "nonterminal skill worker fact"
+    );
+    ensure!(
+        stage != "completed" || reaped.as_bool() == Some(true),
+        "completed skill worker was not reaped"
+    );
+    Ok(())
+}
+
+pub(crate) fn skill_pin_admitted(value: &Value, pins: &BTreeSet<(String, String)>) -> bool {
+    value["event_code"] != "eos_skill_execution"
+        || value["fields"]["package_id"]
+            .as_str()
+            .zip(value["fields"]["package_version"].as_str())
+            .is_some_and(|(id, version)| pins.contains(&(id.to_owned(), version.to_owned())))
+}
+
 pub fn parse_child(raw: &[u8], role: &str, run_id: &str, pid: u32) -> Result<Value> {
     ensure!(
         raw.len() <= MAX_RAW_LINE && raw.last() == Some(&b'\n'),
         "raw line limit or terminator"
     );
     let event: RawEvent = serde_json::from_slice(raw).context("invalid selected event JSON")?;
+    if matches!(
+        event.event_code.as_str(),
+        "eos_skill_execution" | "eos_skill_stop_unconfirmed"
+    ) {
+        let envelope: Value = serde_json::from_slice(raw)?;
+        let object = envelope.as_object().context("skill envelope object")?;
+        const KEYS: [&str; 10] = [
+            "timestamp",
+            "level",
+            "source",
+            "core",
+            "node_path",
+            "event_code",
+            "run_id",
+            "correlation_id",
+            "message",
+            "fields",
+        ];
+        ensure!(
+            object.len() == KEYS.len() && KEYS.iter().all(|key| object.contains_key(*key)),
+            "skill envelope fields mismatch"
+        );
+    }
     let (source, core) = match role {
         "eos" | "bridge" | "config" => (role, "eos"),
         "egia" => ("egia", "egia"),
@@ -687,6 +864,57 @@ mod tests {
         let mut raw = serde_json::to_vec(value).unwrap();
         raw.push(b'\n');
         raw
+    }
+
+    #[test]
+    fn reviewed_r04_skill_child_matrix() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/r04_skill_events/cases.json"
+        ))
+        .unwrap();
+        let pins = BTreeSet::from([(
+            "island/fixture-skills".to_owned(),
+            "0.1.0+Build.1".to_owned(),
+        )]);
+        let no_pins = BTreeSet::new();
+        assert_eq!(fixture["child_cases"].as_array().unwrap().len(), 30);
+        for case in fixture["child_cases"].as_array().unwrap() {
+            let id = case["id"].as_str().unwrap();
+            let mut event = fixture[if case["base"] == "execution" {
+                "base_execution"
+            } else {
+                "base_stop"
+            }]
+            .clone();
+            if let Some(removed) = case["remove"].as_array() {
+                for path in removed {
+                    let path = path.as_str().unwrap();
+                    let (parent, key) = path.split_once('.').unwrap();
+                    event[parent].as_object_mut().unwrap().remove(key);
+                }
+            }
+            for (path, value) in case["set"].as_object().unwrap() {
+                if let Some(key) = path.strip_prefix("fields.") {
+                    event["fields"][key] = value.clone();
+                } else {
+                    event[path] = value.clone();
+                }
+            }
+            let role = case["role"].as_str().unwrap_or("eos");
+            let selected = case["selected"].as_bool().unwrap_or(true);
+            let admitted = parse_child(&line(&event), role, "r04-run", 4242).and_then(|stored| {
+                ensure!(
+                    skill_pin_admitted(&stored, if selected { &pins } else { &no_pins }),
+                    "skill pin not selected"
+                );
+                validate_stored(&stored)?;
+                Ok(stored)
+            });
+            assert_eq!(admitted.is_ok(), case["expect"] == "accept", "{id}");
+            if let Ok(stored) = admitted {
+                assert_eq!(stored["pid"], 4242, "{id}");
+            }
+        }
     }
 
     #[test]
