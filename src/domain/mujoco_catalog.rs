@@ -551,7 +551,10 @@ pub fn validate_graph(paths: &Paths, graph: &Value) -> Result<()> {
             ));
         }
         let scene = node["settings"]["scene"].as_str().unwrap_or("");
-        if graph["version"] == "0.1.0" && !scene.is_empty() && !option_id(scene) {
+        if graph["version"] == "0.1.0"
+            && node.pointer("/settings/scene").is_some()
+            && !option_id(scene)
+        {
             return Err(Issue::admission("node_option_invalid_id").into_error(
                 id,
                 version,
@@ -608,7 +611,7 @@ pub fn validate_graph(paths: &Paths, graph: &Value) -> Result<()> {
             .as_str()
             .unwrap_or("");
         for (value, key) in [(device_id, "device_id"), (simulator_node, "simulator_node")] {
-            if !value.is_empty() && !option_id(value) {
+            if node.pointer(&format!("/adapter/settings/{key}")).is_some() && !option_id(value) {
                 return Err(Issue::admission("node_option_invalid_id").into_error(
                     id,
                     version,

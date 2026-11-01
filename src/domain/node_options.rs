@@ -165,7 +165,7 @@ fn selected(node: &Value, setting: &str, path: &str) -> Result<Option<String>> {
         _ => None,
     };
     match value {
-        None | Some(Value::Null) => Ok(None),
+        None => Ok(None),
         Some(Value::String(id)) if stable_id(id) => Ok(Some(id.clone())),
         Some(_) => Err(option_error(
             "node_option_invalid_id",
@@ -433,5 +433,10 @@ mod tests {
             failure.path,
             "/cores/eos/layers/process/groups/mujoco/nodes/simulator/settings/scene"
         );
+        graph["cores"]["eos"]["layers"]["process"]["groups"]["mujoco"]["nodes"]["simulator"]["settings"]
+            ["scene"] = Value::Null;
+        let error = compose_with_paths(&paths, &graph, &valid_catalog).unwrap_err();
+        let failure = error.downcast_ref::<packages::PackageFailure>().unwrap();
+        assert_eq!(failure.code, "node_option_invalid_id");
     }
 }
