@@ -76,6 +76,9 @@ pub(crate) enum CommandLine {
         lines: u32,
         #[arg(long, default_value = "info", value_parser = ["trace", "debug", "info", "warn", "error"])]
         level: String,
+        /// Read the pinned first event and current deployment-run page.
+        #[arg(long)]
+        current: bool,
     },
     /// Check the shared graph, package, binaries, and manager readiness.
     Doctor,

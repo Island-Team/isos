@@ -32,6 +32,22 @@ pub(crate) struct ActiveDeployment {
 }
 pub(crate) type Deployments = BTreeMap<String, ActiveDeployment>;
 
+#[derive(Debug)]
+pub(crate) struct ScopePublishFailure;
+
+impl std::fmt::Display for ScopePublishFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("log scope publication failed")
+    }
+}
+impl std::error::Error for ScopePublishFailure {}
+
+fn publish_run_scope(supervisor: &process::Supervisor) -> Result<()> {
+    supervisor
+        .publish_run_scope()
+        .map_err(|_| anyhow::Error::new(ScopePublishFailure))
+}
+
 pub(crate) fn manager_session_id() -> &'static str {
     static SESSION: OnceLock<String> = OnceLock::new();
     SESSION.get_or_init(|| {
@@ -284,6 +300,9 @@ fn restart_processes_with_plan(
         }
         (active, old_specs)
     });
+    // Replacing a run is ordered after the previous children have been reaped.
+    // The new scope is durable before any replacement child can start.
+    publish_run_scope(&supervisor)?;
     log_deployment(paths, name, &candidate_run, "deployment_starting", "info");
     let attempt = (|| -> Result<Vec<String>> {
         let started = supervisor.start_with_secrets(specs, plan)?;
@@ -303,6 +322,7 @@ fn restart_processes_with_plan(
             if let Some((mut active, old_specs)) = previous {
                 let recovery_run = next_run_id();
                 active.supervisor.set_run_id(recovery_run.clone());
+                publish_run_scope(&active.supervisor)?;
                 log_deployment(paths, name, &recovery_run, "deployment_starting", "info");
                 let empty = crate::generated_v2::SecretPlan::new();
                 let restore = active
@@ -367,6 +387,7 @@ fn start_prepared_processes(
         active.supervisor.verify_specs(specs)?;
     } else {
         let supervisor = process::Supervisor::new(paths, name)?;
+        publish_run_scope(&supervisor)?;
         log_deployment(
             paths,
             name,
@@ -680,10 +701,13 @@ pub(crate) fn api_call(
             } else {
                 "running"
             };
-            let run_id = active.map(|a| a.supervisor.run_id());
+            let (run_id, run_id_state) = match log_store::LogStore::new(paths, &name) {
+                Ok(logs) => logs.run_identity(),
+                Err(_) => (None, "unavailable"),
+            };
             let (log_ingest_rejected, log_write_failed) = log_store::counters();
             Ok(
-                json!({"schema_version":"1.0.0","saved_revision":saved_revision,"active_revision":active_revision,"state":state,"last_error":last_error,"package":pinned_package,"processes":processes,"run_id":run_id,"log_ingest_rejected":log_ingest_rejected,"log_ingest_rejected_by_reason":log_store::rejection_reasons(),"log_write_failed":log_write_failed}),
+                json!({"schema_version":"1.0.0","saved_revision":saved_revision,"active_revision":active_revision,"state":state,"last_error":last_error,"package":pinned_package,"processes":processes,"run_id":run_id,"run_id_state":run_id_state,"log_ingest_rejected":log_ingest_rejected,"log_ingest_rejected_by_reason":log_store::rejection_reasons(),"log_write_failed":log_write_failed}),
             )
         }
         _ => bail!("unknown API operation {}", request.op),
@@ -782,6 +806,12 @@ pub(crate) fn handle_client(
                                 .downcast_ref::<crate::generated_v2::Diagnostic>()
                                 .map(|diagnostic| json!({"diagnostics":[diagnostic]}))
                         })
+                        .or_else(|| {
+                            cause.downcast_ref::<ScopePublishFailure>().map(|_| json!({
+                                "diagnostics":[{"path":"/run_id","code":"log_scope_publish_failed",
+                                    "message":"Log scope publication failed"}]
+                            }))
+                        })
                 })
                 .unwrap_or(Value::Null),
             error: Some(error.to_string()),
@@ -813,6 +843,9 @@ pub(crate) fn daemon(
     deployment: &str,
     listener: UnixListener,
 ) -> Result<()> {
+    // A manager session boundary is explicit; one-shot CLI reads must not
+    // silently rotate the pre-run scope between commands.
+    log_store::LogStore::new(paths, deployment)?.begin_manager_session()?;
     let mut managers = Deployments::new();
     let mut service_manager = services::ServiceManager::new(paths, deployment)?;
     println!("IsOS API listening on {}", paths.socket().display());
@@ -1237,6 +1270,27 @@ mod restart_tests {
                 .any(|line| line["event_code"] == "deployment_ready"
                     && line["run_id"] == recovery_run)
         );
+        let current = log_store::LogStore::new(&paths, "test")
+            .unwrap()
+            .read_current(log_store::CurrentQuery {
+                source: "all",
+                level: "info",
+                node_path: None,
+                correlation_id: None,
+                cursor: None,
+                limit: 20,
+                active_revision: Some("old"),
+            })
+            .unwrap();
+        assert_eq!(current["scope"]["run_id"], recovery_run);
+        assert_eq!(current["anchor"]["event"]["event_code"], "deployment_ready");
+        assert!(
+            !current["lines"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|line| line["run_id"] == old_run)
+        );
         active.supervisor.stop();
     }
 
@@ -1301,6 +1355,47 @@ mod restart_tests {
             line["event_code"] == "deployment_ready" && line["run_id"] == failed_run
         }));
         managers.get_mut("test").unwrap().supervisor.stop();
+    }
+
+    #[test]
+    fn scope_publication_failure_blocks_child_spawn() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = config::Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        let spec = process::ProcessSpec {
+            id: "stub".into(),
+            path: "isos/process/component/stub".into(),
+            settings: serde_json::from_value(json!({
+                "command": ["/bin/sleep", "30"], "start_timeout_ms": 200
+            }))
+            .unwrap(),
+            package: None,
+            fingerprint: None,
+        };
+        let mut managers = Deployments::new();
+        let error = start_prepared_processes(
+            &paths,
+            &mut managers,
+            "p07-publish-fail",
+            "revision",
+            &[spec],
+            &crate::generated_v2::SecretPlan::new(),
+        )
+        .unwrap_err();
+        assert!(error.downcast_ref::<ScopePublishFailure>().is_some());
+        assert!(managers.is_empty());
+        let store = log_store::LogStore::new(&paths, "p07-publish-fail").unwrap();
+        assert_eq!(store.run_identity(), (None, "none"));
+        assert_eq!(
+            store.read("all", None, 10).unwrap()["lines"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
     }
 
     #[test]

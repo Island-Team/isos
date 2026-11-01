@@ -199,6 +199,7 @@ pub(crate) fn serve_foreground(
     }
     catch_interrupts()?;
     let logs = log_store::LogStore::new(&paths, &name)?;
+    logs.begin_manager_session()?;
     manager_log::install(logs.clone())?;
     logs.append("isos", "info", "Starting IsOS workbench")?;
     let main_log = logs.root().join("events.log");

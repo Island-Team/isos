@@ -169,3 +169,5 @@ CLI 使用同一迁移引擎：`isos config migrate --preview --revision <saved-
 缺失图的 GET 与 Init 使用 G03 写入器生成 `0.1.0` 草稿；PUT 首次 Apply 必须显式使用 `revision:""`，后续 `0.1.0` 修改使用保存修订号。CLI 的新图／`0.1.0` 修改 Apply 使用显式 `--revision`。旧 `1.0.0` 图不因 Init 改写，结构相同的 Apply 保持无写入。新版本的 Run/Restart 从 `data/generated/<deployment>/<saved-revision>/` 选择经摘要校验的清单与 EOS 投影，并在启动前将每个已保存生成文件与精确已保存图的新归属方 render 比较；旧版平面 `generated/<deployment>/core-setup/launch-inputs.json` 仅用于 `1.0.0` 兼容。详情见[图契约](node-graph_cn.md#g03-写入器与快照选择)。
 
 P06 `GET /process-status` 的 `run_id` 为当前活动部署运行的 1–64 字节不透明 ASCII ID；无活动运行时为 `null`。`log_ingest_rejected` 与 `log_write_failed` 为管理器生命期内饱和的非负事件／写入次数；`log_ingest_rejected_by_reason` 是固定原因码到非负次数的有界对象。计数只表示日志健康，不表示 EOS 命令或实体停止结果。
+
+**P07 目标扩展（尚未实现）：** `GET /api/isos/v1/logs?view=current` 返回 `scope`、不受筛选的 `anchor`、筛选后的 `lines`、绑定范围的 `next_cursor`、`rotated` 和有类型 `diagnostics`。`process-status.run_id` 保留最后准入的部署运行 ID，跨 Stop 和失败仍可读取；`run_id_state:none|known|unavailable` 区分未运行与身份无法恢复。范围无法恢复时返回 HTTP 503 `log_scope_unavailable`。省略 `view` 时旧版日志 API 保持不变。字段、轮转、缺口及错误见[当前运行日志游标契约](log-cursors_cn.md)。

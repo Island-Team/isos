@@ -23,7 +23,7 @@ isos pkg link island/mujoco-sim 0.1.1 /absolute/path/to/bundle --manifest /absol
 isos pkg node-sets
 ```
 
-4. Apply 后执行 `isos run`，它保持前台运行。在另一终端先用 `isos status --json` 查看保存／活动修订、进程就绪和最近错误，再用 `isos logs all --level info` 查看启动顺序。当前 IsOS 启动行表示启动尝试，状态才确认就绪。MuJoCo 或可加载适配器的软件包加载故障先读 `isos logs packages --level warn`：`package_id`／`package_version` 标识固定发行版，`run_id` 和 `correlation_id` 关联管理器预检失败；再查看命令错误确定修复方法。EOS 与 MuJoCo 来源解释子进程启动。特定故障用 `isos logs eos --level warn` 或 IsosUI Logs 面板调查。日志位于私有数据根目录的 `logs/<deployment>/`；路径、过滤、轮转和游标见[配置与日志](../interfaces/configuration_cn.md)。**P06 首次使用：**始终用 `isos status --json` 检查实时就绪。Validate、Apply 或 Run 预检失败时，查管理器会话 `run_id` 和请求 `correlation_id` 下首条 `packages` 或 `isos` 错误；安全类型化字段记录精确软件包 pin 和可用的已验证收据摘要。Start 获准后，用新分配的部署运行 ID 查一条 `deployment_starting`、所选 EOS 子进程的 `eos_ready` 及启用时 EGIA 归属方的就绪事件，再查 `deployment_ready`。用 `isos logs eos --level warn` 和同一运行／关联 ID 查子进程状态变化及终结停止事件。EOS 原始仿真诊断留在独立私有 `owner/eos/` 目录。同一失败请求的包加载详情与预检摘要共享关联 ID；首次 Start 失败后修复重试会使用新的运行 ID。无效图指针从安全事件中省略，但失败摘要仍保留。[统一事件契约](../interfaces/events_cn.md)定义 JSONL 边界及来源映射。P07 增加跨轮转的首事件游标；当前状态仍以 status 为准，历史使用尚可读取的日志行。
+4. Apply 后执行 `isos run`，它保持前台运行。在另一终端先用 `isos status --json` 查看保存／活动修订、进程就绪和最近错误，再用 `isos logs all --level info` 查看启动顺序。当前 IsOS 启动行表示启动尝试，状态才确认就绪。MuJoCo 或可加载适配器的软件包加载故障先读 `isos logs packages --level warn`：`package_id`／`package_version` 标识固定发行版，`run_id` 和 `correlation_id` 关联管理器预检失败；再查看命令错误确定修复方法。EOS 与 MuJoCo 来源解释子进程启动。特定故障用 `isos logs eos --level warn` 或 IsosUI Logs 面板调查。日志位于私有数据根目录的 `logs/<deployment>/`；路径、过滤、轮转和游标见[配置与日志](../interfaces/configuration_cn.md)。**P06 首次使用：**始终用 `isos status --json` 检查实时就绪。Validate、Apply 或 Run 预检失败时，查管理器会话 `run_id` 和请求 `correlation_id` 下首条 `packages` 或 `isos` 错误；安全类型化字段记录精确软件包 pin 和可用的已验证收据摘要。Start 获准后，用新分配的部署运行 ID 查一条 `deployment_starting`、所选 EOS 子进程的 `eos_ready` 及启用时 EGIA 归属方的就绪事件，再查 `deployment_ready`。用 `isos logs eos --level warn` 和同一运行／关联 ID 查子进程状态变化及终结停止事件。EOS 原始仿真诊断留在独立私有 `owner/eos/` 目录。同一失败请求的包加载详情与预检摘要共享关联 ID；首次 Start 失败后修复重试会使用新的运行 ID。无效图指针从安全事件中省略，但失败摘要仍保留。[统一事件契约](../interfaces/events_cn.md)定义 JSONL 边界及来源映射。P07 已增加跨轮转的首事件游标；查看 status 后使用 `isos logs all --current` 读取固定的首事件与后续保留日志。
 
 5. Ctrl+C 停止附着的部署。`isos deployment stop` 仅停止图；`isos stop` 也停止独立服务、UI、API 和管理器。重复停止会成功。停后用 `isos status --json` 确认已停止；若停止异常，再查看警告与错误日志。干净停止无需大量周期性消息。
 
@@ -52,3 +52,7 @@ isos config migrate --revision <saved-sha256> --proposed-revision <preview-sha25
 ```
 
 来源或建议摘要过期时须重新预览。`isos status --json` 随后显示新的保存修订号；运行中修订号在显式 Restart 前保持不变。未匹配的旧类型保持只读，须按[迁移指南](../maintenance/migration_cn.md)显式修复。
+
+## P07：查看首条事件和后续日志
+
+首次准入运行前，使用 `isos logs all --current --level info --lines 100` 或 `GET /api/isos/v1/logs?view=current&source=all&level=info`。管理器会话范围会固定首条软件包或 Apply 故障。运行准入后，同一请求改为返回该部署运行的首条就绪或故障事件；即使来源／级别／节点／关联筛选不匹配，锚点仍独立显示。锚点待定时轮询 `next_cursor`。停止或失败后仍查看最后准入运行的终结日志；新运行准入时旧游标返回 `log_run_changed`。轮转保留期间游标连续；过期、收集中断或锚点不可用时显示 `diagnostics`，然后继续使用新游标。每次先查 `isos status --json` 的实时状态；日志页只解释历史。遇到 `run_id_state:unavailable` 或 `log_scope_unavailable` 时显示有类型故障，不能呈现管理器会话页。详见[当前运行日志游标契约](../interfaces/log-cursors_cn.md)。
