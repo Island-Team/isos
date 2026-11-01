@@ -89,6 +89,54 @@ class CleanHome:
         leaf = self.generated / "v2" / revision / generation
         return revision, generation, leaf
 
+    def seed_egia_distribution(self):
+        prefix = self.root / "egia-install"
+        binary_dir = prefix / "bin"
+        component = prefix / "etc/egia"
+        factory = prefix / "share/defaults/egia"
+        binary_dir.mkdir(parents=True)
+        component.mkdir(parents=True)
+        factory.mkdir(parents=True)
+        for relative in (
+            "egia.toml", "modes.toml", "profiles/isos.toml", "models.toml",
+            "prompts.toml", "missions.toml", "safety/gate.toml", "opt/sandbox.toml",
+            "extra/nested.toml",
+        ):
+            path = component / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("enabled = true\n")
+        (factory / "models.toml").write_text("enabled = true\n")
+        adapter = binary_dir / "egia-config"
+        adapter.write_text("""#!/usr/bin/env python3
+import json
+import sys
+request = json.load(sys.stdin)
+reply = {"schema_version": 1, "ok": True, "diagnostics": [], "files": []}
+if request["op"] == "identity":
+    reply["identity"] = {
+        "core": "egia", "graph_version": "1.0.0", "node_type_version": "1.0",
+        "product_version": "0.1.0", "setup_schema_version": 1,
+        "supported_graph_versions": ["1.0.0", "0.1.0"],
+        "supported_node_type_versions": ["1.0", "0.1"],
+    }
+elif request["op"] == "render":
+    reply["files"] = [
+        {"path": "egia/egia.toml", "content": "mode = 'isos'\\n"},
+        {"path": "egia/modes.toml", "content": "enabled = true\\n"},
+        {"path": "egia/profiles/isos.toml", "content": "managed = true\\n"},
+    ]
+print(json.dumps(reply))
+""")
+        adapter.chmod(0o700)
+        executable = binary_dir / "egia"
+        executable.write_text("#!/bin/sh\nexit 0\n")
+        executable.chmod(0o700)
+        self.env["ISOS_EGIA_BIN_DIR"] = str(binary_dir)
+        self.env["ISOS_EGIA_DEFAULTS_DIR"] = str(component)
+        self.env["ISOS_EGIA_FACTORY_DEFAULTS_DIR"] = str(factory)
+        self.env.pop("ISLAND_PREFIX", None)
+        return component, factory
+
     def start_server(self):
         self.output = (self.root / "serve.log").open("w+")
         self.server = subprocess.Popen([str(ISOS), "serve"], env=self.env,
@@ -260,6 +308,48 @@ class GeneratedConfigReplay(unittest.TestCase):
              "spawn"),
         )
         self.assertNotIn("P04_MISSING_SECRET", json.dumps(reply))
+
+    def test_egia_defaults_are_selected_and_missing_file_keeps_generation(self):
+        component, factory = self.case.seed_egia_distribution()
+        graph = json.loads(self.case.graph_path.read_text())
+        nodes = graph["cores"]["isos"]["layers"]["process"]["groups"]["component"]["nodes"]
+        nodes["egia"] = {
+            "id": "egia", "node_type": "isos.process.component@v0.1",
+            "label": "EGIA agent", "description": "Managed agent for config preflight",
+            "capabilities": ["process"],
+            "settings": {"role": "egia", "args": [],
+                         "depends_on": ["cores/isos/layers/process/groups/component/nodes/eos"]},
+        }
+        self.case.apply(graph)
+        revision, generation, leaf = self.case.selected()
+        manifest = json.loads((leaf / "manifest.json").read_text())
+        self.assertEqual(manifest["default_roots"],
+                         {"component": str(component), "factory": str(factory)})
+        for relative in CASES["required_egia_files"]:
+            self.assertTrue((leaf / relative).is_file(), relative)
+        self.assertTrue((leaf / "egia/extra/nested.toml").is_file())
+        self.assertIn(b"mode = 'isos'", (leaf / "egia/egia.toml").read_bytes())
+        graph_before = self.case.graph_path.read_bytes()
+        selection_before = (self.case.generated / "selection.json").read_bytes()
+        (component / "prompts.toml").unlink()
+        candidate = self.case.root / "candidate.nodes.json"
+        result = self.case.command("config", "apply", candidate,
+                                   "--revision", revision, success=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("generated_missing_input", result.stdout + result.stderr)
+        self.assertEqual(self.case.graph_path.read_bytes(), graph_before)
+        self.assertEqual((self.case.generated / "selection.json").read_bytes(), selection_before)
+        self.assertEqual(self.case.selected()[:2], (revision, generation))
+        (component / "prompts.toml").write_text("enabled = true\n")
+        (factory / "models.toml").write_text("enabled = false\n")
+        self.case.start_server()
+        status, reply = self.case.control("run")
+        self.assertEqual(status, 422, reply)
+        self.assertEqual(
+            {key: reply["data"]["diagnostics"][0][key] for key in ("code", "path", "stage")},
+            {"code": "generated_manifest_mismatch", "path": "", "stage": "snapshot"},
+        )
+        self.assertEqual(self.case.graph_path.read_bytes(), graph_before)
 
 
 if __name__ == "__main__":
