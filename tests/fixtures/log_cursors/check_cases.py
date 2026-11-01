@@ -100,7 +100,7 @@ def admit(state, candidate, publication):
 
 state_cases = json.loads((HERE / "state-scenarios.json").read_text())
 assert state_cases["contract"] == "isos-log-cursors-p07-state-v1"
-assert len(state_cases["cases"]) == 11
+assert len(state_cases["cases"]) == 12
 for scenario in state_cases["cases"]:
     retained = scenario.get("retained_events", [])
     positions = [e["accepted_position"] for e in retained]

@@ -40,6 +40,7 @@ struct State {
     run_anchor_state: String,
     loss_baseline: u64,
     loss_uncertain: bool,
+    scope_seal: String,
 }
 
 struct LoadedState {
@@ -180,6 +181,59 @@ fn deployment(store: &LogStore) -> Result<String> {
 
 fn state_path(store: &LogStore) -> PathBuf {
     store.root.join("cursor-state.json")
+}
+
+fn scope_key_path(store: &LogStore) -> PathBuf {
+    store.root.join("scope-key")
+}
+
+fn scope_key(store: &LogStore) -> Result<[u8; 32]> {
+    let bytes = private_read(&scope_key_path(store), 32)?;
+    ensure!(bytes.len() == 32, "scope key length");
+    let mut result = [0_u8; 32];
+    result.copy_from_slice(&bytes);
+    Ok(result)
+}
+
+fn create_scope_key(store: &LogStore) -> Result<()> {
+    let path = scope_key_path(store);
+    if path.exists() {
+        scope_key(store)?;
+        return Ok(());
+    }
+    let mut random = [0_u8; 32];
+    File::open("/dev/urandom")?.read_exact(&mut random)?;
+    let temporary = store.root.join(format!(
+        ".scope-key-{}-{}.tmp",
+        std::process::id(),
+        NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+    ));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temporary)?;
+    let result = (|| {
+        file.write_all(&random)?;
+        file.sync_all()?;
+        match fs::hard_link(&temporary, &path) {
+            Ok(()) => File::open(&store.root)?.sync_all()?,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                scope_key(store)?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+        Ok::<_, anyhow::Error>(())
+    })();
+    let _ = fs::remove_file(temporary);
+    result
+}
+
+fn scope_seal(store: &LogStore, state: &State) -> Result<String> {
+    let mut unsigned = state.clone();
+    unsigned.scope_seal.clear();
+    let body = serde_json::to_vec(&unsigned)?;
+    Ok(URL_SAFE_NO_PAD.encode(mac(&scope_key(store)?, &body)))
 }
 
 fn intent_path(store: &LogStore) -> PathBuf {
@@ -406,13 +460,16 @@ fn save_state(store: &LogStore, state: &State) -> Result<()> {
     {
         anyhow::bail!("injected manager-session state publication failure");
     }
-    private_write(&state_path(store), &serde_json::to_vec(state)?)
+    let mut sealed = state.clone();
+    sealed.scope_seal = scope_seal(store, &sealed)?;
+    private_write(&state_path(store), &serde_json::to_vec(&sealed)?)
 }
 
 pub(super) fn initialize(store: &LogStore, fresh_root: bool) -> Result<()> {
     if !fresh_root {
         return Ok(());
     }
+    create_scope_key(store)?;
     let name = deployment(store)?;
     let state = State {
         schema_version: 1,
@@ -425,6 +482,7 @@ pub(super) fn initialize(store: &LogStore, fresh_root: bool) -> Result<()> {
         run_anchor_state: "pending".into(),
         loss_baseline: loss_total(store),
         loss_uncertain: false,
+        scope_seal: String::new(),
     };
     save_state(store, &state)?;
     let _ = key(store)?;
@@ -466,6 +524,10 @@ fn load_state(store: &LogStore) -> Result<LoadedState> {
     let name = deployment(store)?;
     let bytes = private_read(&state_path(store), STATE_MAX)?;
     let state: State = serde_json::from_slice(&bytes)?;
+    ensure!(
+        state.scope_seal == scope_seal(store, &state)?,
+        "cursor scope proof mismatch"
+    );
     let anchor_proven = validate_state(store, &state, &name)?;
     if let Some(intent) = read_intent(store, &name)? {
         ensure!(
@@ -541,10 +603,16 @@ pub(super) fn publish_run(store: &LogStore, run_id: &str) -> Result<()> {
     let _guard = store.lock.lock().unwrap();
     let mut state = match load_state(store) {
         Ok(loaded) => loaded.state,
-        Err(_) => {
+        Err(_error)
+            if fs::symlink_metadata(state_path(store))
+                .is_err_and(|cause| cause.kind() == std::io::ErrorKind::NotFound)
+                && fs::symlink_metadata(scope_key_path(store))
+                    .is_err_and(|cause| cause.kind() == std::io::ErrorKind::NotFound) =>
+        {
             // An older P06 log directory has no P07 never-run marker. It
             // cannot be read as manager scope, but a newly admitted run can
             // establish a durable identity and a new history proof epoch.
+            create_scope_key(store)?;
             let name = deployment(store)?;
             write_intent(store, &name, crate::manager::manager_session_id())?;
             State {
@@ -558,8 +626,10 @@ pub(super) fn publish_run(store: &LogStore, run_id: &str) -> Result<()> {
                 run_anchor_state: "pending".into(),
                 loss_baseline: loss_total(store),
                 loss_uncertain: false,
+                scope_seal: String::new(),
             }
         }
+        Err(error) => return Err(error),
     };
     state.never_run = false;
     state.last_run_id = Some(run_id.to_owned());
@@ -1094,7 +1164,7 @@ mod tests {
     #[test]
     fn cursor_identity_and_key_are_private_files() {
         let (_temp, store) = store("p07-private");
-        for name in ["cursor-state.json", "cursor-key"] {
+        for name in ["cursor-state.json", "cursor-key", "scope-key"] {
             let metadata = fs::symlink_metadata(store.root.join(name)).unwrap();
             assert!(metadata.file_type().is_file());
             assert_eq!(metadata.permissions().mode() & 0o077, 0);
@@ -1355,6 +1425,64 @@ mod tests {
     }
 
     #[test]
+    fn tampered_run_and_anchor_cannot_claim_fabricated_scope() {
+        let (temp, store) = store("p07-scope-tampered");
+        store.publish_run("r812").unwrap();
+        append(&store, "r812", "deployment_ready", "info");
+        let mut state: State =
+            serde_json::from_slice(&private_read(&state_path(&store), STATE_MAX).unwrap()).unwrap();
+        state.last_run_id = Some("r999".into());
+        state.run_anchor.as_mut().unwrap().event["run_id"] = json!("r999");
+        fs::write(state_path(&store), serde_json::to_vec(&state).unwrap()).unwrap();
+        let paths = Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        let restarted = LogStore::new(&paths, "p07-scope-tampered").unwrap();
+        restarted.begin_manager_session().unwrap();
+        assert_eq!(restarted.run_identity(), (None, "unavailable"));
+        assert_eq!(
+            restarted
+                .read_current(CurrentQuery {
+                    source: "all",
+                    level: "info",
+                    node_path: None,
+                    correlation_id: None,
+                    cursor: None,
+                    limit: 100,
+                    active_revision: None,
+                })
+                .unwrap_err()
+                .code,
+            "log_scope_unavailable"
+        );
+        assert!(restarted.publish_run("r1000").is_err());
+    }
+
+    #[test]
+    fn missing_stable_scope_key_never_reissues_scope_proof() {
+        let (_temp, store) = store("p07-scope-key-missing");
+        store.publish_run("r813").unwrap();
+        append(&store, "r813", "deployment_ready", "info");
+        fs::remove_file(scope_key_path(&store)).unwrap();
+        assert_eq!(store.run_identity(), (None, "unavailable"));
+        assert!(!scope_key_path(&store).exists());
+        assert!(store.publish_run("r814").is_err());
+        assert!(!scope_key_path(&store).exists());
+    }
+
+    #[test]
+    fn missing_state_with_existing_scope_key_is_not_p06_upgrade() {
+        let (_temp, store) = store("p07-state-missing");
+        store.publish_run("r815").unwrap();
+        fs::remove_file(state_path(&store)).unwrap();
+        assert_eq!(store.run_identity(), (None, "unavailable"));
+        assert!(store.publish_run("r816").is_err());
+        assert!(!state_path(&store).exists());
+    }
+
+    #[test]
     fn signed_but_ineligible_manager_package_anchor_fails_closed() {
         let (_temp, store) = store("p07-bad-package-anchor");
         let manager = crate::manager::manager_session_id();
@@ -1460,6 +1588,7 @@ mod tests {
         let store = LogStore::new(&paths, "p07-upgrade").unwrap();
         assert_eq!(store.run_identity(), (None, "unavailable"));
         store.publish_run("r451").unwrap();
+        assert!(scope_key_path(&store).is_file());
         assert_eq!(store.run_identity(), (Some("r451".into()), "known"));
         assert_eq!(page(&store, None, "all")["anchor"]["state"], "pending");
     }
