@@ -6,7 +6,7 @@
 
 ## 事务
 
-1. 在部署锁下重读保存字节，要求精确修订有显式 schema-2 `V2` 选择及匹配的 manifest。仅调用 `generated_v2::selected_root` 不够：未选中的 `0.1.0` 图也可能获得 G03 回退路径。缺失选择或 G03 选择必须在签发授权或停止子进程之前被拒绝。随后验证精确软件包 pin、所有者渲染、已选二进制、读取器特性及所有 `env_from` 值。托管执行器运行要求已选 EOS；EGIA 与 bridge 可选，但任何已选接收方都必须有匹配的已验证进程规格和启动输入。候选计划遗漏必需的 EOS 或已声明的已选接收方、代变化或图作者写入的所有者保留启动标志，都必须在停止活动子进程前被拒绝。候选 `active_revision` 使用最终保存字节的 SHA-256。
+1. 在部署锁下重读保存字节，要求精确修订有显式 schema-2 `V2` 选择及匹配的 manifest。仅调用 `generated_v2::selected_root` 不够：未选中的 `0.1.0` 图也可能获得 G03 回退路径。缺失选择或 G03 选择必须在签发授权或停止子进程之前被拒绝。随后验证精确软件包 pin、所有者渲染、已选二进制、读取器特性及所有 `env_from` 值。现有 P04 profile 投影要求托管 `0.1.0` 执行器运行具备已选 EOS 和 config；config 不接收授权，EGIA 与 bridge 可选，但任何已选接收方都必须有匹配的已验证进程规格和启动输入。候选计划遗漏必需的 EOS 或已声明的已选接收方、代变化或图作者写入的所有者保留启动标志，都必须在停止活动子进程前被拒绝。候选 `active_revision` 使用最终保存字节的 SHA-256。
 2. 仅当 Start 创建运行或 Restart 替换运行时分配新的部署 `run_id`。通过操作系统 CSPRNG 独立生成两个授权。使用 no-follow/exclusive 创建全新私有运行目录及三个文件，严格权限和大小，fsync 文件及目录。验证文件绑定运行 ID 与修订。不得将授权包加入 `manifest.json` 或代摘要；相同修订的 Restart 也应轮换授权，且不改变 Apply 输出。
 3. 授权包持久化后，IsOS 才可停止旧进程。按依赖顺序启动候选子进程，把验证文件路径传给已选 EOS、EGIA 授权路径传给已选 EGIA、操作员授权路径传给已选 bridge。先从继承环境和图作者设置的子进程环境中移除三个保留变量。未选进程不获授权。停止前，拒绝已选 EOS runtime/bridge/config `settings.args` 中图作者写入的 `--run-id` 或 `--run-id=...`，以及所有者注入的 backend 摘要和 log-dir 标志；现有生成 profile 预检拒绝重复的 `--profile`。EOS 的有效 IsOS `--run-id` 及 EGIA 的 `ISOS_RUN_ID` 必须匹配验证文件；子进程不能自行选择另一个图或运行。
 4. 等待超过 TCP 绑定的 EOS 所有者就绪：manifest 与授权已验证、发现完整、写入准入状态正确。已选择的 EGIA 和 bridge 就绪依赖其被允许的 EOS 路径。整个依赖链通过后才发布 `deployment_ready`。`deployment_starting` 前的授权拒绝以管理器会话 ID 和请求关联号发出 `deployment_preflight_failed`，不改变旧 P07 当前运行范围。`deployment_starting` 后的子进程故障属于候选运行：先停止依赖方，再停止提供方，发出其终结故障事件，回收进程后撤销授权包。
