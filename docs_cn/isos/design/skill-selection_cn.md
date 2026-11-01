@@ -4,7 +4,7 @@
 
 **实现候选，仍待独立复核与跨所有者重放。** R04 扩展已实现的 P01/P04/P05 与 R03 边界。图在 EOS component 上选择有界的精确原生库；IsOS 不解释 ABI 描述符，也不执行技能代码。EOS host ABI 与 worker 契约负责这些行为。这里不新增图技能节点、步骤执行器、ActionList 或第二条执行器路径。
 
-Apply 首先验证保存的 `0.1.0` 图与精确 EOS component 位置；按拒绝未知字段的结构解析最多 16 个 `skill_libraries` 项，在精确数组索引 JSON Pointer 上拒绝重复元组、错误 pin 和不安全相对路径。旧图读取器不投影此设置。然后将每项加入 P01 图 pin 集合；每个精确包重新验证一次，要求 `kind:"skill"`，以 nofollow 检查库路径分量、普通文件、1–64 MiB 上限及 SHA-256。仅使用已验证句柄，不扫描 store 或递归搜索 `*.skill.so`。同包可显式选择多库。
+Apply 首先验证保存的 `0.1.0` 图与精确 EOS component 位置；按拒绝未知字段的结构解析最多 16 个 `skill_libraries` 项，在精确数组索引 JSON Pointer 上拒绝重复元组、错误 pin 和不安全相对路径。旧图读取器不投影此设置。然后将每项加入 P01 图 pin 集合；每个精确包重新验证一次，要求 `kind:"skill"`，以 nofollow 检查库路径分量、普通文件、1–64 MiB 上限及 SHA-256。选中库、收据、发布元数据和每个普通 payload 文件均须由有效 UID 拥有且 group/other 不可写（`mode & 0o022 == 0`），与 EOS worker 前检查一致。仅使用已验证句柄，不扫描 store 或递归搜索 `*.skill.so` 来选择库。同包可显式选择多库。
 
 若列表非空，探测选中 EOS runtime 的 `host-skill-abi-v2`。从已验证句柄按顺序生成 `isos/skill-selection.json`，把摘要加入 P04 的 `files`，把收据加入 `packages`，并使用原 P04 规范 manifest 算法计算 generation。发布前重检文件身份和摘要。包或二进制变更需要重新 Apply，即使图字节未变。发布沿用 P04 的 fsync、selection-map、marker 与图 rename 次序；不确定的 rename 只能通过重新读取已观察到的图 revision、map、marker 和完整 leaf 来判断。
 
@@ -21,6 +21,8 @@ EOS 在目录变成可用前再次检查选中 manifest 与库内容。链接 pa
 IsOS 实现候选（2026-11-02）：`cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test`、`cargo build`、`cargo test skill_selection -- --nocapture` 与 `python3 tests/fixtures/skill_selection/check_cases.py` 均通过。完整输出位于忽略的 `logs/test/20261102-r04-isos-impl/`。专项测试覆盖精确图指针、重复与不安全路径、已验证 P01 pin、链接 payload 修改、不兼容发布类型、私有 V2 generation 清单及篡改拒绝，以及只向 EOS 子进程交付环境变量。20 用例检查仅验证冻结表格与 schema；EOS 拥有的 I17–I20 和跨所有者双代运行重放仍需集成证据，才能关闭 R04。
 
 独立审查修复（2026-11-02）：`cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test --no-fail-fast`、`cargo build --all-targets`、`cargo test skill_selection -- --nocapture`、`python3 tests/fixtures/skill_selection/check_cases.py` 与 `git diff --check` 均通过。完整输出位于忽略的 `logs/test/20261102-r04-isos-review-fix/`（204 个单元测试、七个 CLI 指南测试、一个移除命令测试、九个边检查测试；12 个专项 skill-selection 单元测试及一个 CLI 测试；20 个冻结用例）。回归测试覆盖 FIFO 替换时不阻塞、无符号链接且有界的选择文件读取、丢失 EOS 交付、setup/capabilities 辅助进程环境隔离、旧版 HTTP Validate 优先返回字段指针，以及 EOS 64 KiB 选择文件限制。跨所有者资格验证仍待完成。
+
+跨所有者所有权检查对齐（2026-11-02）：`cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test --no-fail-fast`、`cargo build --all-targets`、`cargo test skill_selection -- --nocapture`、`cargo test writable_selected_skill_rejects_restart_before_old_process_stops -- --nocapture`、`python3 tests/fixtures/skill_selection/check_cases.py` 与 `git diff --check` 均通过。完整输出位于忽略的 `logs/test/20261102-r04-isos-owner-mode/`（207 个单元测试、七个 CLI 指南测试、一个移除命令测试、九个边检查测试；14 个专项 skill-selection 单元测试及一个 CLI 测试；20 个冻结用例）。测试拒绝选中库与无关 payload 文件的 `0775` 模式、拒绝 group 可写的 P01 收据和发布元数据，并证明失败的 Restart 保留旧 PID 与 run ID。跨所有者资格验证仍待完成。
 
 ## 精确诊断路径
 

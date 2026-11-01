@@ -62,7 +62,7 @@ fn diagnostic(code: &'static str, path: String) -> Diagnostic {
         "skill_package_incompatible" => ("package", "Select a verified native skill release"),
         "skill_library_unsafe" => (
             "package",
-            "Select a regular bounded package-relative .skill.so file",
+            "Use same-owner, non-writable-by-others package files and a bounded .skill.so",
         ),
         "skill_library_changed" => ("package", "Reverify the selected library and Apply again"),
         _ => (
@@ -393,7 +393,10 @@ fn open_selected(
     let actual = opened
         .metadata()
         .map_err(|_| diagnostic("skill_library_changed", format!("{path}/library")))?;
-    if !actual.file_type().is_file() || !(1..=MAX_LIBRARY_BYTES).contains(&actual.len()) {
+    if !actual.file_type().is_file()
+        || !(1..=MAX_LIBRARY_BYTES).contains(&actual.len())
+        || !owner_mode_safe(&actual)
+    {
         return Err(diagnostic(
             "skill_library_unsafe",
             format!("{path}/library"),
@@ -402,26 +405,78 @@ fn open_selected(
     Ok((opened, actual))
 }
 
-fn digest_file(path: &Path) -> std::result::Result<String, Diagnostic> {
+fn owner_mode_safe(metadata: &fs::Metadata) -> bool {
+    metadata.uid() == unsafe { libc::geteuid() } && metadata.mode() & 0o022 == 0
+}
+
+fn digest_file(path: &Path, max: u64, pointer: &str) -> std::result::Result<String, Diagnostic> {
+    let unsafe_file = || diagnostic("skill_library_unsafe", pointer.into());
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)
-        .map_err(|_| diagnostic("skill_library_changed", String::new()))?;
-    let metadata = file
-        .metadata()
-        .map_err(|_| diagnostic("skill_library_changed", String::new()))?;
-    if !metadata.file_type().is_file() || metadata.len() > 65_536 {
-        return Err(diagnostic("skill_library_changed", String::new()));
+        .map_err(|_| unsafe_file())?;
+    let metadata = file.metadata().map_err(|_| unsafe_file())?;
+    if !metadata.file_type().is_file() || metadata.len() > max || !owner_mode_safe(&metadata) {
+        return Err(unsafe_file());
     }
     let mut bytes = Vec::new();
-    file.take(65_537)
+    file.take(max + 1)
         .read_to_end(&mut bytes)
-        .map_err(|_| diagnostic("skill_library_changed", String::new()))?;
+        .map_err(|_| diagnostic("skill_library_changed", pointer.into()))?;
     if bytes.len() as u64 != metadata.len() {
-        return Err(diagnostic("skill_library_changed", String::new()));
+        return Err(diagnostic("skill_library_changed", pointer.into()));
     }
     Ok(hex::encode(Sha256::digest(&bytes)))
+}
+
+fn check_payload_ownership(
+    root: &Path,
+    installed: bool,
+    pointer: &str,
+) -> std::result::Result<(), Diagnostic> {
+    let unsafe_file = || diagnostic("skill_library_unsafe", pointer.into());
+    let mut pending = vec![root.to_path_buf()];
+    let mut count = 0_usize;
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(&directory).map_err(|_| unsafe_file())? {
+            let entry = entry.map_err(|_| unsafe_file())?;
+            let path = entry.path();
+            let relative = path.strip_prefix(root).map_err(|_| unsafe_file())?;
+            let name = relative.to_str().ok_or_else(unsafe_file)?;
+            if installed
+                && !name.contains('/')
+                && matches!(name, "receipt.json" | "release.json" | "node-types.json")
+            {
+                continue;
+            }
+            count += 1;
+            if count > 16_384 || name.len() > 4096 {
+                return Err(unsafe_file());
+            }
+            let before = fs::symlink_metadata(&path).map_err(|_| unsafe_file())?;
+            if before.file_type().is_dir() {
+                pending.push(path);
+            } else if before.file_type().is_file() {
+                let file = OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                    .open(&path)
+                    .map_err(|_| unsafe_file())?;
+                let actual = file.metadata().map_err(|_| unsafe_file())?;
+                if !actual.file_type().is_file()
+                    || !owner_mode_safe(&actual)
+                    || (before.dev(), before.ino(), before.len())
+                        != (actual.dev(), actual.ino(), actual.len())
+                {
+                    return Err(unsafe_file());
+                }
+            } else {
+                return Err(unsafe_file());
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn render(
@@ -439,7 +494,8 @@ pub fn render(
     let mut verified = BTreeMap::new();
     for (entry, pointer) in selected {
         let key = (entry.package.id.clone(), entry.package.version.clone());
-        if !verified.contains_key(&key) {
+        let first = !verified.contains_key(&key);
+        if first {
             let package = packages::verify(paths, &entry.package.id, &entry.package.version)
                 .map_err(|error| {
                     error
@@ -454,6 +510,26 @@ pub fn render(
                             diagnostic("skill_library_changed", format!("{pointer}/package"))
                         })
                 })?;
+            if package.release.kind != "skill" {
+                return Err(diagnostic(
+                    "skill_package_incompatible",
+                    format!("{pointer}/package"),
+                ));
+            }
+            let metadata_pointer = format!("{pointer}/package");
+            digest_file(
+                &package.store.join("receipt.json"),
+                65_536,
+                &metadata_pointer,
+            )?;
+            let release_sha256 = digest_file(
+                &package.store.join("release.json"),
+                4_194_304,
+                &metadata_pointer,
+            )?;
+            if package.receipt.release_sha256.as_deref() != Some(&release_sha256) {
+                return Err(diagnostic("skill_library_changed", metadata_pointer));
+            }
             verified.insert(key.clone(), package);
         }
         let package = &verified[&key];
@@ -464,7 +540,18 @@ pub fn render(
             ));
         }
         let hash = selected_file(&package.root, &entry.library, &pointer)?;
-        let receipt_sha256 = digest_file(&package.store.join("receipt.json"))?;
+        if first {
+            check_payload_ownership(
+                &package.root,
+                package.root == package.store,
+                &format!("{pointer}/package"),
+            )?;
+        }
+        let receipt_sha256 = digest_file(
+            &package.store.join("receipt.json"),
+            65_536,
+            &format!("{pointer}/package"),
+        )?;
         let release_sha256 = package
             .receipt
             .release_sha256
@@ -641,7 +728,7 @@ pub fn scrub_inherited(command: &mut std::process::Command) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use serde_json::json;
     use std::os::unix::{
@@ -654,13 +741,13 @@ mod tests {
         assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
     }
 
-    fn graph(list: Value) -> Value {
+    pub(crate) fn graph(list: Value) -> Value {
         json!({"version":"0.1.0","robot":{},"cores":{"isos":{"layers":{"process":{"groups":{"component":{"nodes":{
             "eos":{"id":"eos","node_type":"isos.process.component@v0.1","settings":{"role":"eos","skill_libraries":list}}
         }}}}}}}})
     }
 
-    fn pin(path: &str) -> Value {
+    pub(crate) fn pin(path: &str) -> Value {
         json!({"package":{"id":"test/verified","version":"0.1.1"},"library":path})
     }
 
@@ -679,6 +766,17 @@ mod tests {
             b"native-skill-fixture",
         )
         .unwrap();
+        fs::set_permissions(
+            source.join("lib/island/skills/example.skill.so"),
+            fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        fs::write(source.join("lib/island/skills/helper.txt"), b"fixture").unwrap();
+        fs::set_permissions(
+            source.join("lib/island/skills/helper.txt"),
+            fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
         let platform = crate::release::Platform::current();
         let mut release = json!({"schema_version":4,"id":"test/verified","kind":kind,"version":"0.1.1",
             "source_commit":"a".repeat(40),"assets":[{"os":platform.os,"arch":platform.arch,
@@ -693,11 +791,16 @@ mod tests {
             serde_json::to_vec(&release).unwrap(),
         )
         .unwrap();
+        fs::set_permissions(
+            source.join("release.json"),
+            fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
         packages::link_with_manifest(&paths, "test/verified", "0.1.1", &source, None).unwrap();
         (temp, paths, source)
     }
 
-    fn fixture() -> (tempfile::TempDir, Paths, PathBuf) {
+    pub(crate) fn fixture() -> (tempfile::TempDir, Paths, PathBuf) {
         fixture_kind("skill")
     }
 
@@ -818,6 +921,46 @@ mod tests {
             render(&paths, &value, &"a".repeat(64)).unwrap_err().code,
             "skill_package_incompatible"
         );
+    }
+
+    #[test]
+    fn group_writable_selected_and_unrelated_payload_files_fail_preflight() {
+        for relative in [
+            "lib/island/skills/example.skill.so",
+            "lib/island/skills/helper.txt",
+        ] {
+            let (_temp, paths, source) = fixture();
+            let value = graph(json!([pin("lib/island/skills/example.skill.so")]));
+            render(&paths, &value, &"a".repeat(64)).unwrap();
+            fs::set_permissions(source.join(relative), fs::Permissions::from_mode(0o775)).unwrap();
+            let error = render(&paths, &value, &"a".repeat(64)).unwrap_err();
+            assert_eq!(error.code, "skill_library_unsafe");
+            assert_eq!(
+                error.path,
+                format!(
+                    "/cores/isos/layers/process/groups/component/nodes/eos/settings/skill_libraries/0/{}",
+                    if relative.ends_with(".skill.so") {
+                        "library"
+                    } else {
+                        "package"
+                    }
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn group_writable_receipt_and_release_fail_preflight() {
+        for name in ["receipt.json", "release.json"] {
+            let (_temp, paths, _source) = fixture();
+            let value = graph(json!([pin("lib/island/skills/example.skill.so")]));
+            render(&paths, &value, &"a".repeat(64)).unwrap();
+            let metadata = paths.data.join("packages/test/verified/0.1.1").join(name);
+            fs::set_permissions(&metadata, fs::Permissions::from_mode(0o660)).unwrap();
+            let error = render(&paths, &value, &"a".repeat(64)).unwrap_err();
+            assert_eq!(error.code, "skill_library_unsafe");
+            assert!(error.path.ends_with("/skill_libraries/0/package"));
+        }
     }
 
     #[test]

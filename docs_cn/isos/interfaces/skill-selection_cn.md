@@ -17,6 +17,8 @@
 
 P01 图 pin 收集器把每个选中 `package` 计入，并使用精确 `/cores/isos/layers/process/groups/component/nodes/<id>/settings/skill_libraries/<index>/package` 指针。IsOS 对每项重新取得 P01 `VerifiedPackage`，要求发布 `kind:"skill"`，检查 payload 根、文件身份与 SHA-256；变更的链接 payload 失败。只有明列的库被选中。EOS 随后检查所有库中重复的技能身份。旧 `1.0.0` 图和 `eos.control.skill@v1.0` 不因此获得执行行为。
 
+对于选中的技能发布，IsOS 还检查打开的库文件、P01 `receipt.json` 与 `release.json`，以及已验证 payload 树中的每个普通文件。每个文件都必须由 IsOS 的有效 UID 拥有，且 group/other 均不可写（`mode & 0o022 == 0`）。选中库另需满足 1–64 MiB 限制；元数据与 payload 文件沿用 P01/EOS 大小限制。不安全文件在 Apply 发布或 Run/Restart 停止旧进程前失败；EOS 暂存前重复相同的所有者与权限检查。即使未选中的 payload 文件可被其他用户写入，整个技能包也会被拒绝。
+
 G06 catalog 在 `isos.process.component@v0.1` 上以新增的 `data_type:"object_array"`、`min_items:0`、`max_items:16` 和 JSON Schema 对象 `items_schema` 如实描述该字段。item schema 为 `type:"object"`、`additionalProperties:false`，必需 `package` 与 `library`；`package` 也是不允许多余字段且需要字符串 `id`、`version` 的对象；`library` 是 1–256 字符的字符串。EOS registry 只接受有界的本地 schema 子集（`type`、`properties`、`required`、`additionalProperties`、`minLength`、`maxLength`、`pattern`），最多 8 KiB、深度 3，拒绝 `$ref` 与未知关键字。IsOS 进一步检查字节/路径、精确 owner 节点和 P01 pin。无新字段时，旧 setting metadata 序列化不变；`@v1.1` catalog 和旧图不变。下游 U01 表单获得真实的 object-array 描述，而非伪装成字符串。实现还需扩展 IsOS `ProcessSettings` 和 G06 聚合 catalog 适配器。
 
 IsOS 拥有并发布同时含已有 `env_from` 和新 `skill_libraries` 的 `@v0.1` component 描述符，使用 EOS 新增的通用 `SettingType::ObjectArray` 支持。历史 EOS `@v1.1` catalog 描述符只是兼容输入，不拥有新的 IsOS 类型。旧 EOS 的 fallback clone 仅能为无技能选择的图提供 `env_from`，不得合成 `skill_libraries` 或准入非空选择。P05 仍检查选中 runtime 程序的精确 `host-skill-abi-v2` feature。
