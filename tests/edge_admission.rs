@@ -26,6 +26,13 @@ fn fixed_command_qos() -> Value {
     .unwrap()
 }
 
+fn cross_core_guard_request() -> Value {
+    serde_json::from_str(include_str!(
+        "fixtures/edge_admission/cross_core_guard_request.json"
+    ))
+    .unwrap()
+}
+
 fn camera_input(graph: &mut Value) -> &mut Value {
     &mut graph["cores"]["eos"]["layers"]["interface"]["groups"]["gate"]["nodes"]["preview"]["inputs"]
         ["frame"]
@@ -80,6 +87,24 @@ fn frozen_command_route_rejects_explicit_qos() {
         error.path,
         "/cores/eos/layers/hardware/groups/base/nodes/drive/inputs/command/0/priority"
     );
+}
+
+#[test]
+fn frozen_cross_core_guard_request_has_exact_bridge_diagnostic() {
+    let error = admit(&cross_core_guard_request(), &catalog()).unwrap_err();
+    assert_eq!(error.code, "edge_bridge_undeclared");
+    assert_eq!(
+        error.path,
+        "/cores/eos/layers/dispatcher/groups/control/nodes/command/inputs/request"
+    );
+    assert_eq!(error.source.as_deref(), Some("egia/common/process/guard"));
+    assert_eq!(
+        error.target.as_deref(),
+        Some("eos/dispatcher/control/command")
+    );
+    assert_eq!(error.input.as_deref(), Some("request"));
+    assert_eq!(error.source_data_type.as_deref(), Some("control_request"));
+    assert_eq!(error.target_data_type.as_deref(), Some("control_request"));
 }
 
 #[test]
