@@ -11,7 +11,7 @@
   {"id":"R03-I10","operation":"restart","mutation":"loose_mode_or_wrong_uid","expected":"control_grant_unsafe_path_unchanged_active"},
   {"id":"R03-I11","operation":"restart","mutation":"truncated_grant_or_missing_newline","expected":"control_grant_invalid_file_unchanged_active"},
   {"id":"R03-I12","operation":"restart","mutation":"verifier_run_revision_or_digest_changed","expected":"control_grant_mismatch_unchanged_active"},
-  {"id":"R03-I13","operation":"restart","mutation":"selected_eos_spec_missing_at_launch","expected":"control_grant_delivery_failed_unchanged_active"},
+  {"id":"R03-I13","operation":"restart","mutation":"required_eos_omitted_from_candidate_plan_before_stop","expected":"control_grant_delivery_failed_unchanged_active"},
   {"id":"R03-I14","operation":"restart","mutation":"test_random_source_failure","expected":"control_grant_issue_failed_unchanged_active"},
   {"id":"R03-I15","operation":"run","mutation":"authored_or_inherited_reserved_env","expected":"owner_values_only_no_leak_to_other_child"},
   {"id":"R03-I16","operation":"restart","mutation":"grant_preflight_failure_and_log_inspection","expected":"manager_session_preflight_event_previous_current_run_unchanged"},
@@ -23,5 +23,5 @@
   {"id":"R03-I22","operation":"restart","mutation":"zero_point_one_g03_or_missing_v2_selection","expected":"prestop_rejection_unchanged_active"},
   {"id":"R03-I23","operation":"restart","mutation":"authored_run_id_flag","expected":"control_grant_reserved_arg_exact_pointer_unchanged_active"},
   {"id":"R03-I24","operation":"restart","mutation":"authored_run_id_equals_flag","expected":"control_grant_reserved_arg_exact_pointer_unchanged_active"},
-  {"id":"R03-I25","operation":"restart","mutation":"candidate_child_failure_after_deployment_starting","expected":"candidate_run_terminal_failure_event"}
+  {"id":"R03-I25","operation":"restart","mutation":"selected_grant_injection_failure_after_deployment_starting","expected":"candidate_run_terminal_failure_distinct_recovery"}
 ]
