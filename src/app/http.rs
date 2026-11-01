@@ -3,7 +3,7 @@ use crate::{
     config::{self, Paths},
     core_setup, graph_compat, graph_migration, lock,
     log_store::LogStore,
-    node_options, node_sets, packages, process, readiness,
+    node_options, node_sets, packages, process, reader_features, readiness,
 };
 use anyhow::{Context, Result};
 use axum::{
@@ -95,11 +95,15 @@ fn admission_err(error: &anyhow::Error) -> (StatusCode, Json<Value>) {
 fn admission_diagnostic(error: &anyhow::Error) -> Value {
     error
         .chain()
-        .find_map(|cause| cause.downcast_ref::<packages::PackageFailure>())
-        .map_or_else(
-            || json!({"path":"/","code":"invalid_graph","message":error.to_string()}),
-            packages::PackageFailure::diagnostic,
-        )
+        .find_map(|cause| cause.downcast_ref::<graph_compat::Diagnostic>())
+        .map(|diagnostic| json!(diagnostic))
+        .or_else(|| {
+            error
+                .chain()
+                .find_map(|cause| cause.downcast_ref::<packages::PackageFailure>())
+                .map(packages::PackageFailure::diagnostic)
+        })
+        .unwrap_or_else(|| json!({"path":"/","code":"invalid_graph","message":error.to_string()}))
 }
 fn node_option_err(error: &anyhow::Error) -> (StatusCode, Json<Value>) {
     if let Some(diagnostic) = error
@@ -531,11 +535,18 @@ async fn validate_node_graph(
         .map(|catalog| edge_diagnostics(&edit.graph, &catalog))
         .unwrap_or_default();
     let diagnostics: Vec<Value> = if edge_diagnostics.is_empty() {
-        process::validate_value(&app.paths, &edit.graph)
-            .err()
-            .map(|error| admission_diagnostic(&error))
-            .into_iter()
-            .collect()
+        (|| -> Result<()> {
+            process::validate_value(&app.paths, &edit.graph)?;
+            let specs =
+                process::project_with_packages(&app.paths, &serde_json::to_string(&edit.graph)?)?;
+            let catalog = process::catalog_for_graph(&app.paths, &edit.graph)?;
+            reader_features::check(&app.paths, &edit.graph, &specs, &catalog)?;
+            Ok(())
+        })()
+        .err()
+        .map(|error| admission_diagnostic(&error))
+        .into_iter()
+        .collect()
     } else {
         edge_diagnostics
     };
@@ -611,6 +622,14 @@ async fn apply_node_graph(
                 if graph_compat::changed_legacy_diagnostic(&saved, &graph).is_none() {
                     process::validate_value(&app.paths, &saved.value)
                         .map_err(|error| admission_err(&error))?;
+                    let source = serde_json::to_string(&saved.value)
+                        .map_err(|error| admission_err(&error.into()))?;
+                    let specs = process::project_with_packages(&app.paths, &source)
+                        .map_err(|error| admission_err(&error))?;
+                    let catalog = process::catalog_for_graph(&app.paths, &saved.value)
+                        .map_err(|error| admission_err(&error))?;
+                    reader_features::check(&app.paths, &saved.value, &specs, &catalog)
+                        .map_err(|error| admission_err(&error.into()))?;
                     let rendered = core_setup::render_graph(
                         &app.paths,
                         &app.deployment,
@@ -676,6 +695,13 @@ async fn apply_node_graph(
         ));
     }
     process::validate_value(&app.paths, &graph).map_err(|error| admission_err(&error))?;
+    let source = serde_json::to_string(&graph).map_err(|error| admission_err(&error.into()))?;
+    let specs = process::project_with_packages(&app.paths, &source)
+        .map_err(|error| admission_err(&error))?;
+    let catalog =
+        process::catalog_for_graph(&app.paths, &graph).map_err(|error| admission_err(&error))?;
+    reader_features::check(&app.paths, &graph, &specs, &catalog)
+        .map_err(|error| admission_err(&error.into()))?;
     let bytes = serde_json::to_vec_pretty(&graph)
         .map_err(|error| err(StatusCode::UNPROCESSABLE_ENTITY, error))?;
     let next_revision = revision(&bytes);
@@ -692,6 +718,8 @@ async fn apply_node_graph(
                 "data":{"diagnostics":[diagnostic]},"error":message})),
         ));
     }
+    reader_features::check(&app.paths, &graph, &specs, &catalog)
+        .map_err(|error| admission_err(&error.into()))?;
     let path = app.paths.node_graph_path(&app.deployment);
     let previous = fs::read(&path).ok();
     if let Some(bytes) = &previous {

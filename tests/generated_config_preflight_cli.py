@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -97,6 +98,10 @@ class CleanHome:
         binary_dir.mkdir(parents=True)
         component.mkdir(parents=True)
         factory.mkdir(parents=True)
+        (prefix / "pyproject.toml").write_text("[project]\nname='egia-fixture'\nversion='0.1.0'\n")
+        module = prefix / "src/egia"
+        module.mkdir(parents=True)
+        (module / "__init__.py").write_text("# verified fixture module\n")
         for relative in (
             "egia.toml", "modes.toml", "profiles/isos.toml", "models.toml",
             "prompts.toml", "missions.toml", "safety/gate.toml", "opt/sandbox.toml",
@@ -118,7 +123,10 @@ if request["op"] == "identity":
         "core": "egia", "graph_version": "1.0.0", "node_type_version": "1.0",
         "product_version": "0.1.0", "setup_schema_version": 1,
         "supported_graph_versions": ["1.0.0", "0.1.0"],
-        "supported_node_type_versions": ["1.0", "0.1"],
+        "supported_node_type_versions": ["1.0"],
+        "supported_node_types": ["egia.common.context@v1.0", "egia.common.guard@v1.0",
+                                 "egia.common.planner@v1.0", "egia.common.source@v1.0"],
+        "features": ["setup-v1", "catalog", "graph-0.1-reader"],
     }
 elif request["op"] == "render":
     reply["files"] = [
@@ -134,9 +142,10 @@ print(json.dumps(reply))
 """)
         adapter.chmod(0o700)
         executable = binary_dir / "egia"
-        executable.write_text("#!/bin/sh\nexit 0\n")
+        executable.write_text("#!/bin/sh\nif [ \"$1\" = --capabilities ]; then printf '%s\\n' '{\"binary\":\"egia\",\"product_version\":\"0.1.0\",\"features\":[\"managed-config-v1\",\"eos-gateway-client-v2\"]}'; exit 0; fi\nexit 0\n")
         executable.chmod(0o700)
         self.env["ISOS_EGIA_BIN_DIR"] = str(binary_dir)
+        self.env["EGIA_PYTHON"] = str(Path(sys.executable).resolve())
         self.env["ISOS_EGIA_DEFAULTS_DIR"] = str(component)
         self.env["ISOS_EGIA_FACTORY_DEFAULTS_DIR"] = str(factory)
         self.env.pop("ISLAND_PREFIX", None)
@@ -330,7 +339,7 @@ class GeneratedConfigReplay(unittest.TestCase):
         default_manifest = (default_leaf / "manifest.json").read_bytes()
 
         executable = self.case.root / "egia-install/bin/egia"
-        executable.write_text("#!/bin/sh\n# changed verified executable\nexit 0\n")
+        executable.write_text("#!/bin/sh\n# changed verified executable\nif [ \"$1\" = --capabilities ]; then printf '%s\\n' '{\"binary\":\"egia\",\"product_version\":\"0.1.0\",\"features\":[\"managed-config-v1\",\"eos-gateway-client-v2\"]}'; exit 0; fi\nexit 0\n")
         status, reply = self.case.http_apply(json.loads(graph_bytes))
         self.assertEqual(status, 200, reply)
         binary_revision, binary_generation, binary_leaf = self.case.selected()
@@ -558,7 +567,7 @@ class GeneratedConfigReplay(unittest.TestCase):
     def test_later_child_missing_secret_keeps_active_pids(self):
         self.case.seed_egia_distribution()
         executable = self.case.root / "egia-install/bin/egia"
-        executable.write_text("#!/bin/sh\nsleep 60\n")
+        executable.write_text("#!/bin/sh\nif [ \"$1\" = --capabilities ]; then printf '%s\\n' '{\"binary\":\"egia\",\"product_version\":\"0.1.0\",\"features\":[\"managed-config-v1\",\"eos-gateway-client-v2\"]}'; exit 0; fi\nsleep 60\n")
         self.case.apply()
         self.case.start_server()
         status, reply = self.case.control("run")

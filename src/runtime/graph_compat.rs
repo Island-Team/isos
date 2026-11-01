@@ -79,7 +79,7 @@ pub struct Diagnostic {
     pub code: &'static str,
     pub message: String,
     #[serde(flatten)]
-    pub context: BTreeMap<String, String>,
+    pub context: BTreeMap<String, Value>,
 }
 
 impl std::fmt::Display for Diagnostic {

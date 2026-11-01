@@ -361,7 +361,7 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
     if let Some(paths) = paths {
         mujoco_catalog::validate_graph(paths, &value)?;
     }
-    let graph: Graph = serde_json::from_value(value)?;
+    let graph: Graph = serde_json::from_value(value.clone())?;
     ensure!(
         matches!(graph.version.as_str(), "1.0.0" | "0.1.0"),
         "graph version must be 1.0.0 or 0.1.0"
@@ -622,6 +622,9 @@ fn project_inner(paths: Option<&Paths>, source: &str) -> Result<Vec<ProcessSpec>
                                 std::iter::once(executable.to_string_lossy().into_owned())
                                     .chain(args)
                                     .collect();
+                            settings
+                                .env
+                                .extend(crate::generated_v2::egia_launch_env(&value)?);
                         }
                         for dependency in &mut settings.depends_on {
                             *dependency = canonical_node_path(dependency);

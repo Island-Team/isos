@@ -1,6 +1,6 @@
 use crate::foreground::INTERRUPTED;
 use crate::{
-    config, core_setup, graph_compat, graph_migration, http, log_store, preflight, process,
+    config, core_setup, graph_compat, graph_migration, http, log_store, process, reader_features,
     services, starter,
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -74,19 +74,26 @@ fn preflight_packages(
     source: &str,
     revision: &str,
 ) -> Result<Vec<process::ProcessSpec>> {
+    let graph: Value = serde_json::from_str(source)?;
+    let selected = if graph["version"] == "0.1.0" {
+        Some(crate::generated_v2::selected_root(
+            paths, name, &graph, revision,
+        )?)
+    } else {
+        None
+    };
+    reader_features::check_setup_basics(paths, &graph)?;
     let mut specs = process::project_with_packages(paths, source).inspect_err(|error| {
         log_package_load_failure(paths, name, error);
     })?;
     core_setup::verify_launch_inputs(paths, name)?;
-    let graph: Value = serde_json::from_str(source)?;
-    if graph["version"] == "0.1.0" {
-        let selected = crate::generated_v2::selected_root(paths, name, &graph, revision)?;
+    if let Some(selected) = selected {
         let generated = selected.join("eos/graph.json");
         process::use_generated_eos_profile(&mut specs, &generated)?;
         process::use_generated_egia_config(&mut specs, &selected.join("egia"))?;
-        preflight::verify_new_graph_readers(&specs)?;
     }
-    preflight::verify_processes(paths, &specs)?;
+    let catalog = process::catalog_for_graph(paths, &graph)?;
+    reader_features::check(paths, &graph, &specs, &catalog)?;
     Ok(specs)
 }
 
@@ -106,6 +113,19 @@ fn validate_saved_graph(paths: &config::Paths, name: &str, source: &str) -> Resu
         graph_compat::admit_legacy_mapped(&saved.value, process::catalog().ok().as_ref())?;
         process::validate_full_graph(&paths.node_graph_path(name))
     }
+}
+
+fn verify_selected_before_reader(
+    paths: &config::Paths,
+    name: &str,
+    source: &str,
+    revision: &str,
+) -> Result<()> {
+    let saved = graph_compat::parse(source.as_bytes())?;
+    if saved.value["version"] == "0.1.0" {
+        crate::generated_v2::selected_root(paths, name, &saved.value, revision)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -320,7 +340,6 @@ pub(crate) fn api_call(
         "deployment_restart" => {
             let path = paths.node_graph_path(&name);
             let source = fs::read_to_string(&path)?;
-            validate_saved_graph(paths, &name, &source)?;
             let revision = graph_compat::revision(source.as_bytes());
             if let Some(expected) = request.revision.as_deref() {
                 ensure!(
@@ -328,6 +347,8 @@ pub(crate) fn api_call(
                     "saved graph revision changed; reload before restart"
                 );
             }
+            verify_selected_before_reader(paths, &name, &source, &revision)?;
+            validate_saved_graph(paths, &name, &source)?;
             let specs = preflight_packages(paths, &name, &source, &revision)?;
             core_setup::prepare_run(paths, &name, &revision)?;
             let plan = crate::generated_v2::secret_plan(&specs)?;
@@ -342,7 +363,6 @@ pub(crate) fn api_call(
         "deployment_start" => {
             let path = paths.node_graph_path(&name);
             let source = fs::read_to_string(&path)?;
-            validate_saved_graph(paths, &name, &source)?;
             let revision = graph_compat::revision(source.as_bytes());
             if let Some(expected) = request.revision.as_deref() {
                 ensure!(
@@ -350,6 +370,8 @@ pub(crate) fn api_call(
                     "saved graph revision changed; reload before run"
                 );
             }
+            verify_selected_before_reader(paths, &name, &source, &revision)?;
+            validate_saved_graph(paths, &name, &source)?;
             let specs = preflight_packages(paths, &name, &source, &revision)?;
             core_setup::prepare_run(paths, &name, &revision)?;
             let plan = crate::generated_v2::secret_plan(&specs)?;

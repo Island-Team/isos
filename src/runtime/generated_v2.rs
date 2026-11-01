@@ -183,6 +183,24 @@ struct SecretRef {
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
+struct EgiaCodeEntry {
+    root: String,
+    path: String,
+    sha256: String,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct EgiaChain {
+    prefix: String,
+    mode: String,
+    interpreter: String,
+    interpreter_target: String,
+    interpreter_sha256: String,
+    binding: BTreeMap<String, String>,
+    code: Vec<EgiaCodeEntry>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 struct Manifest {
     schema_version: u32,
     revision: String,
@@ -193,6 +211,8 @@ struct Manifest {
     default_roots: Option<DefaultRoots>,
     defaults: Vec<DefaultEntry>,
     secret_refs: Vec<SecretRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    egia_chain: Option<EgiaChain>,
 }
 
 fn checked_relative(path: &Path) -> std::result::Result<String, Diagnostic> {
@@ -455,6 +475,204 @@ pub fn check_defaults(graph: &Value) -> Result<(), Diagnostic> {
     defaults(graph).map(|_| ())
 }
 
+fn egia_enabled(graph: &Value) -> bool {
+    graph
+        .pointer("/cores/isos/layers/process/groups/component/nodes/egia")
+        .is_some_and(|node| node["enabled"] != false)
+}
+
+fn resolve_interpreter(prefix: &Path, source_mode: bool) -> Result<PathBuf, Diagnostic> {
+    let selected = std::env::var_os("EGIA_PYTHON")
+        .or_else(|| std::env::var_os("ISLAND_PYTHON"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            if source_mode {
+                prefix.join(".venv/bin/python")
+            } else {
+                PathBuf::from("python3.12")
+            }
+        });
+    let absolute = if selected.is_absolute() {
+        selected
+    } else if selected.components().count() == 1 {
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+            .map(|dir| dir.join(&selected))
+            .find(|candidate| candidate.is_file())
+            .ok_or_else(|| missing("binary"))?
+    } else {
+        return Err(unsafe_path("binary"));
+    };
+    let meta = fs::metadata(&absolute).map_err(|_| missing("binary"))?;
+    if !meta.is_file() || meta.permissions().mode() & 0o111 == 0 {
+        return Err(unsafe_path("binary"));
+    }
+    Ok(absolute)
+}
+
+fn code_entries(root: &Path) -> Result<Vec<EgiaCodeEntry>, Diagnostic> {
+    if !root.is_absolute() || !root.is_dir() {
+        return Err(missing("binary"));
+    }
+    for ancestor in root.ancestors() {
+        if fs::symlink_metadata(ancestor).is_ok_and(|meta| meta.file_type().is_symlink()) {
+            return Err(unsafe_path("binary"));
+        }
+    }
+    let mut pending = vec![root.to_path_buf()];
+    let mut entries = Vec::new();
+    let mut total = 0usize;
+    while let Some(dir) = pending.pop() {
+        for child in fs::read_dir(&dir).map_err(|_| missing("binary"))? {
+            let child = child.map_err(|_| missing("binary"))?.path();
+            let meta = fs::symlink_metadata(&child).map_err(|_| missing("binary"))?;
+            if meta.file_type().is_symlink() {
+                return Err(unsafe_path("binary"));
+            }
+            if meta.file_type().is_dir() {
+                if child.file_name().is_some_and(|name| name == "__pycache__") {
+                    continue;
+                }
+                pending.push(child);
+                continue;
+            }
+            if !meta.file_type().is_file() {
+                return Err(unsafe_path("binary"));
+            }
+            if child.extension().is_some_and(|ext| ext == "pyc") {
+                continue;
+            }
+            let bytes = fs::read(&child).map_err(|_| missing("binary"))?;
+            total += bytes.len();
+            if entries.len() >= 4096 || total > 64 * 1024 * 1024 {
+                return Err(unsafe_path("binary"));
+            }
+            let path = checked_relative(
+                child
+                    .strip_prefix(root)
+                    .map_err(|_| unsafe_path("binary"))?,
+            )?;
+            entries.push(EgiaCodeEntry {
+                root: root.to_string_lossy().into_owned(),
+                path,
+                sha256: digest(&bytes),
+            });
+        }
+    }
+    entries.sort_by(|a, b| (&a.root, &a.path).cmp(&(&b.root, &b.path)));
+    if entries.is_empty() {
+        return Err(missing("binary"));
+    }
+    Ok(entries)
+}
+
+fn capture_egia_chain(graph: &Value) -> Result<Option<EgiaChain>, Diagnostic> {
+    if !egia_enabled(graph) {
+        return Ok(None);
+    }
+    let bin = std::env::var_os("ISOS_EGIA_BIN_DIR")
+        .map(PathBuf::from)
+        .ok_or_else(|| missing("binary"))?;
+    if !bin.is_absolute() {
+        return Err(unsafe_path("binary"));
+    }
+    let prefix = std::env::var_os("ISLAND_PREFIX")
+        .map(PathBuf::from)
+        .or_else(|| bin.parent().map(Path::to_path_buf))
+        .ok_or_else(|| missing("binary"))?;
+    if !prefix.is_absolute() {
+        return Err(unsafe_path("binary"));
+    }
+    if fs::symlink_metadata(prefix.join("pyproject.toml"))
+        .is_ok_and(|meta| meta.file_type().is_symlink())
+    {
+        return Err(unsafe_path("binary"));
+    }
+    let source_mode = prefix.join("pyproject.toml").is_file() && prefix.join("src/egia").is_dir();
+    let portable_mode = prefix.join("share/contracts").is_dir() && prefix.join("libexec").is_dir();
+    let (mode, roots) = if source_mode {
+        let mut roots = vec![prefix.join("src/egia")];
+        if prefix.join("libexec").is_dir() {
+            roots.push(prefix.join("libexec"));
+        }
+        ("source", roots)
+    } else {
+        let mut roots = vec![prefix.join("lib/island/egia")];
+        if !portable_mode && prefix.join("libexec/island").is_dir() {
+            roots.push(prefix.join("libexec/island"));
+        } else if prefix.join("libexec").is_dir() {
+            roots.push(prefix.join("libexec"));
+        }
+        ("installed", roots)
+    };
+    let interpreter = resolve_interpreter(&prefix, source_mode)?;
+    let mut code = Vec::new();
+    for root in roots {
+        code.extend(code_entries(&root)?);
+    }
+    code.sort_by(|a, b| (&a.root, &a.path).cmp(&(&b.root, &b.path)));
+    let mut binding = BTreeMap::new();
+    binding.insert(
+        "EGIA_PYTHON".into(),
+        interpreter.to_string_lossy().into_owned(),
+    );
+    binding.insert(
+        "ISLAND_PREFIX".into(),
+        prefix.to_string_lossy().into_owned(),
+    );
+    binding.insert("PYTHONPATH".into(), String::new());
+    binding.insert("PYTHONDONTWRITEBYTECODE".into(), "1".into());
+    if !source_mode {
+        binding.insert(
+            "ISLAND_LIB".into(),
+            prefix.join("lib/island").to_string_lossy().into_owned(),
+        );
+        binding.insert(
+            "ISLAND_LIBEXEC".into(),
+            prefix
+                .join(if portable_mode {
+                    "libexec"
+                } else {
+                    "libexec/island"
+                })
+                .to_string_lossy()
+                .into_owned(),
+        );
+    }
+    Ok(Some(EgiaChain {
+        prefix: prefix.to_string_lossy().into_owned(),
+        mode: mode.into(),
+        interpreter: interpreter.to_string_lossy().into_owned(),
+        interpreter_target: interpreter
+            .canonicalize()
+            .map_err(|_| missing("binary"))?
+            .to_string_lossy()
+            .into_owned(),
+        interpreter_sha256: digest(&fs::read(&interpreter).map_err(|_| missing("binary"))?),
+        binding,
+        code,
+    }))
+}
+
+/// Nonsecret, pinned environment handed to both the capability probe and child.
+pub fn egia_launch_env(graph: &Value) -> Result<BTreeMap<String, String>, Diagnostic> {
+    Ok(capture_egia_chain(graph)?.map_or_else(BTreeMap::new, |chain| chain.binding))
+}
+
+pub fn egia_chain_digest(graph: &Value) -> Result<String, Diagnostic> {
+    let chain = capture_egia_chain(graph)?.ok_or_else(|| missing("binary"))?;
+    let bin = std::env::var_os("ISOS_EGIA_BIN_DIR")
+        .map(PathBuf::from)
+        .ok_or_else(|| missing("binary"))?;
+    let mut launchers = BTreeMap::new();
+    for name in ["egia", "egia-config"] {
+        launchers.insert(name, digest(&inspect_regular(&bin.join(name), "binary")?));
+    }
+    Ok(digest(
+        &serde_json::to_vec(&serde_json::json!({"chain":chain,"launchers":launchers}))
+            .map_err(|_| mismatch())?,
+    ))
+}
+
 fn package_inventory(paths: &Paths, graph: &Value) -> Result<Vec<PackageEntry>, Diagnostic> {
     let handles = packages::verify_graph_packages(paths, graph).map_err(|_| missing("package"))?;
     let mut result = Vec::new();
@@ -677,6 +895,7 @@ fn inventory(
         default_roots: roots,
         defaults,
         secret_refs: secret_refs(graph)?,
+        egia_chain: capture_egia_chain(graph)?,
     };
     manifest.generation = generation(&manifest).map_err(|_| mismatch())?;
     Ok((manifest, files))
@@ -1042,6 +1261,7 @@ pub fn selected(
             }
             if manifest.packages != package_inventory(paths, graph)?
                 || manifest.secret_refs != secret_refs(graph)?
+                || manifest.egia_chain != capture_egia_chain(graph).map_err(|_| mismatch())?
             {
                 return Err(mismatch());
             }

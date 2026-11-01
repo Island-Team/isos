@@ -136,7 +136,7 @@ IsOS 在 `aether-profile setup --json` 或 `egia-config setup --json` 上发送 
 
 ## 支持版本身份
 
-setup 适配器 `identity` 保留 `core`、`product_version`、`setup_schema_version`，增加 `supported_graph_versions` 与 `supported_node_type_versions` 数组，表示可读取版本而不是单一写入版本。旧 `graph_version` 和 `node_type_version` 保留为兼容旧 IsOS 读取器的标量别名。Apply／Run 前 IsOS 对比图实际版本、每个注册类型 ID、精确包固定版本、API schema 和核心程序能力。不匹配时指出具体值及所有者，不猜测升级也不调用其他程序。`isos version check --json` 提供同样的机器可读原因。新写入器使用图 `0.1.0` 和新类型 `@v0.1`；读取器显式声明旧 `1.0.0` 和受支持 `@v1.*`。见[配置与日志契约](configuration_cn.md)。
+**P05 所选读取器预检：**setup 适配器 `identity` 保留 `core`、`product_version`、`setup_schema_version`，增加具权威性的 `supported_graph_versions`、`supported_node_type_versions`、精确内置 `supported_node_types` 和 `features` 数组。旧 `graph_version` 和 `node_type_version` 保留为标量别名。Apply／Run／Restart 前，IsOS 对比实际图字节、每个完整注册类型 ID、已验证包 pin 和各所选程序的必需特性。它报告精确不支持的值及支持集合，不猜测升级或调用另一个程序。`isos version check --json` 给出同样的结构化原因。数组回退、诊断及已验证升级建议见归属的 [P05 读取器特性契约](reader-features_cn.md)；[配置契约](configuration_cn.md)概述版本身份。
 
 ### G03 迁移路由
 

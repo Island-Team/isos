@@ -35,6 +35,8 @@ isos pkg node-sets
 
 若重启时新子进程启动失败，IsOS 会停止本次启动，并按先前的进程配置重新启动先前的运行中修订。若先前的子进程也无法恢复，状态会显示部署已降级及重启错误。
 
+**P05 读取器特性预检：**选择 EOS、可选 EGIA 构建及精确 MuJoCo 包后，运行 `isos version check --json` 并检查各启用核心的诊断，然后按已保存修订 Validate 和 Apply 草稿。Run／Restart 在替换子进程前重查选定图、程序身份、必需特性及 P04 生成版本。即使产品版本较新，缺失 `@v0.1` 类型、`mujoco-child-v2` 声明、EGIA runtime 的 `managed-config-v1`／`eos-gateway-client-v2` 声明或已验证包 pin 仍阻止准入。对 EGIA，先通过 `EGIA_PYTHON` 或 `ISLAND_PYTHON` 选定已有解释器和已安装模块树；不启动服务的能力探测不会创建虚拟环境或运行 `uv sync`。IsOS 记录解释器路径、解析后目标、摘要及代码清单，Restart 前重新核对。恢复兼容的所选构建，再对相同修订 Apply。只有存在与图精确匹配的已验证发行版时，`compatible_upgrade` 才不为 `null`。[P05 契约](../interfaces/reader-features_cn.md)规定诊断字段和停止前失败行为。
+
 ### 迁移已保存的旧图
 
 编辑已应用的 `1.0.0` 图之前，先从 Graph 或 `GET /api/isos/v1/node-graph` 读取保存修订号。整图已映射且安全时，还会显示只用于检查的 `legacy_projection`：旧类型 ID 保持不变，`mappings` 列出候选替代类型，`defaults` 标记仅供展示的默认值。应编辑原始 `graph` 并显式迁移；把投影当作更改图提交会被拒绝且不写入。未映射的旧 control 类型保持只读，并在 Run 之前报告精确的 `/node_type` 路径。预览会报告精确类型替换、完整的 `0.1.0` 建议图及阻塞原因，且不改变保存字节或运行中的子进程：

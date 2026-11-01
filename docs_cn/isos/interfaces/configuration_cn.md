@@ -2,7 +2,7 @@
 
 [English](../../../docs/isos/interfaces/configuration.md)
 
-**状态：** XDG／`ISOS_HOME` 目录、`config/isos.toml`、schema-1 本地 API、按来源轮转的日志和 `isos version check` 已实现。下文 P04 生成配置与启动预检已在 IsOS 实现。跨核心事件字段及受支持版本数组仍是 **0.x 目标**。当前字段见[本地 API](local-api_cn.md#本地运行配置)，操作顺序见[首次使用](../usage/get-started_cn.md)。
+**状态：** XDG／`ISOS_HOME` 目录、`config/isos.toml`、schema-1 本地 API、按来源轮转的日志和 `isos version check` 已实现。P04 生成配置与 P05 所选读取器预检已在 IsOS 实现。跨核心事件字段仍是 **0.x 目标**。当前字段见[本地 API](local-api_cn.md#本地运行配置)，操作顺序见[首次使用](../usage/get-started_cn.md)。
 
 ## 目录与优先级
 
@@ -32,6 +32,7 @@ IsOS 归属已保存字节的修订、生成版本选择、私有文件和子进
 | `selection.json` | JSON 对象／— | schema `2` 的按修订索引映射：`{"schema_version":2,"entries":{"<revision>":{"kind":"v2","generation":"<sha256>"}}}`。未标记的 P04 之前 G03 修订可显式记录为 `{"kind":"g03"}`。键是精确保存字节的 SHA-256。原子替换整个私有 `0600` 文件时保留当前及活动修订所需的旧条目。保存图摘要只选择自己的条目，其他修订的条目不能为它选择目录。 |
 | `v2/required/<revision>.json` | 不可变 JSON 标记／— | 每个成功经 P04 Apply 的 `0.1.0` 修订发布 `{"schema_version":1,"revision":"<sha256>"}`，权限 `0600`，并 fsync 父目录。它与 `selection.json` 分离，重复 Apply 不删除。标记存在时，选择记录缺失、格式错误、为 `g03` 或 v2 无效，都阻止 Run／Restart；不得退回 G03 仅修订快照。首次 Apply 中断后若存在有效 v2 选择却缺标记，恢复流程先在图锁下验证目录并补齐标记，再允许 Run。只有未标记且无 v2 条目的修订才能使用已验证 G03 路径。 |
 | `manifest.json` | JSON 对象／— | schema `2`，包含 `revision`、`generation`、已排序的 `files`、`launch_inputs`、`packages`、`default_roots`、`defaults` 与 `secret_refs`。每个文件条目包含相对 POSIX `path` 和小写 `sha256`；启动输入包含 `core`、`binary`、绝对 `path` 和 `sha256`；软件包含精确 `id`、`version` 及 `receipt_sha256`；未启用 EGIA 时 `default_roots` 为 `null`，启用时包含绝对的 `component` 和 `factory` 路径；默认文件包含 `source`（`component` 或 `factory`）、相对 `path` 和 `sha256`，未启用 EGIA 时为空数组。`secret_refs` 是排序后的 `{node_path,env_from}` 条目数组，未声明时为空。拒绝重复、未知、穿越或符号链接路径和字段。`files` 列出除 `manifest.json` 外末级目录的每个文件；不接受未列出的文件。清单及每个列出的普通文件为 `0700` 末级目录内的 `0600` 文件。 |
+| `manifest.json.egia_chain` | JSON 对象／— | 仅启用 EGIA 时存在。`prefix` 是所选发行版绝对根目录；`mode` 为 `source` 或 `installed`；`interpreter` 是保留虚拟环境符号链接语义的所选绝对可执行路径；`interpreter_target` 为解析后的绝对目标；`interpreter_sha256` 为目标文件摘要。`binding` 是探测和子进程共用的已排序非密钥环境映射（`EGIA_PYTHON`、`ISLAND_PREFIX`、清空继承值的 `PYTHONPATH`、`PYTHONDONTWRITEBYTECODE`，安装模式还含 `ISLAND_LIB`／`ISLAND_LIBEXEC`）。`code` 是有效源码或已安装代码根目录下普通 EGIA 模块文件的有序 `{root,path,sha256}` 数组。缺失、变化、符号链接或不安全代码根目录、超过 4096 个文件或 64 MiB 均拒绝；Run／Restart 前比较整个对象。该字段参与 `generation`，未启用 EGIA 时省略。 |
 | `eos/graph.json` | JSON 字节／— | 必需的 EOS 归属方渲染；Run／Restart 前其摘要和精确字节须与重新渲染一致。EOS 有效 `--profile` 指向这里；人工编辑图仍位于 `config/`。 |
 | `egia/` | TOML 字节／— | 启用 EGIA 进程时必需。先放入完整的已选已安装 EGIA `etc/egia` 默认目录，再用 EGIA 校验后渲染的 `egia/egia.toml`、`egia/modes.toml` 和 `egia/profiles/isos.toml` 精确替换。必需的有效文件为 `egia.toml`、`modes.toml`、`profiles/isos.toml`、`models.toml`、`prompts.toml`、`missions.toml`、`safety/gate.toml` 和 `opt/sandbox.toml`；其他声明过的普通默认文件也复制。拒绝缺失的必需文件、符号链接、特殊文件、冲突、逃逸引用和不受支持的源布局。启动时不得由未列出的工厂回退目录补齐缺失值。 |
 | `secret_refs` | 节点路径及子进程到管理器环境变量名称映射的数组／— | 部署条目只从目标组件 `settings.env_from` 导出；已有独立服务的 `env_from` 在本清单外遵循同样的 spawn 规则。两种名称均须符合 `[A-Za-z_][A-Za-z0-9_]*`。清单只存名称。停止任何活动子进程**之前**，为所有计划启动的子进程解析并检查每个必需值，放入私有、短生命周期启动计划；缺失或空值拒绝启动且不打印。仅在对应子进程 spawn 时传入其值，随后清除该子进程的副本。图、清单、日志、状态及诊断都不序列化值。原始图 `settings.env` 不解释为密钥引用机制。 |
@@ -59,7 +60,7 @@ P04 失败使用已有 schema-1 本地 API 封装：准入失败用 HTTP `422`�
 | 包发行清单 | `schema_version:4` | 分发格式；精确包版本另计。 |
 | MuJoCo 套接字协议 | `2.0.0` | 已有仿真器连接身份；EOS 与包必须一致。 |
 
-**目标算法：**不启动核心，先探测每个已启用核心的 setup `identity`；读取 `supported_graph_versions`、`supported_node_type_versions`、setup schema 与产品版本；与实际保存图和精确包贡献逐一比较。校验包收据／摘要及已编译适配器。`isos version check --json` 对每个不匹配项返回受支持列表和可执行操作。Apply 与 Run 针对当前字节和程序重复校验；包、图或程序变化使生成快照失效。不可把 `1.0.0` 图伪装为 `0.1.0` 以通过校验。当前 identity 只有 `graph_version` 与 `node_type_version` 单个字符串，数组是目标扩展。
+**P05 读取准入：**[读取器特性契约](reader-features_cn.md)规定精确的所选程序探测、完整类型与已验证包检查、必需特性映射、旧标量回退、结构化诊断及升级证据。Validate 和 Apply 检查草稿；Run 和 Restart 在替换子进程前检查保存字节及所选 P04 生成版本。包、图、程序或 EGIA 启动链变化使所选生成版本失效。安全的 `1.0.0` 图在显式迁移前保留原始字节。没有与图精确匹配的已验证发行版就不建议兼容升级。
 
 ## 目标统一 JSONL 事件
 
