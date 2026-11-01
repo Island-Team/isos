@@ -400,15 +400,7 @@ fn defaults(graph: &Value) -> Result<Defaults, Diagnostic> {
         .ok_or_else(|| missing("binary"))?;
     validate_factory_root(&factory, &prefix)?;
     let (mut component_entries, component_files) = walk_tree(&component, "component")?;
-    for required in REQUIRED_EGIA
-        .iter()
-        .copied()
-        .filter(|path| *path != "profiles/isos.toml")
-    {
-        if !component_entries.iter().any(|entry| entry.path == required) {
-            return Err(missing("defaults"));
-        }
-    }
+    require_component_defaults(&component_entries)?;
     let (factory_entries, _) = walk_tree(&factory, "factory")?;
     component_entries.extend(factory_entries);
     component_entries.sort_by(|a, b| (&a.source, &a.path).cmp(&(&b.source, &b.path)));
@@ -420,6 +412,19 @@ fn defaults(graph: &Value) -> Result<Defaults, Diagnostic> {
         component_entries,
         component_files,
     ))
+}
+
+fn require_component_defaults(entries: &[DefaultEntry]) -> Result<(), Diagnostic> {
+    for required in REQUIRED_EGIA
+        .iter()
+        .copied()
+        .filter(|path| *path != "profiles/isos.toml")
+    {
+        if !entries.iter().any(|entry| entry.path == required) {
+            return Err(missing("defaults"));
+        }
+    }
+    Ok(())
 }
 
 fn validate_factory_root(factory: &Path, prefix: &Path) -> Result<(), Diagnostic> {
@@ -553,6 +558,9 @@ fn effective_files(
     owner_files: &[(PathBuf, Vec<u8>)],
 ) -> Result<EffectiveFiles, Diagnostic> {
     let (roots, defaults, component) = defaults(graph)?;
+    if roots.is_some() {
+        require_egia_owner_overlays(owner_files)?;
+    }
     let mut files = BTreeMap::new();
     for (relative, bytes) in component {
         files.insert(PathBuf::from("egia").join(relative), bytes);
@@ -581,6 +589,22 @@ fn effective_files(
         }
     }
     Ok((files.into_iter().collect(), roots, defaults))
+}
+
+fn require_egia_owner_overlays(owner_files: &[(PathBuf, Vec<u8>)]) -> Result<(), Diagnostic> {
+    for required in [
+        "egia/egia.toml",
+        "egia/modes.toml",
+        "egia/profiles/isos.toml",
+    ] {
+        if !owner_files
+            .iter()
+            .any(|(path, _)| path == Path::new(required))
+        {
+            return Err(missing("render"));
+        }
+    }
+    Ok(())
 }
 
 fn inventory(
@@ -1356,6 +1380,67 @@ mod tests {
             (error.code, error.stage, error.path.as_str()),
             ("generated_invalid_default", "defaults", "")
         );
+    }
+
+    #[test]
+    fn each_required_egia_default_is_checked_before_render() {
+        let required: Vec<_> = REQUIRED_EGIA
+            .iter()
+            .copied()
+            .filter(|path| *path != "profiles/isos.toml")
+            .map(|path| DefaultEntry {
+                source: "component".into(),
+                path: path.into(),
+                sha256: digest(path.as_bytes()),
+            })
+            .collect();
+        require_component_defaults(&required).unwrap();
+        for omitted in ["prompts.toml", "missions.toml", "safety/gate.toml"] {
+            let subset: Vec<_> = required
+                .iter()
+                .filter(|entry| entry.path != omitted)
+                .cloned()
+                .collect();
+            let error = require_component_defaults(&subset).unwrap_err();
+            assert_eq!(
+                (error.code, error.stage, error.path.as_str()),
+                ("generated_missing_input", "defaults", ""),
+                "{omitted}"
+            );
+        }
+    }
+
+    #[test]
+    fn egia_isos_profile_must_come_from_owner_render() {
+        let complete = vec![
+            (PathBuf::from("egia/egia.toml"), b"mode = 'isos'\n".to_vec()),
+            (
+                PathBuf::from("egia/modes.toml"),
+                b"mode = 'isos'\n".to_vec(),
+            ),
+            (
+                PathBuf::from("egia/profiles/isos.toml"),
+                b"managed = true\n".to_vec(),
+            ),
+        ];
+        require_egia_owner_overlays(&complete).unwrap();
+        for omitted in [
+            "egia/egia.toml",
+            "egia/modes.toml",
+            "egia/profiles/isos.toml",
+        ] {
+            let incomplete: Vec<_> = complete
+                .iter()
+                .filter(|(path, _)| path != Path::new(omitted))
+                .cloned()
+                .collect();
+            let error = require_egia_owner_overlays(&incomplete).unwrap_err();
+            assert_eq!(
+                (error.code, error.stage, error.path.as_str()),
+                ("generated_missing_input", "render", ""),
+                "{omitted}"
+            );
+        }
     }
 
     #[test]
