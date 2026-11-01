@@ -109,6 +109,7 @@ class CleanHome:
         adapter = binary_dir / "egia-config"
         adapter.write_text("""#!/usr/bin/env python3
 import json
+import os
 import sys
 request = json.load(sys.stdin)
 reply = {"schema_version": 1, "ok": True, "diagnostics": [], "files": []}
@@ -125,6 +126,10 @@ elif request["op"] == "render":
         {"path": "egia/modes.toml", "content": "enabled = true\\n"},
         {"path": "egia/profiles/isos.toml", "content": "managed = true\\n"},
     ]
+    if os.getenv("P04_REJECT_RENDER") == "1":
+        reply["ok"] = False
+        reply["diagnostics"] = [{"path": "/cores/egia", "code": "stub_rejected",
+                                 "message": "rejected"}]
 print(json.dumps(reply))
 """)
         adapter.chmod(0o700)
@@ -151,10 +156,10 @@ print(json.dumps(reply))
                 time.sleep(0.05)
         raise AssertionError("IsOS API did not become ready")
 
-    def api(self, route, data=None):
+    def api(self, route, data=None, method=None):
         payload = None if data is None else json.dumps(data).encode()
         request = Request(f"http://127.0.0.1:{self.port}/api/isos/v1/{route}",
-                          data=payload, method="POST" if data is not None else "GET",
+                          data=payload, method=method or ("POST" if data is not None else "GET"),
                           headers={"Origin": f"http://127.0.0.1:{self.port}",
                                    "Content-Type": "application/json"})
         try:
@@ -168,6 +173,13 @@ print(json.dumps(reply))
             "schema_version": 1, "operation": operation,
             "revision": digest(self.graph_path.read_bytes()),
         })
+
+    def http_apply(self, graph):
+        return self.api("node-graph", {
+            "schema_version": 1,
+            "revision": digest(self.graph_path.read_bytes()),
+            "graph": graph,
+        }, method="PUT")
 
     def close(self):
         if self.server is not None:
@@ -325,6 +337,73 @@ class GeneratedConfigReplay(unittest.TestCase):
         self.assertTrue((binary_leaf / "manifest.json").is_file())
         self.assertEqual(self.case.graph_path.read_bytes(), graph_bytes)
 
+    def assert_uncertain_publication_boundary(self, boundary):
+        if boundary == "graph":
+            self.case.apply()
+        before = self.case.graph_path.read_bytes()
+        old_revision = digest(before)
+        graph = json.loads(before)
+        if boundary == "graph":
+            graph["cores"]["isos"]["layers"]["process"]["groups"]["component"]["nodes"]["eos"][
+                "description"] = "Changed EOS process for publish boundary"
+        self.case.env["ISOS_P04_TEST_FAIL_SYNC"] = boundary
+        self.case.env["ISOS_P04_TEST_FAIL_SYNC_DEPLOYMENT"] = "default"
+        self.case.start_server()
+        status, reply = self.case.http_apply(graph)
+        self.assertEqual(status, 500, reply)
+        first = reply["data"]["diagnostics"][0]
+        self.assertEqual((first["code"], first["path"], first["stage"]),
+                         ("generated_commit_uncertain", "", "publish"))
+        observed_revision = digest(self.case.graph_path.read_bytes())
+        if boundary == "graph":
+            self.assertTrue(observed_revision == old_revision
+                            or json.loads(self.case.graph_path.read_bytes()) == graph)
+        else:
+            self.assertEqual(observed_revision, old_revision)
+        self.case.close()
+        self.case.server = None
+        self.case.output = None
+        self.case.env.pop("ISOS_P04_TEST_FAIL_SYNC")
+        self.case.env.pop("ISOS_P04_TEST_FAIL_SYNC_DEPLOYMENT")
+        self.case.start_server()
+        status, reply = self.case.control("run")
+        self.assertEqual(status, 200, reply)
+        revision, _, leaf = self.case.selected()
+        self.assertEqual(revision, digest(self.case.graph_path.read_bytes()))
+        self.assertTrue((leaf / "manifest.json").is_file())
+
+    def test_selection_parent_sync_uncertain_recovers(self):
+        self.assert_uncertain_publication_boundary("selection")
+
+    def test_marker_parent_sync_uncertain_recovers(self):
+        self.assert_uncertain_publication_boundary("marker")
+
+    def test_graph_parent_sync_uncertain_recovers(self):
+        self.assert_uncertain_publication_boundary("graph")
+
+    def test_owner_render_rejection_after_apply_stays_typed_over_http(self):
+        self.case.seed_egia_distribution()
+        graph = json.loads(self.case.graph_path.read_text())
+        nodes = graph["cores"]["isos"]["layers"]["process"]["groups"]["component"]["nodes"]
+        nodes["egia"] = {
+            "id": "egia", "node_type": "isos.process.component@v0.1",
+            "label": "EGIA agent", "description": "Managed agent for typed rejection",
+            "capabilities": ["process"],
+            "settings": {"role": "egia", "args": [],
+                         "depends_on": ["cores/isos/layers/process/groups/component/nodes/eos"]},
+        }
+        self.case.apply(graph)
+        graph_before = self.case.graph_path.read_bytes()
+        self.case.env["P04_REJECT_RENDER"] = "1"
+        self.case.start_server()
+        status, reply = self.case.control("run")
+        self.assertEqual(status, 422, reply)
+        first = reply["data"]["diagnostics"][0]
+        self.assertEqual((first["code"], first["path"], first["stage"]),
+                         ("generated_owner_rejected", "/cores/egia", "render"))
+        self.assertEqual(set(first), {"code", "path", "message", "stage"})
+        self.assertEqual(self.case.graph_path.read_bytes(), graph_before)
+
     def test_generated_file_tamper_rejected_before_run(self):
         self.case.apply()
         before = self.case.graph_path.read_bytes()
@@ -334,6 +413,31 @@ class GeneratedConfigReplay(unittest.TestCase):
         self.case.start_server()
         self.assert_failure("manifest_file_tamper")
         self.assertEqual(self.case.graph_path.read_bytes(), before)
+
+    def test_symlinked_revision_parent_cannot_replace_active_child(self):
+        self.case.apply()
+        self.case.start_server()
+        status, reply = self.case.control("run")
+        self.assertEqual(status, 200, reply)
+        status, reply = self.case.api("process-status")
+        self.assertEqual(status, 200, reply)
+        active = reply["data"]
+        pids = {process["id"]: process["pid"] for process in active["processes"]}
+        self.assertTrue(pids)
+        _, _, leaf = self.case.selected()
+        revision_dir = leaf.parent
+        backup = revision_dir.with_name(revision_dir.name + ".original")
+        revision_dir.rename(backup)
+        revision_dir.symlink_to(backup.name, target_is_directory=True)
+        status, rejected = self.case.control("restart")
+        self.assertEqual(status, 422, rejected)
+        first = rejected["data"]["diagnostics"][0]
+        self.assertEqual((first["code"], first["path"], first["stage"]),
+                         ("generated_unsafe_path", "", "snapshot"))
+        status, reply = self.case.api("process-status")
+        self.assertEqual(status, 200, reply)
+        self.assertEqual({process["id"]: process["pid"] for process in reply["data"]["processes"]},
+                         pids)
 
     def test_restart_tamper_keeps_active_children(self):
         self.case.apply()
