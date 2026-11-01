@@ -1,0 +1,39 @@
+{
+  "graph_version": "0.1.0",
+  "package": { "id": "island/mujoco-sim", "version": "0.1.1" },
+  "process_type": {
+    "id": "eos.process.mujoco@v0.1",
+    "core": "eos",
+    "layer": "process",
+    "group": "mujoco",
+    "scene_selector": {
+      "provider": "package",
+      "resource": "scene",
+      "package_from": "node.package"
+    },
+    "outputs": ["status", "health"]
+  },
+  "legacy_process_type": "eos.process.mujoco@v1.0",
+  "node_set": {
+    "id": "sim-hardware",
+    "parameters": {
+      "scene": "pick-place",
+      "camera_device": "cam-0",
+      "base_device": "base-0",
+      "manipulator_device": "arm-0",
+      "socket": null
+    },
+    "types": [
+      "eos.process.mujoco@v0.1",
+      "eos.hardware.camera@v0.1",
+      "eos.hardware.base@v0.1",
+      "eos.hardware.manipulator@v0.1",
+      "eos.dispatcher.primitive_base@v0.1",
+      "eos.dispatcher.primitive_manipulator@v0.1",
+      "eos.interface.camera_gate@v0.1"
+    ],
+    "requires_existing_type": "eos.dispatcher.control@v0.1",
+    "omitted_legacy_type": "isos.ui.vision@v1.0",
+    "adapter_family": "mujoco-v2"
+  }
+}

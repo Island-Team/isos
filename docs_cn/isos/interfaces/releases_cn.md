@@ -47,7 +47,7 @@ activation.files 可指定 TOML 模板的 source 和 destination。模板里的 
 
 v4 发行清单继续作为分发封装。其 `schema_version`、`id`、`kind`、`version`、`source_commit`、`source_url`、`release_url`、`contracts`、`assets` 与可选 `activation` 保持上文含义；`1.0.1` 示例是历史示例，而非本次发行目标。获批注册表条目提供元数据和资源 URL；IsOS 下载精确资源，验证主机平台选择、长度与 SHA-256，只解压安全的普通路径，并写入收据；随后把贡献类型／数据／适配器声明与精确包版本一起快照。节点集合只是模板；必须合成草稿，再通过修订检查 Apply。包不能仅凭贡献节点就获得任意命令执行或执行器路由权限。
 
-目标包描述文件增加可选资源索引，供设置选择器使用；MuJoCo 首先沿用 `backend-v2.json` 中已有场景和设备 ID。未来资源索引遵循下表，在已验证包目录内检查文件。描述文件名是包兼容身份；文档文件名清理不直接改名。
+MuJoCo P02 包描述文件使用精确的 `catalog_version:"0.1.0"` 判别字段、场景 profile／SHA-256 和完整设备目录。IsOS 的[MuJoCo 准入契约](mujoco-catalog_cn.md)定义兼容的历史结构、所选场景／设备检查及稳定诊断；[跨归属方夹具](../../../tests/fixtures/scene_catalog/README.md)固定软件包归属方的值。未来资源索引遵循下表，并在已验证包目录内检查文件。描述文件名仍是包兼容身份；文档文件名清理不直接改名。
 
 | 资源字段 | JSON 类型／单位 | 用途和所有者 | 默认值与校验 | 兼容 |
 | --- | --- | --- | --- | --- |

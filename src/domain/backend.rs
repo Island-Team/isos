@@ -1,6 +1,6 @@
 //! Resolve an installed Aether backend bundle without executing package code.
 
-use crate::{config::Paths, packages};
+use crate::{config::Paths, mujoco_catalog, packages};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -14,11 +14,15 @@ use std::{
 #[serde(deny_unknown_fields)]
 pub struct BackendDescriptor {
     pub schema_version: String,
+    #[serde(default)]
+    pub catalog_version: Option<String>,
     pub package: PackageIdentity,
     pub entrypoint: String,
     pub protocol: String,
     pub scenes: Vec<Scene>,
     pub devices: BTreeMap<String, String>,
+    #[serde(default)]
+    pub device_catalog: Option<serde_json::Value>,
     pub runtime: RuntimeRequirement,
 }
 
@@ -34,6 +38,24 @@ pub struct PackageIdentity {
 pub struct Scene {
     pub id: String,
     pub path: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub profile: Option<String>,
+    #[serde(default)]
+    pub sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeviceEntry {
+    pub kind: String,
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    pub scene_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -161,6 +183,8 @@ pub fn resolve(
         "backend descriptor exceeds 64 KiB"
     );
     let descriptor: BackendDescriptor = serde_json::from_slice(&descriptor_bytes)?;
+    mujoco_catalog::inspect(&root, id, version)
+        .map_err(|issue| issue.into_error(id, version, ""))?;
     ensure!(
         descriptor.schema_version == "2.0.0"
             && descriptor.package.id == id
@@ -256,43 +280,54 @@ pub fn installed(paths: &Paths) -> Vec<serde_json::Value> {
             .filter(|r| r.id == "island/mujoco-sim" && r.version == "0.1.1")
         {
             let verified = packages::verify(paths, &receipt.id, &receipt.version);
-            let root = verified
+            let catalog_result = verified.as_ref().ok().map(mujoco_catalog::inspect_verified);
+            let catalog = catalog_result
                 .as_ref()
-                .map(|package| package.root.clone())
+                .and_then(|result| result.as_ref().ok());
+            let scene_catalog: Vec<_> = catalog.as_ref().filter(|catalog| catalog.mode == mujoco_catalog::Mode::Target)
+                .map(|catalog| catalog.descriptor.scenes.iter().map(|scene| serde_json::json!({
+                    "id":scene.id,"label":scene.label,"description":scene.description,"profile":scene.profile
+                })).collect()).unwrap_or_default();
+            let device_catalog = catalog
+                .as_ref()
+                .and_then(|catalog| mujoco_catalog::device_entries(catalog))
+                .map(|entries| serde_json::to_value(entries).unwrap_or_default())
                 .unwrap_or_default();
-            let descriptor = fs::read(root.join("backend-v2.json"))
-                .ok()
-                .and_then(|bytes| serde_json::from_slice::<BackendDescriptor>(&bytes).ok());
-            let scenes: Vec<_> = descriptor
-                .as_ref()
-                .map(|d| d.scenes.iter().map(|scene| scene.id.clone()).collect())
+            let scenes: Vec<_> = catalog
+                .map(|catalog| {
+                    catalog
+                        .descriptor
+                        .scenes
+                        .iter()
+                        .map(|scene| scene.id.clone())
+                        .collect()
+                })
                 .unwrap_or_default();
-            let devices: Vec<_> = descriptor
-                .as_ref()
-                .map(|d| d.devices.values().cloned().collect())
+            let devices: Vec<_> = catalog
+                .map(|catalog| catalog.descriptor.devices.values().cloned().collect())
                 .unwrap_or_default();
             let issues: Vec<String> = if let Err(error) = &verified {
                 vec![error.to_string()]
-            } else if let Some(scene) = scenes.first() {
-                resolve(
-                    paths,
-                    &receipt.id,
-                    &receipt.version,
-                    scene,
-                    &BTreeMap::new(),
-                )
-                .err()
-                .map(|error| vec![error.to_string()])
-                .unwrap_or_default()
+            } else if let Some(Err(issue)) = &catalog_result {
+                vec![issue.code.to_owned()]
+            } else if let Some(catalog) = catalog {
+                mujoco_catalog::check_library(catalog, None)
+                    .err()
+                    .map(|issue| vec![issue.code.to_owned()])
+                    .unwrap_or_default()
             } else {
-                vec!["backend-v2.json is missing or has no scenes".into()]
+                vec!["mujoco_catalog_incomplete".into()]
             };
             let linked = verified
                 .as_ref()
                 .map_or(receipt.local_link.is_some(), |package| {
                     package.receipt.local_link.is_some()
                 });
-            rows.push(serde_json::json!({"id":receipt.id,"version":receipt.version,"linked":linked,"scenes":scenes,"devices":devices,"ready":issues.is_empty(),"issues":issues}));
+            rows.push(
+                serde_json::json!({"id":receipt.id,"version":receipt.version,"linked":linked,
+                "scenes":scenes,"devices":devices,"scene_catalog":scene_catalog,
+                "device_catalog":device_catalog,"ready":issues.is_empty(),"issues":issues}),
+            );
         }
     }
     rows

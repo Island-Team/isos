@@ -16,7 +16,7 @@ isos
 
 新的 `0.1.0` 草稿在 Graph 中显示保存修订号。先 Validate，再用该修订号 Apply。目标图文件不存在时，首次 API PUT 须显式携带空修订号（`"revision":""`）；`isos init` 已保存起始图后则须使用其实际 SHA-256。CLI Apply 对已保存起始图或后续修改使用 `--revision <saved-sha256>`；只有目标文件不存在时才使用 `--revision ""`。归属方 reader 不可用会阻止 Apply，草稿字节保持不变。
 
-3. 构建 MuJoCo 仿真器，用其仓库的 `tools/build-backend-bundle.py` 制作 `0.1.1` 包，并将 `MUJOCO_ROOT` 指向匹配环境。链接后在 Graph 预览 `sim-hardware`。起始图只有 EOS 进程和调度器，没有硬件包；预览加入 MuJoCo 进程、相机、底盘、机械臂、闸门与 Vision 节点。选可用场景，检查草稿，在 Graph 中 Validate 后 Apply。仅安装或链接不会修改图。以下 CLI 只用于链接及列出包；CLI 预览见[软件包操作](packages_cn.md)：
+3. 构建 MuJoCo 仿真器，用其仓库的 `tools/build-backend-bundle.py` 制作 `0.1.1` 包，并将 `MUJOCO_ROOT` 指向匹配环境。链接精确已验证的包。在 Graph 或通过 `isos pkg preview-set` 预览 `sim-hardware`。起始图只有 EOS 进程和调度器，没有硬件包；P02 的 `0.1.0` 预设加入 MuJoCo 进程、EOS 通用相机、底盘、机械臂、底盘／机械臂原语绑定及相机闸门，不加入 Vision 节点。选择 `pick-place` 或 `navigation` 以及该场景可用的相机／底盘／机械臂 ID，检查草稿，在 Graph 中 Validate 后 Apply。仅安装或链接不会修改图。P02 IsOS 目录准入与通用 P03 选择器 UI 是独立切片；CLI 预览及精确负例见[软件包操作](packages_cn.md)：
 
 ```sh
 isos pkg link island/mujoco-sim 0.1.1 /absolute/path/to/bundle --manifest /absolute/path/to/bundle/release.json

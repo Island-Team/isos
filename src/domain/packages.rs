@@ -4,6 +4,7 @@ use crate::{
     auth,
     config::{self, Paths},
     lock::Lock,
+    mujoco_catalog,
     release::{self, Release},
 };
 use anyhow::{Context, Result, ensure};
@@ -472,6 +473,14 @@ fn validate_payload(root: &Path, release: &Release) -> Result<()> {
     Ok(())
 }
 
+fn validate_catalog_candidate(root: &Path, release: &Release) -> Result<()> {
+    if release.id == "island/mujoco-sim" || root.join("backend-v2.json").exists() {
+        mujoco_catalog::inspect(root, &release.id, &release.version)
+            .map_err(|issue| issue.into_error(&release.id, &release.version, ""))?;
+    }
+    Ok(())
+}
+
 /// Revalidate an exact schema-2 receipt and return only verified payload paths.
 pub fn verify(paths: &Paths, id: &str, version: &str) -> Result<VerifiedPackage> {
     let store = package_path(paths, id, version)?;
@@ -922,6 +931,7 @@ pub fn install(
         fs::remove_file(&archive)?;
         validate_payload(&payload, release)
             .map_err(|error| descriptor_failure(&release.id, &release.version, &error))?;
+        validate_catalog_candidate(&payload, release)?;
         let tree = payload_digest(&payload, false).map_err(|_| {
             failure(
                 &release.id,
@@ -1054,6 +1064,7 @@ pub fn link_with_manifest(
         let (tree, release_bytes, sidecar) = if let Some(release) = &release {
             validate_payload(&source, release)
                 .map_err(|error| descriptor_failure(id, version, &error))?;
+            validate_catalog_candidate(&source, release)?;
             (
                 Some(
                     payload_digest(&source, false)
@@ -1133,6 +1144,7 @@ pub struct PackagePin {
 /// Collect only canonical, complete package pins declared by graph nodes.
 pub fn collect_pins(graph: &serde_json::Value) -> Result<Vec<PackagePin>> {
     let mut pins = BTreeMap::new();
+    let mut target_mujoco_process_pins = BTreeMap::new();
     let Some(cores) = graph.get("cores").and_then(serde_json::Value::as_object) else {
         return Ok(Vec::new());
     };
@@ -1175,6 +1187,15 @@ pub fn collect_pins(graph: &serde_json::Value) -> Result<Vec<PackagePin>> {
                                 })?;
                             validate_identity(id, version)
                                 .with_context(|| format!("invalid package pin at {path}"))?;
+                            if graph["version"] == "0.1.0"
+                                && node["node_type"] == "eos.process.mujoco@v0.1"
+                                && path == format!("{base}/package")
+                                && id == "island/mujoco-sim"
+                            {
+                                target_mujoco_process_pins
+                                    .entry((id.to_owned(), version.to_owned()))
+                                    .or_insert_with(|| path.clone());
+                            }
                             pins.entry((id.to_owned(), version.to_owned()))
                                 .or_insert(path);
                         }
@@ -1197,6 +1218,7 @@ pub fn collect_pins(graph: &serde_json::Value) -> Result<Vec<PackagePin>> {
             }
         }
     }
+    pins.extend(target_mujoco_process_pins);
     Ok(pins
         .into_iter()
         .map(|((id, version), path)| PackagePin { id, version, path })
@@ -1246,6 +1268,34 @@ mod pin_tests {
         assert_eq!(
             node_package_pins(&node),
             vec![("vendor/devices".into(), "2.0.0".into())]
+        );
+    }
+
+    #[test]
+    fn target_mujoco_process_pin_owns_duplicate_diagnostic_path() {
+        let adapter = serde_json::json!({
+            "node_type":"eos.hardware.base@v0.1",
+            "adapter":{"package":{"id":"island/mujoco-sim","version":"0.1.1"}}
+        });
+        let process = serde_json::json!({
+            "node_type":"eos.process.mujoco@v0.1",
+            "package":{"id":"island/mujoco-sim","version":"0.1.1"}
+        });
+        let mut graph = serde_json::json!({"version":"0.1.0","cores":{"eos":{"layers":{}}}});
+        graph["cores"]["eos"]["layers"]["hardware"] =
+            serde_json::json!({"groups":{"base":{"nodes":{"drive":adapter}}}});
+        graph["cores"]["eos"]["layers"]["process"] =
+            serde_json::json!({"groups":{"mujoco":{"nodes":{"simulator":process}}}});
+        let pins = collect_pins(&graph).unwrap();
+        assert_eq!(pins.len(), 1);
+        assert_eq!(
+            pins[0].path,
+            "/cores/eos/layers/process/groups/mujoco/nodes/simulator/package"
+        );
+        graph["version"] = serde_json::json!("1.0.0");
+        assert_eq!(
+            collect_pins(&graph).unwrap()[0].path,
+            "/cores/eos/layers/hardware/groups/base/nodes/drive/adapter/package"
         );
     }
 }
