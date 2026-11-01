@@ -41,6 +41,8 @@ P03 设计证据（2026-11-01）：`python3` 解析三份冻结 JSON 夹具，�
 
 P03 实现证据（2026-11-01）：`/home/ashex/.cargo/bin/cargo fmt -- --check`、`/home/ashex/.cargo/bin/cargo clippy --all-targets -- -D warnings`、`/home/ashex/.cargo/bin/cargo test`、`/home/ashex/.cargo/bin/cargo build` 与 `python3 tests/node_options_cli.py` 均通过。Cargo 执行 109 个单元测试、5 个 CLI 指南测试、1 个已移除命令测试及 9 个连线准入测试。真实软件包的全新 home 回放运行 7 个 API 用例，覆盖 7 个精确选项组、包括缺失图及已 Apply 旧图字节的 GET 修订关联、精确固定版本缺失、负载变化、主机库缺失、随场景变化的设备适用性、不可用的已保存 ID、格式错误 ID、未知图版本／类型、过期 Apply，以及拒绝时保存图与状态不变。完整输出保存在忽略的 `logs/test/20261101-p03-node-options/`。
 
+在 P04 生成配置合并后，P03 基于 IsOS `e5c1824` 完成 rebase，重复运行相同的格式、Clippy、测试、构建与真实软件包 7 用例回放：130 个单元测试、5 个 CLI 指南测试、1 个已移除命令测试、9 个连线准入测试及 7 个全新 home API 用例均通过。定向测试还覆盖显式 null 所选 ID 的拒绝，以及已链接场景遭篡改后的运行中 Restart；后者保持活动修订与子进程 PID 不变。完整输出保存在忽略的 `logs/test/20261101-p03-node-options-post-p04/`。
+
 IsOS 校验边的来源、目的类型、`priority` 和 `frequency_hz`。**当前实现：**编辑器校验 API 对比注册端口的精确数据类型，并在 Apply 前返回定位到连线的 `edge_type_mismatch` 诊断；数据类型 schema 载明字段单位。其他校验失败仍使用 EOS 校验器的通用诊断。目标中的实际路由由 EOS 管理：每边单调时钟 token bucket 限流；加权公平服务和有界队列防止高优先级流饿死其他流；溢出计数并限速记录。`expected_rate_hz` 是生产者元数据，不会暗中变成边上限。仅设计连线可在 IsosUI 展示，但不得声称有运行时调度。优先级不可绕过调度器安全准入或执行器停止。
 
 ## 实现里程碑

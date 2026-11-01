@@ -131,6 +131,32 @@ class NodeOptionsReplay(unittest.TestCase):
         self.assertTrue(camera_row["options"][0]["available"])
         self.assert_rejected(graph, "mujoco_device_unavailable", DEVICE, "admission")
 
+    def test_restart_rechecks_pin_before_replacing_active_simulator(self):
+        original, graph = self.preview()
+        status, applied = self.case.api("node-graph", "PUT", {
+            "schema_version": 1, "revision": digest(original), "graph": graph})
+        self.assertEqual(status, 200, applied)
+        saved = self.case.graph_path.read_bytes()
+        status, started = self.case.api("process-control", "POST", {
+            "schema_version": 1, "operation": "run", "revision": digest(saved)})
+        self.assertEqual(status, 200, started)
+        before = self.case.status()
+        self.assertEqual(before["state"], "running")
+        pids = {process["id"]: process["pid"] for process in before["processes"]}
+        self.assertTrue(pids)
+        scene_file = self.case.bundle / "assets/scene.xml"
+        scene_file.write_bytes(scene_file.read_bytes() + b"\n")
+        status, rejected = self.case.api("process-control", "POST", {
+            "schema_version": 1, "operation": "restart", "revision": digest(saved)})
+        self.assertEqual(status, 422, rejected)
+        self.assertEqual({key: rejected["data"]["diagnostics"][0][key]
+                          for key in ("code", "path", "stage")},
+                         {"code": "package_changed", "path": SIMULATOR + "/package", "stage": "payload"})
+        after = self.case.status()
+        self.assertEqual(self.case.graph_path.read_bytes(), saved)
+        self.assertEqual(after["active_revision"], before["active_revision"])
+        self.assertEqual({process["id"]: process["pid"] for process in after["processes"]}, pids)
+
     def test_unknown_scene_device_and_malformed_id(self):
         _, graph = self.preview()
         unknown = copy.deepcopy(graph)
@@ -160,6 +186,11 @@ class NodeOptionsReplay(unittest.TestCase):
         self.assertEqual(status, 422, body)
         self.assertEqual(body["data"]["diagnostics"][0]["code"], "node_option_invalid_id")
         self.assertNotIn("/tmp/secret.xml", json.dumps(body))
+        self.assert_rejected(malformed, "node_option_invalid_id", SIMULATOR + "/settings/scene", "admission")
+        malformed["cores"]["eos"]["layers"]["process"]["groups"]["mujoco"]["nodes"]["simulator"]["settings"]["scene"] = None
+        status, body = self.case.api("node-options", "POST", {"schema_version": 1, "graph": malformed})
+        self.assertEqual(status, 422, body)
+        self.assertEqual(body["data"]["diagnostics"][0]["code"], "node_option_invalid_id")
         self.assert_rejected(malformed, "node_option_invalid_id", SIMULATOR + "/settings/scene", "admission")
 
     def test_unknown_graph_identity_and_stale_revision(self):
