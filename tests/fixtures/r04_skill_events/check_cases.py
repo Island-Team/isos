@@ -11,7 +11,7 @@ cases = json.loads((Path(__file__).parent / "cases.json").read_text())
 assert cases["schema"] == "isos-r04-skill-events-design-v1"
 assert cases["eos_sha"] == "192fbfa6fbed1e9b6a20dd8dc95501625b02d081"
 assert len(cases["failed_reasons"]) == len(set(cases["failed_reasons"]))
-assert len(cases["child_cases"]) == 30
+assert len(cases["child_cases"]) == 31
 assert len(cases["cursor_cases"]) == 10
 
 TOP = {"timestamp", "level", "source", "core", "node_path", "event_code", "run_id",
@@ -23,9 +23,10 @@ ID = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
 ATOM = re.compile(r"[a-z0-9._-]+\Z")
 PIN = re.compile(r"[a-z0-9-]+/[a-z0-9-]+\Z")
 VERSION = re.compile(r"[0-9][A-Za-z0-9.+-]*\Z")
+DEFAULT_PIN = ("island/fixture-skills", "0.1.0+Build.1")
 
 
-def valid(event, role="eos", selected=True):
+def valid(event, role="eos", selected_pin=DEFAULT_PIN):
     if role != "eos" or set(event) != TOP:
         return False
     if event["source"] != "eos" or event["core"] != "eos" or event["node_path"] is not None:
@@ -58,9 +59,9 @@ def valid(event, role="eos", selected=True):
     version = fields["package_version"]
     if not isinstance(package_id, str) or len(package_id) > 96 or not PIN.fullmatch(package_id):
         return False
-    if not isinstance(version, str) or len(version) > 64 or not VERSION.fullmatch(version) or len(version.split(".")) < 3 or any(not part for part in version.split(".")):
+    if not isinstance(version, str) or len(version) > 64 or not VERSION.fullmatch(version) or len(version.split(".")) < 3:
         return False
-    if not selected or (package_id, version) != ("island/fixture-skills", "0.1.0+Build.1"):
+    if selected_pin is None or (package_id, version) != selected_pin:
         return False
     stage = fields["stage"]
     reason = fields["reason_code"]
@@ -99,7 +100,11 @@ for case in cases["child_cases"]:
             event["fields"][key.removeprefix("fields.")] = value
         else:
             event[key] = value
-    assert valid(event, case.get("role", "eos"), case.get("selected", True)) == (case["expect"] == "accept"), case["id"]
+    pin = case.get("selected_pin")
+    selected_pin = (pin["id"], pin["version"]) if pin else DEFAULT_PIN
+    if case.get("selected") is False:
+        selected_pin = None
+    assert valid(event, case.get("role", "eos"), selected_pin) == (case["expect"] == "accept"), case["id"]
 
 cursor_ids = [case["id"] for case in cases["cursor_cases"]]
 assert len(cursor_ids) == len(set(cursor_ids))

@@ -471,7 +471,6 @@ fn skill_package_version(value: &str) -> bool {
     value.len() <= 64
         && value.as_bytes().first().is_some_and(u8::is_ascii_digit)
         && value.split('.').count() >= 3
-        && value.split('.').all(|part| !part.is_empty())
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+'))
@@ -877,7 +876,7 @@ mod tests {
             "0.1.0+Build.1".to_owned(),
         )]);
         let no_pins = BTreeSet::new();
-        assert_eq!(fixture["child_cases"].as_array().unwrap().len(), 30);
+        assert_eq!(fixture["child_cases"].as_array().unwrap().len(), 31);
         for case in fixture["child_cases"].as_array().unwrap() {
             let id = case["id"].as_str().unwrap();
             let mut event = fixture[if case["base"] == "execution" {
@@ -902,9 +901,20 @@ mod tests {
             }
             let role = case["role"].as_str().unwrap_or("eos");
             let selected = case["selected"].as_bool().unwrap_or(true);
+            let alternate_pins = case["selected_pin"].as_object().map(|pin| {
+                BTreeSet::from([(
+                    pin["id"].as_str().unwrap().to_owned(),
+                    pin["version"].as_str().unwrap().to_owned(),
+                )])
+            });
+            let selected_pins = if selected {
+                alternate_pins.as_ref().unwrap_or(&pins)
+            } else {
+                &no_pins
+            };
             let admitted = parse_child(&line(&event), role, "r04-run", 4242).and_then(|stored| {
                 ensure!(
-                    skill_pin_admitted(&stored, if selected { &pins } else { &no_pins }),
+                    skill_pin_admitted(&stored, selected_pins),
                     "skill pin not selected"
                 );
                 validate_stored(&stored)?;

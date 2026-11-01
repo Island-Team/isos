@@ -734,22 +734,26 @@ fn capture_stream<R: std::io::Read>(
                     && matches!(source.as_str(), "eos" | "bridge" | "config" | "egia")
                 {
                     match event_policy::parse_child(&raw, &source, run_id, pid) {
-                        Ok(event)
-                            if event["node_path"].as_str().is_none_or(|path| {
+                        Ok(event) => {
+                            let node_admitted = event["node_path"].as_str().is_none_or(|path| {
                                 admission.is_none_or(|policy| {
                                     policy
                                         .nodes
                                         .as_ref()
                                         .is_none_or(|nodes| nodes.contains(path))
                                 })
-                            }) && event_policy::skill_pin_admitted(
+                            });
+                            if !node_admitted {
+                                reject(&store, "node_owner");
+                            } else if !event_policy::skill_pin_admitted(
                                 &event,
                                 admission.map_or(&empty_pins, |policy| &policy.skill_pins),
-                            ) =>
-                        {
-                            let _ = store.append_selected(&event);
+                            ) {
+                                reject(&store, "skill_pin_mismatch");
+                            } else {
+                                let _ = store.append_selected(&event);
+                            }
                         }
-                        Ok(_) => reject(&store, "node_owner"),
                         Err(error) => {
                             let message = error.to_string();
                             let reason = if message.contains("run mismatch") {
@@ -979,6 +983,47 @@ mod tests {
         assert_eq!(after_gap["anchor"]["event"], first["anchor"]["event"]);
         assert_eq!(after_gap["diagnostics"][0]["code"], "log_collector_gap");
         assert_eq!(after_gap["diagnostics"][0]["count"], 1);
+    }
+
+    #[test]
+    fn r04_selected_pin_mismatch_has_own_rejection_reason() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/r04_skill_events/cases.json"
+        ))
+        .unwrap();
+        let (_temp, store) = store();
+        store.publish_run("r04-run").unwrap();
+        let mut event = fixture["base_execution"].clone();
+        event["fields"]["package_version"] = json!("0..1");
+        let old_pins = BTreeSet::from([("island/fixture-skills".into(), "0.1.0+Build.1".into())]);
+        let before = rejection_reasons()["skill_pin_mismatch"]
+            .as_u64()
+            .unwrap_or(0);
+        skill_pipe(&store, &[event.clone()], &old_pins);
+        assert!(
+            store.read("eos", None, 10).unwrap()["lines"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            store.read("all", None, 10).unwrap()["lines"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            rejection_reasons()["skill_pin_mismatch"]
+                .as_u64()
+                .unwrap_or(0)
+                > before
+        );
+
+        let selected = BTreeSet::from([("island/fixture-skills".into(), "0..1".into())]);
+        let pid = skill_pipe(&store, &[event], &selected);
+        let source = store.read("eos", None, 10).unwrap();
+        assert_eq!(source["lines"][0]["fields"]["package_version"], "0..1");
+        assert_eq!(source["lines"][0]["pid"], pid);
     }
 
     #[test]

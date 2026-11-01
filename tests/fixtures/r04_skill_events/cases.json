@@ -48,6 +48,7 @@
   },
   "child_cases": [
     {"id": "queued", "base": "execution", "set": {}, "expect": "accept"},
+    {"id": "selected_empty_segment_version", "base": "execution", "set": {"fields.package_version": "0..1"}, "selected_pin": {"id": "island/fixture-skills", "version": "0..1"}, "expect": "accept"},
     {"id": "running", "base": "execution", "set": {"fields.stage": "running", "fields.reason_code": "worker.running"}, "expect": "accept"},
     {"id": "completed", "base": "execution", "set": {"fields.stage": "completed", "fields.reason_code": "worker.succeeded", "fields.worker_reaped": true, "fields.worker_exit_code": 0}, "expect": "accept"},
     {"id": "failed_unknown", "base": "execution", "set": {"level": "error", "fields.stage": "failed", "fields.reason_code": "worker.outcome_unknown", "fields.worker_reaped": true, "fields.worker_exit_code": 1}, "expect": "accept"},

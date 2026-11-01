@@ -12,7 +12,7 @@
 | --- | --- | --- |
 | `settings.skill_libraries` | 数组 / 条目 | 可选，最多 16 项，仅限 EOS `@v0.1` component。生成文件按 `(package.id,package.version,library)` 排序；重复元组失败。保存图的字节和数组顺序仅在显式 Apply 时更新。 |
 | `package.id` | 字符串 / 软件包 ID | 必填，规范小写 `namespace/name`，P01 精确验证。所选技能另限最多 96 ASCII 字节，与 EOS 生命周期事件限制一致。 |
-| `package.version` | 字符串 / 发布版本 | 必填，P01 接受的精确版本，不使用 latest 或范围。所选技能另限最多 64 ASCII 字节，数字开头、至少三个非空点分段，只允许 ASCII 字母、数字、`.`、`-`、`+`。保留包括大写字母在内的原始 build metadata。 |
+| `package.version` | 字符串 / 发布版本 | 必填，P01 接受的精确版本，不使用 latest 或范围。所选技能的目标预停止门禁另限最多 64 ASCII 字节、数字开头、至少三个非空点分段，只允许 ASCII 字母、数字、`.`、`-`、`+`。当前 P01／EOS 选择语法仍允许 `0..1` 这类空段；R04 事件准入只在此 pin 与所选精确配对时接纳。保留包括大写字母在内的原始 build metadata。 |
 | `library` | 字符串 / POSIX 相对路径 | 必填 UTF-8，1–256 字节；分量不得为空、`.` 或 `..`，不得有反斜杠或 NUL，后缀为 `.skill.so`。目标必须是 1–64 MiB 的非符号链接普通文件；不扫描目录或递归发现。 |
 
 P01 图 pin 收集器把每个选中 `package` 计入，并使用精确 `/cores/isos/layers/process/groups/component/nodes/<id>/settings/skill_libraries/<index>/package` 指针。IsOS 对每项重新取得 P01 `VerifiedPackage`，要求发布 `kind:"skill"`，检查 payload 根、文件身份与 SHA-256；变更的链接 payload 失败。只有明列的库被选中。EOS 随后检查所有库中重复的技能身份。旧 `1.0.0` 图和 `eos.control.skill@v1.0` 不因此获得执行行为。
