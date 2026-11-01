@@ -101,6 +101,7 @@ fn validate_saved_graph(paths: &config::Paths, name: &str, source: &str) -> Resu
             .map_err(|diagnostic| anyhow::anyhow!(diagnostic.to_string()))?;
         Ok(())
     } else {
+        graph_compat::admit_legacy_mapped(&saved.value, process::catalog().ok().as_ref())?;
         process::validate_full_graph(&paths.node_graph_path(name))
     }
 }

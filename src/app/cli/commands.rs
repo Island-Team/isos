@@ -46,6 +46,7 @@ pub(crate) fn config_command(paths: &config::Paths, name: &str, cmd: ConfigComma
                     .map_err(|diagnostic| anyhow::anyhow!(diagnostic.to_string()))?
                     .specs
             } else {
+                graph_compat::admit_legacy_mapped(&graph, process::catalog().ok().as_ref())?;
                 process::validate_full_graph(&file)?;
                 process::project_with_packages(paths, &source)?
             };
@@ -104,7 +105,7 @@ pub(crate) fn apply_graph_file(
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
         return Ok(specs);
     }
-    graph_compat::admit(&graph, process::catalog().ok().as_ref())?;
+    graph_compat::admit_legacy_mapped(&graph, process::catalog().ok().as_ref())?;
     let destination = paths.node_graph_path(name);
     let mut expected_saved_revision = None;
     {
@@ -112,6 +113,13 @@ pub(crate) fn apply_graph_file(
         if destination.exists() {
             let saved = graph_compat::read(&destination)?;
             if saved.value["version"] == "1.0.0" {
+                if let Some(diagnostic) = graph_compat::projected_input_diagnostic(
+                    &saved,
+                    &graph,
+                    process::catalog().ok().as_ref(),
+                ) {
+                    bail!(diagnostic);
+                }
                 if let Some(diagnostic) = graph_compat::changed_legacy_diagnostic(&saved, &graph) {
                     if graph_compat::requires_migration(
                         &saved,

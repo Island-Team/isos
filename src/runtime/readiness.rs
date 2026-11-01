@@ -16,8 +16,8 @@ pub fn report(paths: &Paths, name: &str, active: Option<&Value>) -> Value {
     let saved = graph_compat::read(&graph_path).ok();
     let graph_revision = saved.as_ref().map(|saved| saved.revision.clone());
     let graph: Value = saved.map_or(Value::Null, |saved| saved.value);
-    let graph_version_issue = if graph.is_object() {
-        graph_compat::version_diagnostic(&graph)
+    let graph_admission_issue = if graph.is_object() {
+        graph_compat::legacy_mapping_diagnostic(&graph, process::catalog().ok().as_ref())
             .map(|diagnostic| format!("saved graph is incompatible: {diagnostic}"))
     } else {
         None
@@ -113,12 +113,12 @@ pub fn report(paths: &Paths, name: &str, active: Option<&Value>) -> Value {
             let endpoint_issue = endpoints.as_ref().err().map(ToString::to_string);
             let ready = compatible
                 && graph_configured
-                && graph_version_issue.is_none()
+                && graph_admission_issue.is_none()
                 && inputs_issue.is_none()
                 && endpoint_issue.is_none()
                 && !running_changed;
             let reason = if enabled {
-                graph_version_issue
+                graph_admission_issue
                     .clone()
                     .or(reason)
                     .or(inputs_issue)
@@ -141,7 +141,7 @@ pub fn report(paths: &Paths, name: &str, active: Option<&Value>) -> Value {
             });
             let action = if !enabled {
                 "Core is not enabled in the saved graph".into()
-            } else if graph_version_issue.is_some() {
+            } else if graph_admission_issue.is_some() {
                 "Use a supported graph version or explicitly migrate the saved graph".into()
             } else if !compatible {
                 format!("Build {core} in its repository and configure its binary directory")
@@ -179,6 +179,37 @@ pub fn report(paths: &Paths, name: &str, active: Option<&Value>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unmapped_legacy_graph_is_not_ready_even_with_generated_inputs() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        paths.prepare().unwrap();
+        crate::config::atomic_write(
+            &paths.node_graph_path("default"),
+            include_bytes!("../../tests/fixtures/graph_compat/legacy_unmapped_1_0_0.json"),
+        )
+        .unwrap();
+        crate::config::atomic_write(
+            &paths
+                .generated("default")
+                .join("core-setup/launch-inputs.json"),
+            b"[]",
+        )
+        .unwrap();
+        let status = report(&paths, "default", None);
+        let eos = &status["cores"][0];
+        assert_eq!(eos["ready"], false);
+        let reason = eos["reason"].as_str().unwrap();
+        assert!(
+            reason.contains("/cores/eos/layers/control/groups/manual/nodes/manual_0/node_type")
+        );
+        assert!(reason.contains("unmapped_node_type"));
+    }
 
     #[test]
     fn old_graph_version_takes_priority_over_changed_binary_guidance() {

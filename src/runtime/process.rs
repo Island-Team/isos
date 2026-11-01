@@ -774,11 +774,12 @@ pub fn normalize_source(source: &str) -> Result<Value> {
 }
 
 pub fn validate_value(paths: &Paths, graph: &Value) -> Result<()> {
+    graph_compat::admit_legacy_mapped(graph, catalog().ok().as_ref())?;
     validate_value_with_profile(paths, graph, &core_bins::resolve("aether-profile")?)
 }
 
 pub fn validate_value_with_profile(paths: &Paths, graph: &Value, profile: &Path) -> Result<()> {
-    graph_compat::admit(graph, catalog().ok().as_ref())?;
+    graph_compat::admit_legacy_mapped(graph, catalog().ok().as_ref())?;
     reject_obsolete_nodes(graph)?;
     paths.prepare()?;
     let mut file = tempfile::Builder::new()
@@ -797,7 +798,7 @@ pub fn validate_value_with_profile(paths: &Paths, graph: &Value, profile: &Path)
 /// validates the process projection again before supervising any child.
 pub fn validate_full_graph(path: &Path) -> Result<()> {
     let graph = normalize_source(&fs::read_to_string(path)?)?;
-    graph_compat::admit(&graph, catalog().ok().as_ref())?;
+    graph_compat::admit_legacy_mapped(&graph, catalog().ok().as_ref())?;
     reject_obsolete_nodes(&graph)?;
     validate_with_program(path, &core_bins::resolve("aether-profile")?)
 }

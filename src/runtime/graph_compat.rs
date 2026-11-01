@@ -2,7 +2,7 @@
 
 use anyhow::{Result, bail, ensure};
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, fs, path::Path};
 
@@ -104,6 +104,334 @@ pub struct SavedGraph {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct LegacyProjection {
+    pub read_only: bool,
+    pub source_revision: String,
+    pub graph: Value,
+    pub mappings: Vec<Value>,
+    pub defaults: Vec<Value>,
+    pub display_descriptions: BTreeMap<String, String>,
+}
+
+fn diagnostic(path: String, code: &'static str, message: String) -> Diagnostic {
+    Diagnostic {
+        path,
+        code,
+        message,
+        context: BTreeMap::new(),
+    }
+}
+
+pub(crate) fn pointer_segment(segment: &str) -> String {
+    segment.replace('~', "~0").replace('/', "~1")
+}
+
+fn valid_path_segment(segment: &str) -> bool {
+    !segment.is_empty()
+        && segment
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+}
+
+/// Inspect a legacy graph without ever replacing its saved value or revision.
+pub fn legacy_projection(
+    graph: &Value,
+    source_revision: &str,
+    catalog: Option<&Value>,
+) -> Result<Option<LegacyProjection>, Diagnostic> {
+    if graph["version"] != "1.0.0" {
+        return version_diagnostic(graph).map_or(Ok(None), Err);
+    }
+    if let Some(problem) = admission_diagnostic(graph, catalog) {
+        return Err(problem);
+    }
+    // The proposal is discarded. It supplies the one G03 mapping and field-shape
+    // boundary, so inspection cannot silently admit a type migration rejects.
+    let proposal = crate::graph_migration::propose_for_inspection(&SavedGraph {
+        value: graph.clone(),
+        revision: source_revision.to_owned(),
+        read_only: true,
+        diagnostics: Vec::new(),
+    })?;
+    let robot = graph["robot"].as_object().ok_or_else(|| {
+        diagnostic(
+            "/robot".into(),
+            "invalid_graph",
+            "robot must be an object".into(),
+        )
+    })?;
+    for field in ["id", "name"] {
+        if !robot
+            .get(field)
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+        {
+            return Err(diagnostic(
+                format!("/robot/{field}"),
+                "invalid_graph",
+                format!("robot {field} must be a nonblank string"),
+            ));
+        }
+    }
+    let mut projected = graph.clone();
+    let mut mappings = Vec::new();
+    let mut defaults = Vec::new();
+    let mut display_descriptions = BTreeMap::new();
+    let cores = graph["cores"].as_object().expect("proposal checked cores");
+    if cores.is_empty() {
+        return Err(diagnostic(
+            "/cores".into(),
+            "invalid_graph",
+            "legacy graph requires a registered core".into(),
+        ));
+    }
+    for (core_id, core) in cores {
+        if !matches!(core_id.as_str(), "eos" | "isos" | "egia") {
+            return Err(diagnostic(
+                format!("/cores/{}", pointer_segment(core_id)),
+                "unsupported_core",
+                format!("core {core_id} has no registered legacy owner"),
+            ));
+        }
+        for (layer_id, layer) in core["layers"].as_object().expect("proposal checked layers") {
+            if !valid_path_segment(layer_id) {
+                return Err(diagnostic(
+                    format!("/cores/{core_id}/layers/{}", pointer_segment(layer_id)),
+                    "invalid_graph",
+                    "layer key is not a valid graph path segment".into(),
+                ));
+            }
+            for (group_id, group) in layer["groups"]
+                .as_object()
+                .expect("proposal checked groups")
+            {
+                if !valid_path_segment(group_id) {
+                    return Err(diagnostic(
+                        format!(
+                            "/cores/{core_id}/layers/{layer_id}/groups/{}",
+                            pointer_segment(group_id)
+                        ),
+                        "invalid_graph",
+                        "group key is not a valid graph path segment".into(),
+                    ));
+                }
+                for (node_id, node) in group["nodes"].as_object().expect("proposal checked nodes") {
+                    let path = format!(
+                        "/cores/{}/layers/{}/groups/{}/nodes/{}",
+                        pointer_segment(core_id),
+                        pointer_segment(layer_id),
+                        pointer_segment(group_id),
+                        pointer_segment(node_id)
+                    );
+                    if !valid_path_segment(node_id) {
+                        return Err(diagnostic(
+                            path,
+                            "invalid_graph",
+                            "node key is not a valid graph path segment".into(),
+                        ));
+                    }
+                    let source_type = node["node_type"].as_str().unwrap_or("");
+                    let candidate_type = proposal.graph["cores"][core_id]["layers"][layer_id]
+                        ["groups"][group_id]["nodes"][node_id]["node_type"]
+                        .as_str().unwrap_or(source_type);
+                    if let Some((expected_core, expected_layer, expected_group)) =
+                        target_placement(candidate_type)
+                        && (core_id.as_str(), layer_id.as_str(), group_id.as_str())
+                            != (expected_core, expected_layer, expected_group)
+                    {
+                        return Err(diagnostic(
+                            format!("{path}/node_type"),
+                            "invalid_node_placement",
+                            format!(
+                                "{source_type} belongs at {expected_core}/{expected_layer}/{expected_group}"
+                            ),
+                        ));
+                    }
+                    let owner_type = catalog
+                        .and_then(|catalog| catalog["types"].as_array())
+                        .and_then(|types| types.iter().find(|item| item["id"] == source_type));
+                    if let Some(owner_type) = owner_type {
+                        if owner_type["core"] != *core_id
+                            || owner_type["layer"] != *layer_id
+                            || owner_type["group"] != *group_id
+                        {
+                            return Err(diagnostic(
+                                format!("{path}/node_type"),
+                                "invalid_node_placement",
+                                format!(
+                                    "{source_type} is registered at {}/{}/{}",
+                                    owner_type["core"].as_str().unwrap_or("?"),
+                                    owner_type["layer"].as_str().unwrap_or("?"),
+                                    owner_type["group"].as_str().unwrap_or("?")
+                                ),
+                            ));
+                        }
+                        if let Some(description) = owner_type["description"].as_str() {
+                            display_descriptions.insert(path.clone(), description.to_owned());
+                        }
+                    }
+                    if source_type == "eos.process.mujoco@v1.0" {
+                        let pin = &node["package"];
+                        let target = catalog
+                            .and_then(|catalog| catalog["types"].as_array())
+                            .and_then(|types| {
+                                types.iter().find(|item| {
+                                    item["id"] == "eos.process.mujoco@v0.1"
+                                        && item["package"] == *pin
+                                })
+                            });
+                        if !pin.is_object() || target.is_none() {
+                            return Err(diagnostic(format!("{path}/package"), "unmapped_node_type",
+                                "MuJoCo process mapping requires the same verified package pin and target contribution".into()));
+                        }
+                    }
+                    mappings.push(json!({"path":format!("{path}/node_type"),
+                        "source_type":source_type,"candidate_type":candidate_type}));
+                    let projected_node = &mut projected["cores"][core_id]["layers"][layer_id]["groups"]
+                        [group_id]["nodes"][node_id];
+                    let object = projected_node.as_object_mut().ok_or_else(|| {
+                        diagnostic(
+                            path.clone(),
+                            "unmapped_graph_field",
+                            "node must be an object".into(),
+                        )
+                    })?;
+                    for field in ["id", "label", "description"] {
+                        if !object.get(field).is_some_and(Value::is_string) {
+                            return Err(diagnostic(
+                                format!("{path}/{field}"),
+                                "unmapped_graph_field",
+                                format!("{field} must be a string"),
+                            ));
+                        }
+                    }
+                    if object["id"] != *node_id {
+                        return Err(diagnostic(
+                            format!("{path}/id"),
+                            "invalid_graph",
+                            "node id must match its graph path key".into(),
+                        ));
+                    }
+                    for (field, correct) in [
+                        ("capabilities", Value::is_array as fn(&Value) -> bool),
+                        ("inputs", Value::is_object),
+                        ("references", Value::is_array),
+                        ("settings", Value::is_object),
+                    ] {
+                        if object.get(field).is_some_and(|value| !correct(value)) {
+                            return Err(diagnostic(
+                                format!("{path}/{field}"),
+                                "unmapped_graph_field",
+                                format!("{field} has invalid shape"),
+                            ));
+                        }
+                    }
+                    for (field, value) in [
+                        ("capabilities", json!([])),
+                        ("inputs", json!({})),
+                        ("references", json!([])),
+                        ("settings", json!({})),
+                    ] {
+                        if !object.contains_key(field) {
+                            object.insert(field.into(), value.clone());
+                            defaults.push(json!({"path":format!("{path}/{field}"),"value":value}));
+                        }
+                    }
+                    if source_type == "isos.process.component@v1.1" {
+                        let settings = object["settings"].as_object_mut().ok_or_else(|| {
+                            diagnostic(
+                                format!("{path}/settings"),
+                                "unmapped_graph_field",
+                                "settings must be an object".into(),
+                            )
+                        })?;
+                        if !settings
+                            .get("role")
+                            .and_then(Value::as_str)
+                            .is_some_and(|role| !role.is_empty())
+                        {
+                            return Err(diagnostic(
+                                format!("{path}/settings/role"),
+                                "unmapped_graph_field",
+                                "role is required for a role-selected component".into(),
+                            ));
+                        }
+                        serde_json::from_value::<crate::process::ProcessSettings>(Value::Object(
+                            settings.clone(),
+                        ))
+                        .map_err(|error| {
+                            diagnostic(
+                                format!("{path}/settings"),
+                                "unmapped_graph_field",
+                                format!("invalid component settings: {error}"),
+                            )
+                        })?;
+                        for (field, value) in [
+                            ("args", json!([])),
+                            ("env", json!({})),
+                            ("start_timeout_ms", json!(30_000)),
+                            ("restart", json!("never")),
+                            ("max_restarts", json!(0)),
+                            ("depends_on", json!([])),
+                        ] {
+                            if !settings.contains_key(field) {
+                                settings.insert(field.into(), value.clone());
+                                defaults.push(json!({"path":format!("{path}/settings/{field}"),"value":value}));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    mappings.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
+    defaults.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
+    Ok(Some(LegacyProjection {
+        read_only: true,
+        source_revision: source_revision.to_owned(),
+        graph: projected,
+        mappings,
+        defaults,
+        display_descriptions,
+    }))
+}
+
+pub fn legacy_mapping_diagnostic(graph: &Value, catalog: Option<&Value>) -> Option<Diagnostic> {
+    if graph["version"] != "1.0.0" {
+        return admission_diagnostic(graph, catalog);
+    }
+    legacy_projection(graph, "", catalog).err()
+}
+
+pub fn admit_legacy_mapped(graph: &Value, catalog: Option<&Value>) -> Result<()> {
+    if graph["version"] != "1.0.0" {
+        return admit(graph, catalog);
+    }
+    if let Some(problem) = legacy_mapping_diagnostic(graph, catalog) {
+        bail!(problem);
+    }
+    Ok(())
+}
+
+pub fn projected_input_diagnostic(
+    saved: &SavedGraph,
+    incoming: &Value,
+    catalog: Option<&Value>,
+) -> Option<Diagnostic> {
+    if saved.value["version"] != "1.0.0" || saved.value == *incoming {
+        return None;
+    }
+    let Ok(Some(projection)) = legacy_projection(&saved.value, &saved.revision, catalog) else {
+        return None;
+    };
+    (projection.graph == *incoming).then(|| diagnostic(
+        "/version".into(),
+        "projection_read_only",
+        "legacy inspection projection cannot replace saved graph bytes; edit the original graph or use explicit migration".into(),
+    ))
+}
+
 pub fn revision(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
@@ -162,7 +490,7 @@ pub fn admission_diagnostic(graph: &Value, catalog: Option<&Value>) -> Option<Di
     for (core_id, core) in cores {
         if target && !matches!(core_id.as_str(), "eos" | "isos" | "egia") {
             return Some(Diagnostic {
-                path: format!("/cores/{core_id}"),
+                path: format!("/cores/{}", pointer_segment(core_id)),
                 code: "unsupported_core",
                 message: format!("core {core_id} has no 0.1.0 owner reader"),
                 context: BTreeMap::new(),
@@ -181,7 +509,11 @@ pub fn admission_diagnostic(graph: &Value, catalog: Option<&Value>) -> Option<Di
                 };
                 for (node_id, node) in nodes {
                     let path = format!(
-                        "/cores/{core_id}/layers/{layer_id}/groups/{group_id}/nodes/{node_id}"
+                        "/cores/{}/layers/{}/groups/{}/nodes/{}",
+                        pointer_segment(core_id),
+                        pointer_segment(layer_id),
+                        pointer_segment(group_id),
+                        pointer_segment(node_id)
                     );
                     let node_type = node.get("node_type").and_then(Value::as_str).unwrap_or("");
                     if target {
@@ -304,6 +636,194 @@ mod tests {
         include_bytes!("../../tests/fixtures/graph_compat/unknown_type_1_0_0.json");
     const UNSAFE: &[u8] =
         include_bytes!("../../tests/fixtures/graph_compat/unsafe_component_1_0_0.json");
+    const OPTIONAL: &[u8] =
+        include_bytes!("../../tests/fixtures/graph_compat/legacy_optional_defaults_1_0_0.json");
+    const UNMAPPED: &[u8] =
+        include_bytes!("../../tests/fixtures/graph_compat/legacy_unmapped_1_0_0.json");
+
+    #[test]
+    fn legacy_projection_keeps_raw_identity_and_reports_only_optional_defaults() {
+        let source = parse(OPTIONAL).unwrap();
+        let original = source.value.clone();
+        let projection = legacy_projection(&source.value, &source.revision, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(source.value, original);
+        assert_eq!(source.revision, revision(OPTIONAL));
+        assert_eq!(projection.graph["version"], "1.0.0");
+        let command = "/cores/eos/layers/dispatcher/groups/control/nodes/command";
+        assert_eq!(
+            projection.graph.pointer(&format!("{command}/node_type")),
+            Some(&json!("eos.dispatcher.control@v1.0"))
+        );
+        assert_eq!(
+            projection.graph.pointer(&format!("{command}/description")),
+            Some(&json!(""))
+        );
+        for (path, value) in [
+            (format!("{command}/capabilities"), json!([])),
+            (format!("{command}/inputs"), json!({})),
+            (format!("{command}/references"), json!([])),
+            (format!("{command}/settings"), json!({})),
+            (
+                "/cores/isos/layers/process/groups/component/nodes/eos/settings/max_restarts"
+                    .into(),
+                json!(0),
+            ),
+            (
+                "/cores/isos/layers/process/groups/component/nodes/bridge/settings/restart".into(),
+                json!("never"),
+            ),
+        ] {
+            assert_eq!(projection.graph.pointer(&path), Some(&value), "{path}");
+            assert!(
+                projection
+                    .defaults
+                    .iter()
+                    .any(|default| default["path"] == path && default["value"] == value),
+                "{path}"
+            );
+            assert!(original.pointer(&path).is_none(), "{path}");
+        }
+        assert_eq!(projection.mappings.len(), 4);
+        assert!(
+            projection
+                .mappings
+                .iter()
+                .any(
+                    |mapping| mapping["source_type"] == "eos.dispatcher.control@v1.0"
+                        && mapping["candidate_type"] == "eos.dispatcher.control@v0.1"
+                )
+        );
+        assert!(!projection.graph.to_string().contains("frequency_hz"));
+        assert!(!projection.graph.to_string().contains("priority"));
+    }
+
+    #[test]
+    fn whitespace_distinct_sources_project_equally_without_revision_aliasing() {
+        let first = parse(LEGACY).unwrap();
+        let second = parse(WHITESPACE).unwrap();
+        let a = legacy_projection(&first.value, &first.revision, None)
+            .unwrap()
+            .unwrap();
+        let b = legacy_projection(&second.value, &second.revision, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(a.graph, b.graph);
+        assert_eq!(a.mappings, b.mappings);
+        assert_eq!(a.defaults, b.defaults);
+        assert_eq!(a.display_descriptions, b.display_descriptions);
+        assert_ne!(a.source_revision, b.source_revision);
+    }
+
+    #[test]
+    fn legacy_projection_escapes_pointer_segments_without_panicking() {
+        let mut graph = parse(LEGACY).unwrap().value;
+        let nodes = graph["cores"]["eos"]["layers"]["dispatcher"]["groups"]["control"]["nodes"]
+            .as_object_mut()
+            .unwrap();
+        let mut node = nodes.remove("command").unwrap();
+        node["id"] = json!("command/~");
+        nodes.insert("command/~".into(), node);
+        let pointer = "/cores/eos/layers/dispatcher/groups/control/nodes/command~1~0/node_type";
+        let issue = legacy_projection(&graph, "revision", None).unwrap_err();
+        assert_eq!(
+            (issue.path.as_str(), issue.code),
+            (
+                "/cores/eos/layers/dispatcher/groups/control/nodes/command~1~0",
+                "invalid_graph"
+            )
+        );
+        let node = &mut graph["cores"]["eos"]["layers"]["dispatcher"]["groups"]["control"]["nodes"]
+            ["command/~"];
+        node["node_type"] = json!("eos.control.manual@v1.0");
+        let issue = legacy_projection(&graph, "revision", None).unwrap_err();
+        assert_eq!(
+            (issue.path.as_str(), issue.code),
+            (pointer, "unmapped_node_type")
+        );
+        graph["cores"]["eos"]["layers"]["dispatcher"]["groups"]["control"]["nodes"]["command/~"]
+            ["node_type"] = json!("vendor.unknown@v1.0");
+        let issue = legacy_projection(&graph, "revision", None).unwrap_err();
+        assert_eq!(
+            (issue.path.as_str(), issue.code),
+            (pointer, "unsupported_node_type")
+        );
+        graph["cores"]["eos"]["layers"]["dispatcher"]["groups"]["control"]["nodes"]["command/~"]
+            ["node_type"] = json!("eos.dispatcher.control@v1.0");
+        graph["cores"]["eos"]["layers"]["dispatcher"]["groups"]["control"]["nodes"]["command/~"]
+            ["extra/~"] = json!(true);
+        let issue = legacy_projection(&graph, "revision", None).unwrap_err();
+        assert_eq!(
+            (issue.path.as_str(), issue.code),
+            (
+                "/cores/eos/layers/dispatcher/groups/control/nodes/command~1~0/extra~1~0",
+                "unmapped_graph_field"
+            )
+        );
+    }
+
+    #[test]
+    fn whole_graph_mapping_failure_yields_no_projection_and_exact_path() {
+        let unmapped = parse(UNMAPPED).unwrap();
+        let error = legacy_projection(&unmapped.value, &unmapped.revision, None).unwrap_err();
+        assert_eq!(error.code, "unmapped_node_type");
+        assert_eq!(
+            error.path,
+            "/cores/eos/layers/control/groups/manual/nodes/manual_0/node_type"
+        );
+        let unsafe_graph = parse(UNSAFE).unwrap();
+        assert_eq!(
+            legacy_projection(&unsafe_graph.value, &unsafe_graph.revision, None)
+                .unwrap_err()
+                .code,
+            "unsafe_process_node"
+        );
+        let unknown = parse(UNKNOWN_TYPE).unwrap();
+        assert_eq!(
+            legacy_projection(&unknown.value, &unknown.revision, None)
+                .unwrap_err()
+                .code,
+            "unsupported_node_type"
+        );
+        let future = parse(FUTURE).unwrap();
+        assert_eq!(
+            legacy_projection(&future.value, &future.revision, None)
+                .unwrap_err()
+                .code,
+            "unsupported_graph_version"
+        );
+        let mut malformed = parse(LEGACY).unwrap().value;
+        malformed["cores"]["isos"]["layers"]["process"]["groups"]["component"]["nodes"]["eos"]["settings"]
+            .as_object_mut().unwrap().remove("role");
+        let error = legacy_projection(&malformed, "raw-sha", None).unwrap_err();
+        assert_eq!(
+            (error.path.as_str(), error.code),
+            (
+                "/cores/isos/layers/process/groups/component/nodes/eos/settings/role",
+                "unmapped_graph_field"
+            )
+        );
+        let mut unknown_core = parse(LEGACY).unwrap().value;
+        unknown_core["cores"]["evil"] = json!({"layers":{}});
+        let error = legacy_projection(&unknown_core, "raw-sha", None).unwrap_err();
+        assert_eq!(
+            (error.path.as_str(), error.code),
+            ("/cores/evil", "unsupported_core")
+        );
+        let empty = json!({"version":"1.0.0","robot":{},"cores":{}});
+        let error = legacy_projection(&empty, "raw-sha", None).unwrap_err();
+        assert_eq!(
+            (error.path.as_str(), error.code),
+            ("/robot/id", "invalid_graph")
+        );
+        let empty = json!({"version":"1.0.0","robot":{"id":"robot","name":"Robot"},"cores":{}});
+        let error = legacy_projection(&empty, "raw-sha", None).unwrap_err();
+        assert_eq!(
+            (error.path.as_str(), error.code),
+            ("/cores", "invalid_graph")
+        );
+    }
 
     #[test]
     fn frozen_bytes_have_distinct_original_revisions() {

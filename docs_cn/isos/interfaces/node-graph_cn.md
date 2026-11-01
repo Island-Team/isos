@@ -100,11 +100,19 @@ IsOS 将已验证的可执行文件、场景路径和 MuJoCo 库路径传给 EOS
 
 来源为 `eos.hardware.camera@v0.1` 节点时，将此对象放入已注册 `eos.interface.camera_gate@v0.1` 节点的 `inputs.frame`。命令绑定没有用户 QoS。[当前起始模板](../../../templates/generic-graph.toml)给出不带目标边字段的完整图。端口 `expected_rate_hz` 是生产者提示，独立于边限速。R01 将对运行时适用证据连线使用单调时钟 token bucket 和有界队列的加权公平投递。观测溢出须增加可见计数并限速告警；不能准入的命令须明确拒绝或报告不确定结果，绝不可暗中丢弃。停止路由时丢弃非命令排队工作，并通过调度器停止执行器。优先级不改变命令授权，执行器数据仍通过调度器。IsOS 存储和校验边元数据，不调度硬件；IsosUI 显示两个值并标明仅供设计的连线。
 
-读取算法：最多读取 1 MiB，并在 JSON 解码或规范化之前根据**原始已保存字节**计算 SHA-256 修订号。只按精确图版本 `1.0.0` 和 `0.1.0` 分派；对原始节点类型 ID 校验精确注册身份和既有安全行为。本读取器保留原始 JSON 值；既有归属方校验器在类型化投影时应用其已确立的可选字段默认值。独立的共享规范化投影仍属后续工作，且不得改动已保存字节或类型身份。未知版本可作为原始 JSON 在工作台查看，但不能校验、应用、生成配置、运行或重启；这些操作在 `/version` 返回支持版本集合。无效 JSON 不能作为图展示。见[架构算法](../design/system_cn.md)。
+读取算法：最多读取 1 MiB，并在 JSON 解码或规范化之前根据**原始已保存字节**计算 SHA-256 修订号。只按精确图版本 `1.0.0` 和 `0.1.0` 分派；对原始节点类型 ID 校验精确注册身份和既有安全行为。已保存值与 GET 的 `graph` 始终保持原样。对于整张图均已映射且安全的 `1.0.0` 图，IsOS 还在内存中派生只读的[旧图检查投影](#g02-旧图检查投影已实现契约)。未知版本可作为原始 JSON 在工作台查看，但不能校验、应用、生成配置、运行或重启；这些操作在 `/version` 返回支持版本集合。无效 JSON 不能作为图展示。见[架构算法](../design/system_cn.md)。
 
 兼容读取器保留原始已保存字节及其 SHA-256。安全且已保存的 `1.0.0` 图仍可查看，应用后在显式迁移前为只读；未应用的旧初始图仍可完成首次安全 Apply。修订号匹配且结构相同的旧图 Apply 返回原修订号而不写入，即使提交的 JSON 格式不同。已应用旧图的改动返回 `migration_required`。显式迁移先预览确定性的旧新差异，要求原始保存修订号，只在归属方校验与 setup 成功后写入 `0.1.0` 字节。它保留 ID、路径、引用、边、精确软件包 pin 及旧 schema 接受的字段；未映射字段或类型在精确路径拒绝。任意命令 `isos.process.component@v1.0` 与 `settings.command` 不会自动转换。旧 `eos.process.backend@v1.0` 须有精确且已验证的替代类型。解析、软件包检查、setup 生成或修订比较失败时，保存字节及活动修订号不变；迁移成功也只有在 Restart 后才改变活动修订号。
 
 固定兼容输入位于 [`tests/fixtures/graph_compat/`](../../../tests/fixtures/graph_compat/README.md)，包含安全的 `1.0.0` 图、空白不同但语义相同的图、未来 `2.0.0` 图、未知类型 ID 和不安全命令进程。这些字节及预期路径属于测试样例，不是新部署模板。
+
+### G02 旧图检查投影——已实现契约
+
+只有整张 `1.0.0` 图的精确版本、安全类型身份、位置与字段形状全部通过，兼容读取器才派生 `legacy_projection`。读取器与迁移实现共享**同一份** G03 精确映射表：下文九个旧新类型对和四个明确允许的 EGIA 原样保留身份。MuJoCo 进程的条件映射要求同一精确且已验证的软件包 pin 与目标 contribution；缺失时不生成投影，并在 `/cores/.../nodes/<id>/package` 返回 `unmapped_node_type`。不能按后缀推断，不能为软件包专用 MuJoCo 硬件类型、旧 EOS control 类型或 IsOS/IsosUI Vision 类型生成候选目标。已知但未映射的旧类型在其 `/node_type` 返回 `unmapped_node_type` 与移除或编写已注册替代类型的指导，并使已保存图只读。未知未来版本、不安全进程、位置错误与无效图**不产生部分投影**；其原有精确路径准入诊断优先于规范化。旧初始图在首次 Apply 前仅当整张图通过此映射边界时可编辑；已应用的旧图仍只读。
+
+`legacy_projection.graph` 是**只读的 `1.0.0` 检查值**。节点 ID、路径与 `node_type` 字符串仍为旧值；独立的 `legacy_projection.mappings` 按标准路径顺序为每个节点报告 `{path,source_type,candidate_type}`。候选信息不是迁移后的图或可执行类型注册。投影只可补齐该精确历史归属方 schema 已定义为可选的字段：当该节点 schema 提供默认值时，缺失的 `inputs:{}`、`references:[]`、`settings:{}`、`capabilities:[]`；对于按角色选择的 IsOS component，缺失的 `settings.args:[]`、`env:{}`、`start_timeout_ms:30000` 毫秒、`restart:"never"`、`max_restarts:0`、`depends_on:[]`。绝不虚构必需的 `id`、`label`、`description`、`role`、软件包 pin、端口或连线。旧图的空 `description` 在投影图中仍为空；注册类型的说明仅可作为独立的 `display_descriptions` 展示元数据。当前 M1 适用的 camera → gate 路由要求 `@v0.1` 两端类型，因此 `1.0.0` 连线均不插入 `priority` 或 `frequency_hz`。若以后归属方注册适用的旧版证据路由，缺失的优先级可在检查时显示为 `0`；缺失 `frequency_hz` 仍表示不限频，不插入该字段。固定安全或执行器路径不增加 QoS 字段。每个补齐的默认值按 JSON Pointer 排序，记为 `defaults` 的 `{path,value}`，使调用方可区分来源数据和展示数据。所有既有扩展 map 与值保持原样。归属方校验器仍按其历史默认值校验**原始**图；投影不能放宽准入。
+
+GET 增加 `data.legacy_projection:{read_only:true,source_revision,graph,mappings,defaults,display_descriptions}`。对于新 `0.1.0`、缺失、未来、不安全和未映射图不提供此字段。`source_revision` 等于原始已保存字节的 SHA-256；`data.revision` 与 `data.graph` 不变。Validate 可派生同一投影供检查，但必须按原始 JSON 指针报告准入，也不能把投影作为替代来源交给 Apply、setup、Run、Restart 或迁移。PUT 与 CLI 将提交的原始值同已保存原始值比较。迁移仍只改 `/version` 与批准的类型 ID，绝不序列化投影默认值。以后增加映射对时，读取器或迁移接收之前必须更新归属方契约、中英夹具并完成独立审查。
 
 ## G03 显式图迁移
 

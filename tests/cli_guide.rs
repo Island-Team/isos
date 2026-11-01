@@ -11,6 +11,29 @@ fn isos(home: &std::path::Path, args: &[&str]) -> std::process::Output {
 }
 
 #[test]
+fn unmapped_legacy_cli_validate_and_apply_fail_at_exact_pointer_without_write() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let source = include_bytes!("fixtures/graph_compat/legacy_unmapped_1_0_0.json");
+    let path = temp.path().join("legacy.json");
+    std::fs::write(&path, source).unwrap();
+    let name = path.to_str().unwrap();
+    let expected = "/cores/eos/layers/control/groups/manual/nodes/manual_0/node_type";
+    for args in [
+        vec!["config", "validate", name],
+        vec!["config", "apply", name],
+    ] {
+        let output = isos(&home, &args);
+        assert!(!output.status.success(), "{args:?}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains(expected), "{stderr}");
+        assert!(stderr.contains("unmapped_node_type"), "{stderr}");
+    }
+    assert_eq!(std::fs::read(&path).unwrap(), source);
+    assert!(!home.join("config/deployments/default.nodes.json").exists());
+}
+
+#[test]
 fn help_prints_quick_start_without_creating_home() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("isos-home");

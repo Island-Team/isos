@@ -145,7 +145,7 @@ fn keys(value: &Value, path: &str, allowed: &[&str]) -> Result<(), Diagnostic> {
     for key in object.keys() {
         if !allowed.contains(&key.as_str()) {
             return Err(diagnostic(
-                format!("{path}/{key}"),
+                format!("{path}/{}", graph_compat::pointer_segment(key)),
                 "unmapped_graph_field",
                 format!("legacy field {key} is not declared by the owner schema"),
             ));
@@ -155,6 +155,14 @@ fn keys(value: &Value, path: &str, allowed: &[&str]) -> Result<(), Diagnostic> {
 }
 
 pub fn propose(saved: &SavedGraph) -> Result<Proposal, Diagnostic> {
+    propose_inner(saved, true)
+}
+
+pub fn propose_for_inspection(saved: &SavedGraph) -> Result<Proposal, Diagnostic> {
+    propose_inner(saved, false)
+}
+
+fn propose_inner(saved: &SavedGraph, enforce_change_limit: bool) -> Result<Proposal, Diagnostic> {
     if saved.value["version"] != "1.0.0" {
         return Err(diagnostic(
             "/version",
@@ -175,7 +183,7 @@ pub fn propose(saved: &SavedGraph) -> Result<Proposal, Diagnostic> {
         .as_object_mut()
         .ok_or_else(|| diagnostic("/cores", "unmapped_graph_field", "cores must be an object"))?;
     for (core_id, core) in cores {
-        let core_path = format!("/cores/{core_id}");
+        let core_path = format!("/cores/{}", graph_compat::pointer_segment(core_id));
         keys(core, &core_path, &["layers"])?;
         let layers = core["layers"].as_object_mut().ok_or_else(|| {
             diagnostic(
@@ -185,7 +193,10 @@ pub fn propose(saved: &SavedGraph) -> Result<Proposal, Diagnostic> {
             )
         })?;
         for (layer_id, layer) in layers {
-            let layer_path = format!("{core_path}/layers/{layer_id}");
+            let layer_path = format!(
+                "{core_path}/layers/{}",
+                graph_compat::pointer_segment(layer_id)
+            );
             keys(layer, &layer_path, &["groups"])?;
             let groups = layer["groups"].as_object_mut().ok_or_else(|| {
                 diagnostic(
@@ -195,7 +206,10 @@ pub fn propose(saved: &SavedGraph) -> Result<Proposal, Diagnostic> {
                 )
             })?;
             for (group_id, group) in groups {
-                let group_path = format!("{layer_path}/groups/{group_id}");
+                let group_path = format!(
+                    "{layer_path}/groups/{}",
+                    graph_compat::pointer_segment(group_id)
+                );
                 keys(group, &group_path, &["nodes"])?;
                 let nodes = group["nodes"].as_object_mut().ok_or_else(|| {
                     diagnostic(
@@ -205,7 +219,10 @@ pub fn propose(saved: &SavedGraph) -> Result<Proposal, Diagnostic> {
                     )
                 })?;
                 for (node_id, node) in nodes {
-                    let node_path = format!("{group_path}/nodes/{node_id}");
+                    let node_path = format!(
+                        "{group_path}/nodes/{}",
+                        graph_compat::pointer_segment(node_id)
+                    );
                     keys(node, &node_path, NODE_FIELDS)?;
                     let node_type = node["node_type"].as_str().unwrap_or("");
                     if node_type == "isos.process.component@v1.0"
@@ -230,7 +247,9 @@ pub fn propose(saved: &SavedGraph) -> Result<Proposal, Diagnostic> {
                         return Err(diagnostic(
                             format!("{node_path}/node_type"),
                             "unmapped_node_type",
-                            format!("{node_type} has no approved 0.1.0 mapping"),
+                            format!(
+                                "{node_type} has no approved 0.1.0 mapping; remove it or author a registered replacement"
+                            ),
                         ));
                     };
                     if node_type == "eos.process.mujoco@v1.0" && node["package"].is_null() {
@@ -247,7 +266,7 @@ pub fn propose(saved: &SavedGraph) -> Result<Proposal, Diagnostic> {
                         from,
                         to: (*target).into(),
                     });
-                    if changes.len() > 256 {
+                    if enforce_change_limit && changes.len() > 256 {
                         return Err(diagnostic(
                             "/changes",
                             "migration_change_limit",
@@ -283,7 +302,11 @@ pub fn cross_core_diagnostic(graph: &Value) -> Option<Diagnostic> {
             for (group_id, group) in layer["groups"].as_object()? {
                 for (node_id, node) in group["nodes"].as_object()? {
                     let base = format!(
-                        "/cores/{core_id}/layers/{layer_id}/groups/{group_id}/nodes/{node_id}"
+                        "/cores/{}/layers/{}/groups/{}/nodes/{}",
+                        graph_compat::pointer_segment(core_id),
+                        graph_compat::pointer_segment(layer_id),
+                        graph_compat::pointer_segment(group_id),
+                        graph_compat::pointer_segment(node_id)
                     );
                     if let Some(references) = node["references"].as_array() {
                         for (index, value) in references.iter().enumerate() {
@@ -322,13 +345,27 @@ pub fn cross_core_diagnostic(graph: &Value) -> Option<Diagnostic> {
                         for (input, sources) in inputs {
                             let source_list: Vec<(String, &Value)> =
                                 sources.as_array().map_or_else(
-                                    || vec![(format!("{base}/inputs/{input}"), sources)],
+                                    || {
+                                        vec![(
+                                            format!(
+                                                "{base}/inputs/{}",
+                                                graph_compat::pointer_segment(input)
+                                            ),
+                                            sources,
+                                        )]
+                                    },
                                     |items| {
                                         items
                                             .iter()
                                             .enumerate()
                                             .map(|(index, source)| {
-                                                (format!("{base}/inputs/{input}/{index}"), source)
+                                                (
+                                                    format!(
+                                                        "{base}/inputs/{}/{index}",
+                                                        graph_compat::pointer_segment(input)
+                                                    ),
+                                                    source,
+                                                )
                                             })
                                             .collect()
                                     },
