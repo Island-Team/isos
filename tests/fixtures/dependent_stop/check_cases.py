@@ -55,7 +55,10 @@ for case in cases:
     if "receipt_mutation" in case:
         assert case["receipt_fixture"] == "eos_receipt_confirmed.json", case
         assert case["expected_outcome"] == "unknown", case
-        assert case["expected_reason"] in {"eos_receipt_invalid", "eos_receipt_late", "eos_stop_unconfirmed"}, case
+        assert case["expected_reason"] in {
+            "eos_receipt_missing", "eos_receipt_invalid", "eos_receipt_late",
+            "eos_stop_unconfirmed", "stop_deadline_exceeded",
+        }, case
     if case.get("support_token_not_stop_proof"):
         assert case["expected_reason"] == "eos_receipt_missing", case
 assert {"clean_reverse_dependency", "eos_dual_ack_unknown", "provider_crash", "restart_old_stop_unknown", "log_collector_outage", "simulator_crash", "socket_cleanup_failure"}.issubset(ids)
@@ -63,6 +66,18 @@ assert {"leader_exited_unreaped_before_stop", "leader_reaped_before_group_signal
 assert {"stalled_intent_rename_after_deadline", "stalled_intent_parent_fsync_after_deadline", "live_confirmed_then_manager_restart", "deadline_equality_fence"}.issubset(ids)
 assert {"receipt_duplicate_json_key", "receipt_unknown_json_key", "receipt_missing_required_key", "receipt_oversized_line", "receipt_partial_line", "receipt_second_line", "receipt_wrong_pipe", "receipt_wrong_run", "receipt_wrong_pid", "receipt_wrong_revision", "receipt_wrong_backend", "receipt_wrong_parts", "receipt_group_not_drained", "receipt_late", "receipt_after_global_deadline", "receipt_nonzero_eos_exit", "receipt_short_eos_grace", "managed_stop_token_only"}.issubset(ids)
 assert {"receipt_stderr_log_only", "receipt_descendant_holds_stdout", "managed_stop_token_absent_preflight"}.issubset(ids)
+by_id = {case["id"]: case for case in cases}
+assert by_id["stale_eos_receipt"]["receipt_source"] == "selected_eos_stdout"
+assert by_id["stale_eos_receipt"]["receipt_arrival"] == "before_eos_grace"
+assert by_id["stale_eos_receipt"]["expected_reason"] == "eos_receipt_invalid"
+assert by_id["receipt_wrong_pipe"]["selected_pipe_has_receipt"] is False
+assert by_id["receipt_wrong_pipe"]["selected_pipe_empty_through_eos_grace"] is True
+assert by_id["receipt_wrong_pipe"]["expected_reason"] == "eos_receipt_missing"
+assert by_id["receipt_after_global_deadline"]["terminal_pending_at_deadline"] is True
+assert by_id["receipt_after_global_deadline"]["eos_group_reaped_before_cleanup_at"] is True
+assert by_id["receipt_after_global_deadline"]["expected_reason"] == "stop_deadline_exceeded"
+assert by_id["receipt_late"]["expected_reason"] == "eos_receipt_late"
+assert by_id["receipt_short_eos_grace"]["expected_reason"] == "eos_receipt_late"
 
 receipt_keys = {
     "schema_version", "type", "run_id", "eos_pid", "active_revision", "backend_node",
