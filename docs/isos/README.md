@@ -4,6 +4,6 @@ IsOS is the local owner of the saved graph, backend packages, workbench API, and
 
 The saved `.nodes.json` graph is the only deployment path. An optional user unit can run product `isos serve`. **Current binaries write `0.1.0`, read safe `1.0.0` and `0.1.0`, and offer explicit revision-checked migration.** Node type versions are independent. EOS starts MuJoCo from package paths verified by IsOS and connects its adapters to it; EGIA common nodes remain design-only today. The P01 [verified package contract](interfaces/package-verification.md) describes the next integrity boundary. Later target behavior is labeled in each contract.
 
-The R03 [managed control-grant contract](interfaces/control-grants.md) and [launch design](design/control-grants.md) define IsOS's pending issuance and child handoff. EOS fixture-injected grants do not close managed R03 until this owner path passes.
+The R03 [managed control-grant contract](interfaces/control-grants.md) and [launch design](design/control-grants.md) record the qualified IsOS issuance and EOS handoff after merged owner PRs and a clean-home replay. The broader I4 lifecycle gate and R05/R06 physical simulator qualification remain open.
 
 [中文](../../docs_cn/isos/README_cn.md)
