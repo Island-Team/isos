@@ -37,6 +37,12 @@ isos pkg node-sets
 
 **P05 读取器特性预检：**选择 EOS、可选 EGIA 构建及精确 MuJoCo 包后，运行 `isos version check --json` 并检查各启用核心的诊断，然后按已保存修订 Validate 和 Apply 草稿。Run／Restart 在替换子进程前重查选定图、程序身份、必需特性及 P04 生成版本。即使产品版本较新，缺失 `@v0.1` 类型、`mujoco-child-v2` 声明、EGIA runtime 的 `managed-config-v1`／`eos-gateway-client-v2` 声明或已验证包 pin 仍阻止准入。对 EGIA，先通过 `EGIA_PYTHON` 或 `ISLAND_PYTHON` 选定已有解释器和已安装模块树；不启动服务的能力探测不会创建虚拟环境或运行 `uv sync`。IsOS 记录解释器路径、解析后目标、摘要及代码清单，Restart 前重新核对。恢复兼容的所选构建，再对相同修订 Apply。只有存在与图精确匹配的已验证发行版时，`compatible_upgrade` 才不为 `null`。[P05 契约](../interfaces/reader-features_cn.md)规定诊断字段和停止前失败行为。
 
+## R03 托管控制授权重放
+
+**目标，尚未实现。** 对 `0.1.0` 图 Validate 和 Apply 后，从干净的 `ISOS_HOME` 启动托管部署。检查 `isos status --json`：`active_revision` 必须等于保存图精确字节的 SHA-256，`run_id` 必须标识本次启动。IsOS 必须选中已验证的 schema-2 生成叶目录，并在 `run/control-grants/<deployment>/<run_id>/` 下创建一个私有运行授权包。只检查文件名、权限以及验证文件的运行/修订，不打印授权内容，也不把它放进命令行、浏览器或日志。EOS 接收 `EOS_CONTROL_GRANTS_FILE`；EGIA 只接收 `EGIA_EOS_CONTROL_GRANT_FILE`；受监管的 bridge 只接收 `AETHER_BRIDGE_CONTROL_GRANT_FILE`。[所有者契约](../interfaces/control-grants_cn.md)规定精确字段和方法范围。
+
+使用 EOS 发现元数据，把 `eos-active-revision` 与 IsOS 的 `active_revision` 比较；`eos-projection-sha256` 是独立摘要。托管 EGIA gRPC 运动使用自己的角色授权和活动修订。操作员授权允许 bridge `primitive_typed` 运动及受监管的 gRPC stop/recovery，不允许 gRPC 运动；任何授权都不从浏览器获取。丢失响应时按原操作 ID 查询。幂等 Start 和自动子进程重启保留本次运行授权；显式 Restart 即使图字节未变也轮换两个授权。通过 `isos logs all --current` 检查首条就绪或故障事件，并确认没有凭据或 bearer 文本。授权包缺失、不安全或过期时，必须在 EOS 可写就绪前失败。EOS 注入验证文件的测试只是 R03 的一侧；IsOS 的签发、传递及干净 home 重放也必须通过，才能关闭托管里程碑。R05/R06 后续验证 MuJoCo 实体 fence 与安全停止。
+
 ### 迁移已保存的旧图
 
 编辑已应用的 `1.0.0` 图之前，先从 Graph 或 `GET /api/isos/v1/node-graph` 读取保存修订号。整图已映射且安全时，还会显示只用于检查的 `legacy_projection`：旧类型 ID 保持不变，`mappings` 列出候选替代类型，`defaults` 标记仅供展示的默认值。应编辑原始 `graph` 并显式迁移；把投影当作更改图提交会被拒绝且不写入。未映射的旧 control 类型保持只读，并在 Run 之前报告精确的 `/node_type` 路径。预览会报告精确类型替换、完整的 `0.1.0` 建议图及阻塞原因，且不改变保存字节或运行中的子进程：
