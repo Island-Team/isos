@@ -51,11 +51,45 @@ fn publish_run_scope(supervisor: &process::Supervisor) -> Result<()> {
 }
 
 fn ensure_launch_history(paths: &config::Paths, name: &str) -> Result<()> {
-    let (_, state) = log_store::LogStore::new(paths, name)?.run_identity();
+    let (run_id, state) = log_store::LogStore::new(paths, name)?.run_identity();
+    if state == "known"
+        && run_id
+            .as_deref()
+            .is_some_and(|run_id| dependent_stop::recover(paths, name, run_id).outcome == "unknown")
+    {
+        return Err(anyhow::Error::new(RetirementDiagnostic {
+            code: "deployment_stop_unconfirmed",
+        }));
+    }
     ensure!(
         state == "none",
         "previous run requires owner-reviewed stop recovery"
     );
+    Ok(())
+}
+
+fn check_replacement_admission(
+    paths: &config::Paths,
+    managers: &Deployments,
+    name: &str,
+) -> Result<()> {
+    check_candidate_cleanup_marker(
+        paths,
+        name,
+        managers.get(name).map(|active| active.supervisor.run_id()),
+    )?;
+    if managers
+        .get(name)
+        .and_then(|active| active.supervisor.terminal())
+        .is_some_and(|terminal| terminal.outcome == "unknown")
+    {
+        return Err(anyhow::Error::new(RetirementDiagnostic {
+            code: "deployment_stop_unconfirmed",
+        }));
+    }
+    if !managers.contains_key(name) {
+        ensure_launch_history(paths, name)?;
+    }
     Ok(())
 }
 
@@ -89,7 +123,20 @@ pub(crate) fn next_run_id() -> String {
 
 std::thread_local! {
     static RUN_STARTED_IN_REQUEST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static REQUEST_CORRELATION: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
 }
+
+#[derive(Debug)]
+struct RetirementDiagnostic {
+    code: &'static str,
+}
+
+impl std::fmt::Display for RetirementDiagnostic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: owner recovery required", self.code)
+    }
+}
+impl std::error::Error for RetirementDiagnostic {}
 
 #[cfg(test)]
 fn stop_log_gate() -> &'static (std::sync::Barrier, std::sync::Barrier) {
@@ -259,8 +306,20 @@ fn stop_active(
     active: &mut ActiveDeployment,
     failed_candidate: bool,
 ) -> (Vec<String>, dependent_stop::Terminal) {
+    stop_active_with_correlation(paths, name, active, failed_candidate, None)
+}
+
+fn stop_active_with_correlation(
+    paths: &config::Paths,
+    name: &str,
+    active: &mut ActiveDeployment,
+    failed_candidate: bool,
+    request_correlation: Option<&str>,
+) -> (Vec<String>, dependent_stop::Terminal) {
     let already = active.supervisor.terminal().is_some();
-    let correlation = next_correlation_id();
+    let correlation = request_correlation
+        .map(str::to_owned)
+        .unwrap_or_else(next_correlation_id);
     let pending_event = if already {
         None
     } else {
@@ -321,6 +380,11 @@ fn log_prelaunch_failure(
             .or_else(|| {
                 cause
                     .downcast_ref::<crate::candidate_skill_preflight::Diagnostic>()
+                    .map(|d| (d.code, ""))
+            })
+            .or_else(|| {
+                cause
+                    .downcast_ref::<RetirementDiagnostic>()
                     .map(|d| (d.code, ""))
             })
     });
@@ -516,21 +580,7 @@ fn restart_processes_with_plan(
     plan: &crate::generated_v2::SecretPlan,
     managed: bool,
 ) -> Result<Vec<String>> {
-    check_candidate_cleanup_marker(
-        paths,
-        name,
-        managers.get(name).map(|active| active.supervisor.run_id()),
-    )?;
-    if !managers.contains_key(name) {
-        ensure_launch_history(paths, name)?;
-    }
-    if managers
-        .get(name)
-        .and_then(|active| active.supervisor.terminal())
-        .is_some_and(|terminal| terminal.outcome == "unknown")
-    {
-        bail!("dependent stop unconfirmed; replacement blocked");
-    }
+    check_replacement_admission(paths, managers, name)?;
     if managed {
         crate::control_grants::validate_plan(specs)?;
     }
@@ -548,6 +598,7 @@ fn restart_processes_with_plan(
     } else {
         None
     };
+    let selected_replacement = candidate_inputs.is_some();
     let mut supervisor = process::Supervisor::new(paths, name)?;
     if managed {
         supervisor.prepare_control_grants(revision)?;
@@ -562,19 +613,8 @@ fn restart_processes_with_plan(
         candidate_inputs,
         &mut supervisor,
     )?;
-    let mut previous = managers.remove(name).map(|mut active| {
-        let old_specs = active.supervisor.specs();
-        let (_, terminal) = stop_active(paths, name, &mut active, false);
-        (active, old_specs, terminal)
-    });
-    if previous
-        .as_ref()
-        .is_some_and(|(_, _, terminal)| terminal.outcome == "unknown")
-    {
-        let (active, _, _) = previous.take().expect("checked previous stop");
-        managers.insert(name.to_owned(), active);
-        bail!("dependent stop unconfirmed; replacement blocked");
-    }
+    let previous =
+        stop_old_for_replacement(paths, managers, name, &mut supervisor, selected_replacement)?;
     // Replacing a run is ordered after the previous children have been reaped.
     // The new scope is durable before any replacement child can start.
     publish_run_scope(&supervisor)?;
@@ -677,40 +717,117 @@ fn restart_processes_with_plan(
     Ok(started)
 }
 
+fn stop_old_for_replacement(
+    paths: &config::Paths,
+    managers: &mut Deployments,
+    name: &str,
+    candidate: &mut process::Supervisor,
+    selected_replacement: bool,
+) -> Result<
+    Option<(
+        ActiveDeployment,
+        Vec<process::ProcessSpec>,
+        dependent_stop::Terminal,
+    )>,
+> {
+    let stopped = managers.get_mut(name).map(|active| {
+        let old_specs = active.supervisor.specs();
+        let correlation = selected_replacement
+            .then(|| REQUEST_CORRELATION.with(|current| current.borrow().clone()))
+            .flatten();
+        let (_, terminal) =
+            stop_active_with_correlation(paths, name, active, false, correlation.as_deref());
+        (old_specs, terminal)
+    });
+    if stopped
+        .as_ref()
+        .is_some_and(|(_, terminal)| terminal.outcome == "unknown")
+    {
+        if candidate.retire_candidate_grants().is_err() {
+            candidate.detach_candidate_grants();
+            block_candidate_cleanup(paths, name, candidate.run_id());
+            return Err(anyhow::Error::new(RetirementDiagnostic {
+                code: "skill_catalog_preflight_cleanup_unconfirmed",
+            }));
+        }
+        return Err(anyhow::Error::new(RetirementDiagnostic {
+            code: "deployment_stop_unconfirmed",
+        }));
+    }
+    Ok(managers
+        .remove(name)
+        .zip(stopped)
+        .map(|(active, (old_specs, terminal))| (active, old_specs, terminal)))
+}
+
 fn check_candidate_cleanup_marker(
     paths: &config::Paths,
     name: &str,
     active_run: Option<&str>,
 ) -> Result<()> {
-    let blocked = candidate_cleanup_blocks().lock().map_err(|_| anyhow::anyhow!("skill catalog preflight cleanup unconfirmed; repair private candidate state before retry"))?;
-    ensure!(
-        !blocked.contains(
-            &paths
-                .runtime
-                .join(format!("{name}.skill-candidate-cleanup-unconfirmed"))
-        ) && !paths
+    let cleanup_error = || {
+        anyhow::Error::new(RetirementDiagnostic {
+            code: "skill_catalog_preflight_cleanup_unconfirmed",
+        })
+    };
+    let blocked = candidate_cleanup_blocks()
+        .lock()
+        .map_err(|_| cleanup_error())?;
+    if blocked.contains(
+        &paths
             .runtime
+            .join(format!("{name}.skill-candidate-cleanup-unconfirmed")),
+    ) || paths
+        .runtime
+        .join(format!("{name}.skill-candidate-cleanup-unconfirmed"))
+        .exists()
+        || paths
+            .data
             .join(format!("{name}.skill-candidate-cleanup-unconfirmed"))
             .exists()
-            && !paths
-                .data
-                .join(format!("{name}.skill-candidate-cleanup-unconfirmed"))
-                .exists(),
-        "skill catalog preflight cleanup unconfirmed; repair private candidate state before retry"
-    );
+    {
+        return Err(cleanup_error());
+    }
     let bundle_root = paths.runtime.join("control-grants").join(name);
-    match fs::read_dir(&bundle_root) {
+    let entries = fs::read_dir(&bundle_root);
+    #[cfg(test)]
+    let entries = if FAIL_CANDIDATE_INSPECTION.with(|fail| fail.get()) == 1 {
+        Err(std::io::Error::other(
+            "injected grant-root inspection failure",
+        ))
+    } else {
+        entries
+    };
+    match entries {
         Ok(entries) => {
             for entry in entries {
-                let entry = entry?;
-                ensure!(
-                    entry.file_name().to_str() == active_run && entry.file_type()?.is_dir(),
-                    "skill catalog preflight cleanup unconfirmed; repair private candidate state before retry"
-                );
+                #[cfg(test)]
+                let entry = if FAIL_CANDIDATE_INSPECTION.with(|fail| fail.get()) == 2 {
+                    Err(std::io::Error::other(
+                        "injected grant-entry inspection failure",
+                    ))
+                } else {
+                    entry
+                };
+                let entry = entry.map_err(|_| cleanup_error())?;
+                let file_type = entry.file_type();
+                #[cfg(test)]
+                let file_type = if FAIL_CANDIDATE_INSPECTION.with(|fail| fail.get()) == 3 {
+                    Err(std::io::Error::other(
+                        "injected grant-type inspection failure",
+                    ))
+                } else {
+                    file_type
+                };
+                if entry.file_name().to_str() != active_run
+                    || !file_type.map_err(|_| cleanup_error())?.is_dir()
+                {
+                    return Err(cleanup_error());
+                }
             }
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
+        Err(_) => return Err(cleanup_error()),
     }
     Ok(())
 }
@@ -725,6 +842,7 @@ thread_local! {
     static FAIL_CANDIDATE_MARKER_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static FAIL_CANDIDATE_FALLBACK_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static FORCE_PROBE_CLEANUP_UNCONFIRMED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FAIL_CANDIDATE_INSPECTION: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
 }
 
 fn persist_candidate_cleanup_marker(marker: &std::path::Path) -> Result<()> {
@@ -741,6 +859,34 @@ fn persist_candidate_fallback_marker(marker: &std::path::Path) -> Result<()> {
         bail!("candidate cleanup fallback marker persistence failed");
     }
     crate::config::atomic_write(marker, b"candidate cleanup requires repair\n")
+}
+
+fn block_candidate_cleanup(paths: &config::Paths, name: &str, run_id: &str) {
+    let marker = paths
+        .runtime
+        .join(format!("{name}.skill-candidate-cleanup-unconfirmed"));
+    if let Ok(mut blocked) = candidate_cleanup_blocks().lock() {
+        blocked.insert(marker.clone());
+    }
+    if persist_candidate_cleanup_marker(&marker).is_err() {
+        tracing::error!(
+            event_code = "skill_catalog_preflight_cleanup_unconfirmed",
+            "candidate cleanup marker persistence failed"
+        );
+        let fallback = paths
+            .data
+            .join(format!("{name}.skill-candidate-cleanup-unconfirmed"));
+        if persist_candidate_fallback_marker(&fallback).is_err() {
+            tracing::error!(
+                event_code = "skill_catalog_preflight_cleanup_unconfirmed",
+                "candidate cleanup fallback marker persistence failed"
+            );
+            let orphan = paths.runtime.join("control-grants").join(name).join(run_id);
+            if !orphan.exists() {
+                let _ = fs::create_dir(&orphan);
+            }
+        }
+    }
 }
 
 fn probe_candidate(
@@ -790,33 +936,7 @@ fn probe_candidate(
         };
         if retirement.is_err() || unconfirmed {
             supervisor.detach_candidate_grants();
-            let marker = paths
-                .runtime
-                .join(format!("{name}.skill-candidate-cleanup-unconfirmed"));
-            // Keep the live manager closed even if the durable marker cannot be written.
-            match candidate_cleanup_blocks().lock() {
-                Ok(mut blocked) => {
-                    blocked.insert(marker.clone());
-                }
-                Err(_) => bail!(
-                    "skill catalog preflight cleanup unconfirmed; repair private candidate state before retry"
-                ),
-            }
-            if persist_candidate_cleanup_marker(&marker).is_err() {
-                tracing::error!(
-                    event_code = "skill_catalog_preflight_cleanup_unconfirmed",
-                    "candidate cleanup marker persistence failed"
-                );
-                let fallback = paths
-                    .data
-                    .join(format!("{name}.skill-candidate-cleanup-unconfirmed"));
-                if persist_candidate_fallback_marker(&fallback).is_err() {
-                    tracing::error!(
-                        event_code = "skill_catalog_preflight_cleanup_unconfirmed",
-                        "candidate cleanup fallback marker persistence failed"
-                    );
-                }
-            }
+            block_candidate_cleanup(paths, name, &candidate_run);
             return Err(anyhow::Error::new(inputs.diagnostic(
                 &candidate_run,
                 "skill_catalog_preflight_cleanup_unconfirmed",
@@ -838,11 +958,7 @@ fn start_prepared_processes(
     plan: &crate::generated_v2::SecretPlan,
     managed: bool,
 ) -> Result<(Vec<String>, String)> {
-    check_candidate_cleanup_marker(
-        paths,
-        name,
-        managers.get(name).map(|active| active.supervisor.run_id()),
-    )?;
+    check_replacement_admission(paths, managers, name)?;
     let live_confirmed = managers
         .get(name)
         .and_then(|active| active.supervisor.terminal())
@@ -862,7 +978,9 @@ fn start_prepared_processes(
             .is_some_and(|terminal| terminal.outcome == "unknown")
         {
             managers.insert(name.to_owned(), previous);
-            bail!("dependent stop unconfirmed; launch blocked");
+            return Err(anyhow::Error::new(RetirementDiagnostic {
+                code: "deployment_stop_unconfirmed",
+            }));
         }
     }
     if let Some(active) = managers.get_mut(name) {
@@ -1088,6 +1206,7 @@ pub(crate) fn api_call(
             Ok(json!({"packages":packages}))
         }
         "deployment_restart" => {
+            check_replacement_admission(paths, managers, &name)?;
             let path = paths.node_graph_path(&name);
             let source = fs::read_to_string(&path)?;
             let revision = graph_compat::revision(source.as_bytes());
@@ -1113,6 +1232,7 @@ pub(crate) fn api_call(
             Ok(json!({"started":started,"active_revision":revision}))
         }
         "deployment_start" => {
+            check_replacement_admission(paths, managers, &name)?;
             let path = paths.node_graph_path(&name);
             let source = fs::read_to_string(&path)?;
             let revision = graph_compat::revision(source.as_bytes());
@@ -1292,14 +1412,21 @@ pub(crate) fn handle_client(
     });
     RUN_STARTED_IN_REQUEST.with(|started| started.set(false));
     let request_correlation = next_correlation_id();
+    REQUEST_CORRELATION.with(|current| *current.borrow_mut() = Some(request_correlation.clone()));
     let outcome = request
         .map_err(anyhow::Error::from)
         .and_then(|request| api_call(paths, managers, service_manager, request));
+    REQUEST_CORRELATION.with(|current| *current.borrow_mut() = None);
     if let Err(error) = &outcome {
         if let Some(name) = failed_deployment.as_deref().filter(|name| {
             clear_error
                 && process::validate_deployment_name(name).is_ok()
                 && !RUN_STARTED_IN_REQUEST.with(std::cell::Cell::get)
+                && !error.chain().any(|cause| {
+                    cause
+                        .downcast_ref::<RetirementDiagnostic>()
+                        .is_some_and(|diagnostic| diagnostic.code == "deployment_stop_unconfirmed")
+                })
         }) {
             log_request_preflight_failure(paths, name, error, &request_correlation);
         }
@@ -1372,6 +1499,15 @@ pub(crate) fn handle_client(
                                         "code":diagnostic.code,"stage":diagnostic.stage,
                                     "path":"","message":diagnostic.message
                                     }]})
+                                })
+                        })
+                        .or_else(|| {
+                            cause
+                                .downcast_ref::<RetirementDiagnostic>()
+                                .map(|diagnostic| {
+                                    json!({"diagnostics":[{"code":diagnostic.code,
+                                    "stage":if diagnostic.code == "deployment_stop_unconfirmed" {"stop"} else {"preflight"},"path":"",
+                                    "message":"Owner recovery required"}]})
                                 })
                         })
                         .or_else(|| {
@@ -1603,6 +1739,547 @@ mod restart_tests {
     use super::*;
     use std::net::Shutdown;
     use std::os::unix::fs::PermissionsExt;
+
+    fn call_admission(paths: &config::Paths, managers: &mut Deployments, op: &str) -> Value {
+        let mut services = services::ServiceManager::new(paths, "test").unwrap();
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let request = json!({"schema_version":1,"op":op,"deployment":"test"});
+        writeln!(client, "{request}").unwrap();
+        client.shutdown(Shutdown::Write).unwrap();
+        handle_client(paths, managers, &mut services, server).unwrap();
+        let mut reply = String::new();
+        client.read_to_string(&mut reply).unwrap();
+        serde_json::from_str(&reply).unwrap()
+    }
+
+    fn assert_admission_code(reply: &Value, code: &str) {
+        assert_eq!(reply["ok"], false);
+        assert_eq!(reply["data"]["diagnostics"][0]["code"], code);
+        assert_eq!(reply["data"]["diagnostics"][0]["path"], "");
+    }
+
+    fn stop_events(paths: &config::Paths) -> Vec<Value> {
+        for _ in 0..100 {
+            let lines = log_store::LogStore::new(paths, "test")
+                .unwrap()
+                .read("all", None, 100)
+                .unwrap()["lines"]
+                .as_array()
+                .unwrap()
+                .clone();
+            if lines
+                .iter()
+                .any(|line| line["event_code"] == "deployment_stop_unconfirmed")
+            {
+                return lines;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("stop event was not committed");
+    }
+
+    fn retirement_fixture(
+        unexpected: bool,
+        eos: bool,
+    ) -> (
+        tempfile::TempDir,
+        config::Paths,
+        Deployments,
+        process::Supervisor,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = config::Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        paths.prepare().unwrap();
+        fs::create_dir_all(paths.node_graph_path("test").parent().unwrap()).unwrap();
+        if eos {
+            fs::write(paths.node_graph_path("test"), serde_json::to_vec(&json!({
+                "cores":{"eos":{"layers":{"process":{"groups":{"mujoco":{"nodes":{"sim":{}}}}}}}}
+            })).unwrap()).unwrap();
+        } else {
+            fs::write(paths.node_graph_path("test"), b"saved graph bytes").unwrap();
+        }
+        let eos_script = temp.path().join("eos-no-receipt.sh");
+        if eos {
+            fs::write(&eos_script, "#!/bin/sh\nrun=''\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = '--run-id' ]; then shift; run=\"$1\"; break; fi\n  shift\ndone\nprintf '{\"timestamp\":\"2026-11-01T10:00:01.000Z\",\"level\":\"info\",\"source\":\"eos\",\"core\":\"eos\",\"event_code\":\"eos_ready\",\"run_id\":\"%s\",\"message\":\"EOS runtime ready\",\"fields\":{\"state\":\"ready\",\"node_count\":1}}\\n' \"$run\" >&2\ntrap 'exit 0' TERM\nwhile :; do sleep 1; done\n").unwrap();
+            fs::set_permissions(&eos_script, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let spec = process::ProcessSpec {
+            id: if eos { "eos" } else { "stub" }.into(),
+            path: if eos {
+                "eos/process/mujoco/sim"
+            } else {
+                "isos/process/component/stub"
+            }
+            .into(),
+            settings: serde_json::from_value(if eos {
+                json!({"command":[eos_script],"role":"eos","start_timeout_ms":1000})
+            } else {
+                json!({"command":["/bin/sleep","30"]})
+            })
+            .unwrap(),
+            package: None,
+            fingerprint: None,
+        };
+        let mut old = process::Supervisor::new(&paths, "test").unwrap();
+        old.prepare_control_grants(&"a".repeat(64)).unwrap();
+        old.publish_run_scope().unwrap();
+        if eos {
+            old.prepare_run(std::slice::from_ref(&spec), &"a".repeat(64))
+                .unwrap();
+        }
+        old.start(&[spec]).unwrap();
+        if unexpected {
+            old.mark_unexpected_exit();
+        }
+        let mut managers = Deployments::new();
+        managers.insert(
+            "test".into(),
+            ActiveDeployment {
+                active_revision: "a".repeat(64),
+                managed: true,
+                supervisor: old,
+                last_error: None,
+                expected_processes: 1,
+            },
+        );
+        let mut candidate = process::Supervisor::new(&paths, "test").unwrap();
+        candidate.prepare_control_grants(&"b".repeat(64)).unwrap();
+        let success = json!({
+            "schema_version":1,"ok":true,"active_revision":"c".repeat(64),
+            "generation":"b".repeat(64),"run_id":candidate.run_id(),
+            "selection_sha256":"a".repeat(64),
+            "libraries":[{"package_id":"test/verified","package_version":"0.1.0",
+                "library":"lib/x.skill.so","library_sha256":"d".repeat(64),
+                "abi_version":2,"skill_count":1}]
+        });
+        let script = temp.path().join("probe.sh");
+        fs::write(
+            &script,
+            format!("#!/bin/sh\nprintf '%s\\n' '{}'\n", success),
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        let inputs = crate::candidate_skill_preflight::Inputs::rejection_stub(script);
+        crate::candidate_skill_preflight::run(
+            &inputs,
+            candidate.run_id(),
+            &candidate.candidate_verifier().unwrap(),
+        )
+        .unwrap();
+        (temp, paths, managers, candidate)
+    }
+
+    #[test]
+    fn unknown_old_stop_retires_unpublished_candidate_and_keeps_old_identity() {
+        let (_temp, paths, mut managers, mut candidate) = retirement_fixture(true, false);
+        let old_run = managers["test"].supervisor.run_id().to_owned();
+        let candidate_dir = paths
+            .runtime
+            .join("control-grants/test")
+            .join(candidate.run_id());
+        let before = fs::read(paths.node_graph_path("test")).unwrap();
+        REQUEST_CORRELATION
+            .with(|current| *current.borrow_mut() = Some("restart-request-42".into()));
+        let error = stop_old_for_replacement(&paths, &mut managers, "test", &mut candidate, true)
+            .err()
+            .unwrap();
+        REQUEST_CORRELATION.with(|current| *current.borrow_mut() = None);
+        assert_eq!(
+            error.downcast_ref::<RetirementDiagnostic>().unwrap().code,
+            "deployment_stop_unconfirmed"
+        );
+        assert!(!candidate_dir.exists());
+        assert_eq!(managers["test"].supervisor.run_id(), old_run);
+        assert_eq!(
+            managers["test"].supervisor.terminal().unwrap().outcome,
+            "unknown"
+        );
+        assert_eq!(fs::read(paths.node_graph_path("test")).unwrap(), before);
+        assert_eq!(
+            log_store::LogStore::new(&paths, "test")
+                .unwrap()
+                .run_identity()
+                .0
+                .as_deref(),
+            Some(old_run.as_str())
+        );
+        assert!(check_candidate_cleanup_marker(&paths, "test", Some(&old_run)).is_ok());
+        let lines = stop_events(&paths);
+        let stops: Vec<_> = lines
+            .iter()
+            .filter(|line| line["event_code"] == "deployment_stop_unconfirmed")
+            .collect();
+        assert_eq!(stops.len(), 1);
+        assert_eq!(stops[0]["run_id"], old_run);
+        assert_eq!(stops[0]["correlation_id"], "restart-request-42");
+        assert!(lines.iter().all(|line| {
+            line["event_code"] != "deployment_starting" || line["run_id"] != candidate.run_id()
+        }));
+        let old_specs = managers["test"].supervisor.specs();
+        let retry =
+            restart_processes(&paths, &mut managers, "test", "new", &old_specs).unwrap_err();
+        assert_eq!(
+            retry.downcast_ref::<RetirementDiagnostic>().unwrap().code,
+            "deployment_stop_unconfirmed"
+        );
+        assert_eq!(
+            managers["test"].supervisor.terminal().unwrap().reason_code,
+            Some("child_exit_unexpected")
+        );
+        let mut recovered = Deployments::new();
+        let mut services = services::ServiceManager::new(&paths, "test").unwrap();
+        let status = api_call(
+            &paths,
+            &mut recovered,
+            &mut services,
+            ApiRequest {
+                schema_version: 1,
+                op: "deployment_status".into(),
+                deployment: Some("test".into()),
+                role: None,
+                revision: None,
+                service_id: None,
+                cursor: None,
+                limit: None,
+                log: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(status["run_id"], old_run);
+        assert_eq!(status["state"], "degraded");
+        assert_eq!(status["terminal"]["reason_code"], "stop_interrupted");
+        let after_restart =
+            restart_processes(&paths, &mut recovered, "test", "new", &old_specs).unwrap_err();
+        assert_eq!(
+            after_restart
+                .downcast_ref::<RetirementDiagnostic>()
+                .unwrap()
+                .code,
+            "deployment_stop_unconfirmed"
+        );
+    }
+
+    #[test]
+    fn dual_cleanup_failure_keeps_candidate_orphan_and_old_terminal() {
+        let (_temp, paths, mut managers, mut candidate) = retirement_fixture(true, false);
+        let old_run = managers["test"].supervisor.run_id().to_owned();
+        let orphan = paths
+            .runtime
+            .join("control-grants/test")
+            .join(candidate.run_id());
+        fs::set_permissions(
+            candidate.candidate_verifier().unwrap(),
+            fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        FAIL_CANDIDATE_MARKER_WRITE.with(|fail| fail.set(true));
+        FAIL_CANDIDATE_FALLBACK_WRITE.with(|fail| fail.set(true));
+        REQUEST_CORRELATION
+            .with(|current| *current.borrow_mut() = Some("restart-request-42".into()));
+        let error = stop_old_for_replacement(&paths, &mut managers, "test", &mut candidate, true)
+            .err()
+            .unwrap();
+        log_request_preflight_failure(&paths, "test", &error, "restart-request-42");
+        REQUEST_CORRELATION.with(|current| *current.borrow_mut() = None);
+        FAIL_CANDIDATE_MARKER_WRITE.with(|fail| fail.set(false));
+        FAIL_CANDIDATE_FALLBACK_WRITE.with(|fail| fail.set(false));
+        assert_eq!(
+            error.downcast_ref::<RetirementDiagnostic>().unwrap().code,
+            "skill_catalog_preflight_cleanup_unconfirmed"
+        );
+        assert_eq!(managers["test"].supervisor.run_id(), old_run);
+        assert_eq!(
+            managers["test"].supervisor.terminal().unwrap().outcome,
+            "unknown"
+        );
+        assert!(orphan.is_dir());
+        assert!(check_candidate_cleanup_marker(&paths, "test", Some(&old_run)).is_err());
+        candidate_cleanup_blocks().lock().unwrap().clear();
+        assert!(check_candidate_cleanup_marker(&paths, "test", None).is_err());
+        let lines = stop_events(&paths);
+        let old_stop = lines
+            .iter()
+            .find(|line| line["event_code"] == "deployment_stop_unconfirmed")
+            .unwrap();
+        let cleanup = lines
+            .iter()
+            .find(|line| line["event_code"] == "deployment_preflight_failed")
+            .unwrap();
+        assert_eq!(old_stop["run_id"], old_run);
+        assert_eq!(old_stop["correlation_id"], "restart-request-42");
+        assert_eq!(cleanup["run_id"], manager_session_id());
+        assert_eq!(cleanup["correlation_id"], "restart-request-42");
+        assert_eq!(
+            cleanup["fields"]["diagnostic_code"],
+            "skill_catalog_preflight_cleanup_unconfirmed"
+        );
+        let bearer = fs::read_to_string(orphan.join("operator-control.grant")).unwrap();
+        assert!(
+            !serde_json::to_string(&lines)
+                .unwrap()
+                .contains(bearer.trim())
+        );
+    }
+
+    #[test]
+    fn api_retry_fences_unknown_old_run_before_missing_or_changed_graph() {
+        let (_temp, paths, mut managers, mut candidate) = retirement_fixture(true, false);
+        let old_run = managers["test"].supervisor.run_id().to_owned();
+        let candidate_run = candidate.run_id().to_owned();
+        stop_old_for_replacement(&paths, &mut managers, "test", &mut candidate, true)
+            .err()
+            .unwrap();
+        fs::remove_file(paths.node_graph_path("test")).unwrap();
+        for op in ["deployment_restart", "deployment_start"] {
+            assert_admission_code(
+                &call_admission(&paths, &mut managers, op),
+                "deployment_stop_unconfirmed",
+            );
+        }
+        fs::write(
+            paths.node_graph_path("test"),
+            b"changed invalid graph and package",
+        )
+        .unwrap();
+        for op in ["deployment_restart", "deployment_start"] {
+            assert_admission_code(
+                &call_admission(&paths, &mut managers, op),
+                "deployment_stop_unconfirmed",
+            );
+        }
+        assert_eq!(managers["test"].supervisor.run_id(), old_run);
+        assert_eq!(
+            managers["test"].supervisor.terminal().unwrap().reason_code,
+            Some("child_exit_unexpected")
+        );
+        assert_eq!(
+            log_store::LogStore::new(&paths, "test")
+                .unwrap()
+                .run_identity()
+                .0
+                .as_deref(),
+            Some(old_run.as_str())
+        );
+        assert!(
+            !paths
+                .runtime
+                .join("control-grants/test")
+                .join(candidate_run)
+                .exists()
+        );
+        assert!(
+            managers
+                .get_mut("test")
+                .unwrap()
+                .supervisor
+                .status()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn api_retry_prefers_candidate_cleanup_before_graph_or_old_terminal() {
+        let (_temp, paths, mut managers, mut candidate) = retirement_fixture(true, false);
+        let old_run = managers["test"].supervisor.run_id().to_owned();
+        let candidate_run = candidate.run_id().to_owned();
+        fs::set_permissions(
+            candidate.candidate_verifier().unwrap(),
+            fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        stop_old_for_replacement(&paths, &mut managers, "test", &mut candidate, true)
+            .err()
+            .unwrap();
+        fs::remove_file(paths.node_graph_path("test")).unwrap();
+        for op in ["deployment_restart", "deployment_start"] {
+            assert_admission_code(
+                &call_admission(&paths, &mut managers, op),
+                "skill_catalog_preflight_cleanup_unconfirmed",
+            );
+        }
+        fs::write(
+            paths.node_graph_path("test"),
+            b"changed invalid graph and package",
+        )
+        .unwrap();
+        assert_admission_code(
+            &call_admission(&paths, &mut managers, "deployment_restart"),
+            "skill_catalog_preflight_cleanup_unconfirmed",
+        );
+        assert_eq!(managers["test"].supervisor.run_id(), old_run);
+        assert_eq!(
+            log_store::LogStore::new(&paths, "test")
+                .unwrap()
+                .run_identity()
+                .0
+                .as_deref(),
+            Some(old_run.as_str())
+        );
+        assert!(
+            paths
+                .runtime
+                .join("control-grants/test")
+                .join(candidate_run)
+                .is_dir()
+        );
+        assert!(
+            managers
+                .get_mut("test")
+                .unwrap()
+                .supervisor
+                .status()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn grant_directory_inspection_failures_are_typed_and_path_free() {
+        let (_temp, paths, mut managers, _candidate) = retirement_fixture(false, false);
+        for fault in [1, 2, 3] {
+            FAIL_CANDIDATE_INSPECTION.with(|fail| fail.set(fault));
+            let reply = call_admission(&paths, &mut managers, "deployment_restart");
+            FAIL_CANDIDATE_INSPECTION.with(|fail| fail.set(0));
+            assert_admission_code(&reply, "skill_catalog_preflight_cleanup_unconfirmed");
+            assert!(!reply.to_string().contains(paths.runtime.to_str().unwrap()));
+        }
+        let root = paths.runtime.join("control-grants/test");
+        let old = managers.remove("test").unwrap();
+        drop(old);
+        fs::remove_dir_all(&root).unwrap();
+        fs::write(&root, b"unreadable grant root").unwrap();
+        let reply = call_admission(&paths, &mut managers, "deployment_start");
+        assert_admission_code(&reply, "skill_catalog_preflight_cleanup_unconfirmed");
+        assert!(!reply.to_string().contains(paths.runtime.to_str().unwrap()));
+    }
+
+    #[test]
+    fn old_grant_retirement_failure_keeps_precise_terminal_reason() {
+        let (_temp, paths, mut managers, mut candidate) = retirement_fixture(false, false);
+        let old_run = managers["test"].supervisor.run_id().to_owned();
+        let old_verifier = paths
+            .runtime
+            .join("control-grants/test")
+            .join(&old_run)
+            .join("verifier.json");
+        fs::set_permissions(old_verifier, fs::Permissions::from_mode(0o644)).unwrap();
+        let error = stop_old_for_replacement(&paths, &mut managers, "test", &mut candidate, true)
+            .err()
+            .unwrap();
+        assert_eq!(
+            error.downcast_ref::<RetirementDiagnostic>().unwrap().code,
+            "deployment_stop_unconfirmed"
+        );
+        let terminal = managers["test"].supervisor.terminal().unwrap();
+        assert_eq!(terminal.outcome, "unknown");
+        assert_eq!(terminal.reason_code, Some("control_grant_retire_failed"));
+        assert_eq!(terminal.run_id, old_run);
+        assert!(
+            !paths
+                .runtime
+                .join("control-grants/test")
+                .join(candidate.run_id())
+                .exists()
+        );
+    }
+
+    #[test]
+    fn missing_eos_stop_receipt_blocks_selected_replacement() {
+        let (_temp, paths, mut managers, mut candidate) = retirement_fixture(false, true);
+        let old_run = managers["test"].supervisor.run_id().to_owned();
+        let error = stop_old_for_replacement(&paths, &mut managers, "test", &mut candidate, true)
+            .err()
+            .unwrap();
+        assert_eq!(
+            error.downcast_ref::<RetirementDiagnostic>().unwrap().code,
+            "deployment_stop_unconfirmed"
+        );
+        let terminal = managers["test"].supervisor.terminal().unwrap();
+        assert_eq!(terminal.outcome, "unknown");
+        assert_eq!(terminal.reason_code, Some("eos_receipt_missing"));
+        assert_eq!(terminal.run_id, old_run);
+        assert!(
+            !paths
+                .runtime
+                .join("control-grants/test")
+                .join(candidate.run_id())
+                .exists()
+        );
+    }
+
+    #[test]
+    fn primary_marker_failure_uses_fallback_after_unknown_old_stop() {
+        let (_temp, paths, mut managers, mut candidate) = retirement_fixture(true, false);
+        let old_run = managers["test"].supervisor.run_id().to_owned();
+        fs::set_permissions(
+            candidate.candidate_verifier().unwrap(),
+            fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        FAIL_CANDIDATE_MARKER_WRITE.with(|fail| fail.set(true));
+        let error = stop_old_for_replacement(&paths, &mut managers, "test", &mut candidate, true)
+            .err()
+            .unwrap();
+        FAIL_CANDIDATE_MARKER_WRITE.with(|fail| fail.set(false));
+        assert_eq!(
+            error.downcast_ref::<RetirementDiagnostic>().unwrap().code,
+            "skill_catalog_preflight_cleanup_unconfirmed"
+        );
+        assert!(
+            !paths
+                .runtime
+                .join("test.skill-candidate-cleanup-unconfirmed")
+                .exists()
+        );
+        assert!(
+            paths
+                .data
+                .join("test.skill-candidate-cleanup-unconfirmed")
+                .exists()
+        );
+        candidate_cleanup_blocks().lock().unwrap().clear();
+        let retry = check_candidate_cleanup_marker(&paths, "test", Some(&old_run)).unwrap_err();
+        assert_eq!(
+            retry.downcast_ref::<RetirementDiagnostic>().unwrap().code,
+            "skill_catalog_preflight_cleanup_unconfirmed"
+        );
+    }
+
+    #[test]
+    fn confirmed_old_stop_preserves_candidate_for_one_scope_publication() {
+        let (_temp, paths, mut managers, mut candidate) = retirement_fixture(false, false);
+        let old_run = managers["test"].supervisor.run_id().to_owned();
+        let candidate_run = candidate.run_id().to_owned();
+        let previous =
+            stop_old_for_replacement(&paths, &mut managers, "test", &mut candidate, true)
+                .unwrap()
+                .unwrap();
+        assert_eq!(previous.2.outcome, "confirmed");
+        assert_eq!(previous.0.supervisor.run_id(), old_run);
+        assert_eq!(
+            log_store::LogStore::new(&paths, "test")
+                .unwrap()
+                .run_identity()
+                .0
+                .as_deref(),
+            Some(old_run.as_str())
+        );
+        assert!(candidate.candidate_verifier().unwrap().exists());
+        publish_run_scope(&candidate).unwrap();
+        assert_eq!(
+            log_store::LogStore::new(&paths, "test")
+                .unwrap()
+                .run_identity()
+                .0
+                .as_deref(),
+            Some(candidate_run.as_str())
+        );
+    }
 
     #[test]
     fn rejected_candidate_preserves_old_pid_grants_and_run_scope() {
@@ -2329,19 +3006,25 @@ mod restart_tests {
                 .join(format!("control-grants/test/{recovery_run}"))
                 .exists()
         );
-        let events = log_store::LogStore::new(&paths, "test")
-            .unwrap()
-            .read("all", None, 100)
-            .unwrap();
-        let candidate_run = events["lines"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|line| line["event_code"] == "deployment_failed")
-            .unwrap()["run_id"]
-            .as_str()
-            .unwrap()
-            .to_owned();
+        let candidate_run = (0..100)
+            .find_map(|_| {
+                let events = log_store::LogStore::new(&paths, "test")
+                    .unwrap()
+                    .read("all", None, 100)
+                    .unwrap();
+                let run = events["lines"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|line| line["event_code"] == "deployment_failed")
+                    .and_then(|line| line["run_id"].as_str())
+                    .map(str::to_owned);
+                if run.is_none() {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                run
+            })
+            .expect("candidate failure event was not committed");
         assert_ne!(candidate_run, old_run);
         assert_ne!(candidate_run, recovery_run);
         assert!(
