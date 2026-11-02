@@ -68,6 +68,31 @@ fn ensure_launch_history(paths: &config::Paths, name: &str) -> Result<()> {
     Ok(())
 }
 
+fn check_replacement_admission(
+    paths: &config::Paths,
+    managers: &Deployments,
+    name: &str,
+) -> Result<()> {
+    check_candidate_cleanup_marker(
+        paths,
+        name,
+        managers.get(name).map(|active| active.supervisor.run_id()),
+    )?;
+    if managers
+        .get(name)
+        .and_then(|active| active.supervisor.terminal())
+        .is_some_and(|terminal| terminal.outcome == "unknown")
+    {
+        return Err(anyhow::Error::new(RetirementDiagnostic {
+            code: "deployment_stop_unconfirmed",
+        }));
+    }
+    if !managers.contains_key(name) {
+        ensure_launch_history(paths, name)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn manager_session_id() -> &'static str {
     static SESSION: OnceLock<String> = OnceLock::new();
     SESSION.get_or_init(|| {
@@ -555,23 +580,7 @@ fn restart_processes_with_plan(
     plan: &crate::generated_v2::SecretPlan,
     managed: bool,
 ) -> Result<Vec<String>> {
-    check_candidate_cleanup_marker(
-        paths,
-        name,
-        managers.get(name).map(|active| active.supervisor.run_id()),
-    )?;
-    if !managers.contains_key(name) {
-        ensure_launch_history(paths, name)?;
-    }
-    if managers
-        .get(name)
-        .and_then(|active| active.supervisor.terminal())
-        .is_some_and(|terminal| terminal.outcome == "unknown")
-    {
-        return Err(anyhow::Error::new(RetirementDiagnostic {
-            code: "deployment_stop_unconfirmed",
-        }));
-    }
+    check_replacement_admission(paths, managers, name)?;
     if managed {
         crate::control_grants::validate_plan(specs)?;
     }
@@ -756,11 +765,14 @@ fn check_candidate_cleanup_marker(
     name: &str,
     active_run: Option<&str>,
 ) -> Result<()> {
-    let blocked = candidate_cleanup_blocks().lock().map_err(|_| {
+    let cleanup_error = || {
         anyhow::Error::new(RetirementDiagnostic {
             code: "skill_catalog_preflight_cleanup_unconfirmed",
         })
-    })?;
+    };
+    let blocked = candidate_cleanup_blocks()
+        .lock()
+        .map_err(|_| cleanup_error())?;
     if blocked.contains(
         &paths
             .runtime
@@ -774,24 +786,48 @@ fn check_candidate_cleanup_marker(
             .join(format!("{name}.skill-candidate-cleanup-unconfirmed"))
             .exists()
     {
-        return Err(anyhow::Error::new(RetirementDiagnostic {
-            code: "skill_catalog_preflight_cleanup_unconfirmed",
-        }));
+        return Err(cleanup_error());
     }
     let bundle_root = paths.runtime.join("control-grants").join(name);
-    match fs::read_dir(&bundle_root) {
+    let entries = fs::read_dir(&bundle_root);
+    #[cfg(test)]
+    let entries = if FAIL_CANDIDATE_INSPECTION.with(|fail| fail.get()) == 1 {
+        Err(std::io::Error::other(
+            "injected grant-root inspection failure",
+        ))
+    } else {
+        entries
+    };
+    match entries {
         Ok(entries) => {
             for entry in entries {
-                let entry = entry?;
-                if entry.file_name().to_str() != active_run || !entry.file_type()?.is_dir() {
-                    return Err(anyhow::Error::new(RetirementDiagnostic {
-                        code: "skill_catalog_preflight_cleanup_unconfirmed",
-                    }));
+                #[cfg(test)]
+                let entry = if FAIL_CANDIDATE_INSPECTION.with(|fail| fail.get()) == 2 {
+                    Err(std::io::Error::other(
+                        "injected grant-entry inspection failure",
+                    ))
+                } else {
+                    entry
+                };
+                let entry = entry.map_err(|_| cleanup_error())?;
+                let file_type = entry.file_type();
+                #[cfg(test)]
+                let file_type = if FAIL_CANDIDATE_INSPECTION.with(|fail| fail.get()) == 3 {
+                    Err(std::io::Error::other(
+                        "injected grant-type inspection failure",
+                    ))
+                } else {
+                    file_type
+                };
+                if entry.file_name().to_str() != active_run
+                    || !file_type.map_err(|_| cleanup_error())?.is_dir()
+                {
+                    return Err(cleanup_error());
                 }
             }
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
+        Err(_) => return Err(cleanup_error()),
     }
     Ok(())
 }
@@ -806,6 +842,7 @@ thread_local! {
     static FAIL_CANDIDATE_MARKER_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static FAIL_CANDIDATE_FALLBACK_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static FORCE_PROBE_CLEANUP_UNCONFIRMED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FAIL_CANDIDATE_INSPECTION: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
 }
 
 fn persist_candidate_cleanup_marker(marker: &std::path::Path) -> Result<()> {
@@ -921,11 +958,7 @@ fn start_prepared_processes(
     plan: &crate::generated_v2::SecretPlan,
     managed: bool,
 ) -> Result<(Vec<String>, String)> {
-    check_candidate_cleanup_marker(
-        paths,
-        name,
-        managers.get(name).map(|active| active.supervisor.run_id()),
-    )?;
+    check_replacement_admission(paths, managers, name)?;
     let live_confirmed = managers
         .get(name)
         .and_then(|active| active.supervisor.terminal())
@@ -1173,6 +1206,7 @@ pub(crate) fn api_call(
             Ok(json!({"packages":packages}))
         }
         "deployment_restart" => {
+            check_replacement_admission(paths, managers, &name)?;
             let path = paths.node_graph_path(&name);
             let source = fs::read_to_string(&path)?;
             let revision = graph_compat::revision(source.as_bytes());
@@ -1198,6 +1232,7 @@ pub(crate) fn api_call(
             Ok(json!({"started":started,"active_revision":revision}))
         }
         "deployment_start" => {
+            check_replacement_admission(paths, managers, &name)?;
             let path = paths.node_graph_path(&name);
             let source = fs::read_to_string(&path)?;
             let revision = graph_compat::revision(source.as_bytes());
@@ -1705,6 +1740,24 @@ mod restart_tests {
     use std::net::Shutdown;
     use std::os::unix::fs::PermissionsExt;
 
+    fn call_admission(paths: &config::Paths, managers: &mut Deployments, op: &str) -> Value {
+        let mut services = services::ServiceManager::new(paths, "test").unwrap();
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let request = json!({"schema_version":1,"op":op,"deployment":"test"});
+        writeln!(client, "{request}").unwrap();
+        client.shutdown(Shutdown::Write).unwrap();
+        handle_client(paths, managers, &mut services, server).unwrap();
+        let mut reply = String::new();
+        client.read_to_string(&mut reply).unwrap();
+        serde_json::from_str(&reply).unwrap()
+    }
+
+    fn assert_admission_code(reply: &Value, code: &str) {
+        assert_eq!(reply["ok"], false);
+        assert_eq!(reply["data"]["diagnostics"][0]["code"], code);
+        assert_eq!(reply["data"]["diagnostics"][0]["path"], "");
+    }
+
     fn stop_events(paths: &config::Paths) -> Vec<Value> {
         for _ in 0..100 {
             let lines = log_store::LogStore::new(paths, "test")
@@ -1970,6 +2023,139 @@ mod restart_tests {
                 .unwrap()
                 .contains(bearer.trim())
         );
+    }
+
+    #[test]
+    fn api_retry_fences_unknown_old_run_before_missing_or_changed_graph() {
+        let (_temp, paths, mut managers, mut candidate) = retirement_fixture(true, false);
+        let old_run = managers["test"].supervisor.run_id().to_owned();
+        let candidate_run = candidate.run_id().to_owned();
+        stop_old_for_replacement(&paths, &mut managers, "test", &mut candidate, true)
+            .err()
+            .unwrap();
+        fs::remove_file(paths.node_graph_path("test")).unwrap();
+        for op in ["deployment_restart", "deployment_start"] {
+            assert_admission_code(
+                &call_admission(&paths, &mut managers, op),
+                "deployment_stop_unconfirmed",
+            );
+        }
+        fs::write(
+            paths.node_graph_path("test"),
+            b"changed invalid graph and package",
+        )
+        .unwrap();
+        for op in ["deployment_restart", "deployment_start"] {
+            assert_admission_code(
+                &call_admission(&paths, &mut managers, op),
+                "deployment_stop_unconfirmed",
+            );
+        }
+        assert_eq!(managers["test"].supervisor.run_id(), old_run);
+        assert_eq!(
+            managers["test"].supervisor.terminal().unwrap().reason_code,
+            Some("child_exit_unexpected")
+        );
+        assert_eq!(
+            log_store::LogStore::new(&paths, "test")
+                .unwrap()
+                .run_identity()
+                .0
+                .as_deref(),
+            Some(old_run.as_str())
+        );
+        assert!(
+            !paths
+                .runtime
+                .join("control-grants/test")
+                .join(candidate_run)
+                .exists()
+        );
+        assert!(
+            managers
+                .get_mut("test")
+                .unwrap()
+                .supervisor
+                .status()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn api_retry_prefers_candidate_cleanup_before_graph_or_old_terminal() {
+        let (_temp, paths, mut managers, mut candidate) = retirement_fixture(true, false);
+        let old_run = managers["test"].supervisor.run_id().to_owned();
+        let candidate_run = candidate.run_id().to_owned();
+        fs::set_permissions(
+            candidate.candidate_verifier().unwrap(),
+            fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        stop_old_for_replacement(&paths, &mut managers, "test", &mut candidate, true)
+            .err()
+            .unwrap();
+        fs::remove_file(paths.node_graph_path("test")).unwrap();
+        for op in ["deployment_restart", "deployment_start"] {
+            assert_admission_code(
+                &call_admission(&paths, &mut managers, op),
+                "skill_catalog_preflight_cleanup_unconfirmed",
+            );
+        }
+        fs::write(
+            paths.node_graph_path("test"),
+            b"changed invalid graph and package",
+        )
+        .unwrap();
+        assert_admission_code(
+            &call_admission(&paths, &mut managers, "deployment_restart"),
+            "skill_catalog_preflight_cleanup_unconfirmed",
+        );
+        assert_eq!(managers["test"].supervisor.run_id(), old_run);
+        assert_eq!(
+            log_store::LogStore::new(&paths, "test")
+                .unwrap()
+                .run_identity()
+                .0
+                .as_deref(),
+            Some(old_run.as_str())
+        );
+        assert!(
+            paths
+                .runtime
+                .join("control-grants/test")
+                .join(candidate_run)
+                .is_dir()
+        );
+        assert!(
+            managers
+                .get_mut("test")
+                .unwrap()
+                .supervisor
+                .status()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn grant_directory_inspection_failures_are_typed_and_path_free() {
+        let (_temp, paths, mut managers, _candidate) = retirement_fixture(false, false);
+        for fault in [1, 2, 3] {
+            FAIL_CANDIDATE_INSPECTION.with(|fail| fail.set(fault));
+            let reply = call_admission(&paths, &mut managers, "deployment_restart");
+            FAIL_CANDIDATE_INSPECTION.with(|fail| fail.set(0));
+            assert_admission_code(&reply, "skill_catalog_preflight_cleanup_unconfirmed");
+            assert!(!reply.to_string().contains(paths.runtime.to_str().unwrap()));
+        }
+        let root = paths.runtime.join("control-grants/test");
+        let old = managers.remove("test").unwrap();
+        drop(old);
+        fs::remove_dir_all(&root).unwrap();
+        fs::write(&root, b"unreadable grant root").unwrap();
+        let reply = call_admission(&paths, &mut managers, "deployment_start");
+        assert_admission_code(&reply, "skill_catalog_preflight_cleanup_unconfirmed");
+        assert!(!reply.to_string().contains(paths.runtime.to_str().unwrap()));
     }
 
     #[test]
