@@ -50,4 +50,20 @@ for case in cases:
         assert case["isos_code"] == "skill_catalog_preflight_rejected"
 assert len(json.dumps(success, separators=(",", ":")).encode()) < 16384
 assert len(json.dumps(rejection, separators=(",", ":")).encode()) < 16384
-print("R04 IsOS candidate preflight fixtures: 18 cases and closed result examples pass")
+retirement = json.loads((root / "retirement_cases.json").read_text(), object_pairs_hook=no_duplicates)
+assert set(retirement) == {"schema_version", "owner", "boundary", "correlation_contract", "cases"}
+assert retirement["schema_version"] == 1 and retirement["owner"] == "isos"
+correlation = retirement["correlation_contract"]
+assert correlation["request_correlation_id"] == "restart-request-42"
+assert correlation["stop_event"] == {"source": "isos", "event_code": "deployment_stop_unconfirmed", "run_scope": "old-admitted-run", "correlation_id": "restart-request-42"}
+assert correlation["candidate_cleanup_event"] == {"source": "isos", "event_code": "deployment_preflight_failed", "run_scope": "manager-session", "correlation_id": "restart-request-42", "only_when": "candidate-retirement-unconfirmed"}
+retirement_cases = retirement["cases"]
+assert [case["id"] for case in retirement_cases] == [f"R04-IRT{i:02}" for i in range(1, 7)]
+assert all({"id", "fault", "expected", "restart_code", "old_terminal_reason", "candidate_scope_published"} <= set(case) for case in retirement_cases)
+assert retirement_cases[0]["candidate_scope_published"] is True
+assert all(case["candidate_scope_published"] is False for case in retirement_cases[1:])
+assert all(case["restart_code"] in {None, "deployment_stop_unconfirmed", "skill_catalog_preflight_cleanup_unconfirmed"} for case in retirement_cases)
+assert all(case.get("restart_stage") == "preflight" and case.get("restart_path") == "" for case in retirement_cases if case["restart_code"] == "skill_catalog_preflight_cleanup_unconfirmed")
+assert retirement_cases[5]["old_terminal_reason"] == "eos_stop_unconfirmed"
+assert retirement_cases[5]["manager_restart_reasons"] == ["stop_interrupted", "stop_result_persist_failed"]
+print("R04 IsOS candidate preflight fixtures: 18 probe and 6 retirement cases pass")
