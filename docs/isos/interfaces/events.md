@@ -1,5 +1,7 @@
 # Shared deployment events
 
+**R06 target — not implemented:** The [IsOS dependent stop contract](dependent-stop.md#status-events-and-errors) adds `deployment_stopping` and `deployment_stop_unconfirmed` with one run-bound correlation and a fixed terminal outcome. The reviewed EOS owner receipt remains a separate cross-owner prerequisite; no current P06 `eos_stopped` line alone proves dual physical stop.
+
 [中文](../../../docs_cn/isos/interfaces/events_cn.md) · [Configuration and log storage](configuration.md) · [Local log API](local-api.md) · [First use](../usage/get-started.md) · [P06 task](../../../../Island-eos/docs/island/implementation-todo.md)
 
 **P06 implementation contract.** IsOS owns the manager session, deployment run identity, private per-source logs, unified `events.log`, and ingestion of selected child events. EOS and EGIA own their emitted event meanings. IsosUI reads the IsOS stream; it does not infer health from an event. P06 adds the common sanitized JSON Lines (JSONL) envelope. P07 adds cursor retention and first-event navigation across rotation.

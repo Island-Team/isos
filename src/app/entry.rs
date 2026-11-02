@@ -183,17 +183,29 @@ pub(crate) fn run() -> Result<()> {
             wait_for_interrupt(&paths, &name)?;
         }
         CommandLine::Stop => match manager_call(&paths, &name, "manager_shutdown") {
-            Ok(result) => println!("{}", serde_json::to_string_pretty(&result)?),
+            Ok(result) => {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+                if result["terminal"].as_array().is_some_and(|terminals| {
+                    terminals
+                        .iter()
+                        .any(|terminal| terminal["outcome"] == "unknown")
+                }) {
+                    anyhow::bail!("dependent stop unconfirmed");
+                }
+            }
             Err(_) if UnixStream::connect(paths.socket()).is_err() => {
                 println!("{}", json!({"stopped":[],"manager":"stopped"}))
             }
             Err(error) => return Err(error),
         },
         CommandLine::Deployment { command } => match command {
-            DeploymentCommand::Stop => println!(
-                "{}",
-                serde_json::to_string_pretty(&manager_call(&paths, &name, "deployment_stop")?)?
-            ),
+            DeploymentCommand::Stop => {
+                let result = manager_call(&paths, &name, "deployment_stop")?;
+                println!("{}", serde_json::to_string_pretty(&result)?);
+                if result["terminal"]["outcome"] == "unknown" {
+                    anyhow::bail!("dependent stop unconfirmed");
+                }
+            }
             DeploymentCommand::Status => println!(
                 "{}",
                 serde_json::to_string_pretty(&manager_call(&paths, &name, "deployment_status")?)?

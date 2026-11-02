@@ -27,8 +27,8 @@ API 只绑定 `127.0.0.1`，不提供前端文件。IsosUI 通过地址和端口
 | `GET /api/isos/v1/backends` | `{backends:[{id,version,linked,scenes,devices,ready,issues}]}` | v2 后端包选择及先决条件检查。 |
 | `POST /api/isos/v1/packages/link` | `{id,version,path,manifest?}` | 链接本地包；`manifest` 是可选的 v4 发行 JSON 绝对路径。省略时若存在 `<path>/release.json`，IsOS 会读取它。 |
 | `GET /api/isos/v1/setup-status` | `{ready,issues,graph_revision,backends,process}` | Home 配置概况。 |
-| `POST /api/isos/v1/process-control` | `{schema_version:1,operation,revision?}` | `run`、`start`、`stop` 或 `restart`；可选修订防止操作过期视图。 |
-| `GET /api/isos/v1/process-status` | `{saved_revision,active_revision,state,last_error,package,processes,run_id,log_ingest_rejected,log_ingest_rejected_by_reason,log_write_failed}` | 固定包、直接子进程及 P06 日志健康状态。 |
+| `POST /api/isos/v1/process-control` | `{schema_version:1,operation,revision?}` | `run`、`start`、`stop` 或 `restart`；可选修订防止操作过期视图。R06 目标新增停止 `terminal` 结果，见[依赖停止](dependent-stop_cn.md)。 |
+| `GET /api/isos/v1/process-status` | `{saved_revision,active_revision,state,last_error,package,processes,run_id,log_ingest_rejected,log_ingest_rejected_by_reason,log_write_failed}` | 固定包、直接子进程及 P06 日志健康状态。R06 目标新增保留的 `terminal`，见[依赖停止](dependent-stop_cn.md)。 |
 | `GET /api/isos/v1/logs?source=all&cursor=...&limit=100&level=info` | `{lines:[{timestamp,level,source,event_code,message,pid}],next_cursor,rotated}` | 读取统一轮转 JSON 日志，并按 `level` 过滤。每次最多 200 行或 64 KiB；文件轮转时 `rotated` 为 true。 |
 | `GET /api/isos/v1/version` | `{api_schema_version,isos_version}` | 工作台兼容性检查。 |
 

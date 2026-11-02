@@ -6,6 +6,8 @@
 
 ## 目录与优先级
 
+**R06 目标配置，尚未实现：** `deployment.stop_timeout_ms` 与 `deployment.eos_stop_grace_ms` 是拟议由管理器管理的停止预算；类型、单位、缺省值和跨归属方评审依赖见[依赖停止契约](dependent-stop_cn.md#停止期限及-eos-证明)。它们不是图字段；R06 解析器和校验落地前不要写入运行中的 `config/isos.toml`。
+
 `ISOS_HOME` 必须为绝对路径；设置后根目录为 `<base>/config`、`<base>/data`、`<base>/run`。否则使用 `${XDG_CONFIG_HOME:-~/.config}/isos`、`${XDG_DATA_HOME:-~/.local/share}/isos` 与 `${XDG_RUNTIME_DIR:-/run/user/<uid>}/isos`。IsOS 使用仅所有者可访问的目录（`0700`）和私有文件（`0600`），不把命令工作目录当作配置目录。
 
 | 相对路径／所有者 | 类型与用途 | 写入和校验规则 |

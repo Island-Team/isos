@@ -17,6 +17,7 @@ use std::{
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicU64, Ordering},
+        mpsc::{self, Receiver},
     },
     time::{Duration, Instant},
 };
@@ -60,6 +61,12 @@ pub fn counters() -> (u64, u64) {
         INGEST_REJECTED.load(Ordering::Relaxed),
         WRITE_FAILED.load(Ordering::Relaxed),
     )
+}
+
+/// Account for a stop event that could not enter the bounded log queue.
+/// This must remain free of filesystem calls on the stop response path.
+pub fn record_stop_event_loss() {
+    saturating_increment(&WRITE_FAILED);
 }
 
 pub struct LogContext<'a> {
@@ -387,6 +394,7 @@ impl LogStore {
             && !matches!(
                 event_code,
                 "deployment_starting"
+                    | "deployment_stopping"
                     | "deployment_ready"
                     | "deployment_failed"
                     | "deployment_stopped"
@@ -677,6 +685,107 @@ pub fn capture<R: std::io::Read + Send + 'static>(
     });
 }
 
+/// The selected EOS stdout is inspected as raw bytes before any P06 log processing.
+/// The channel receives one bounded transcript only after EOF; a descendant-held
+/// writer therefore cannot accidentally satisfy the owner proof.
+pub struct EosStdout {
+    pub frame: Option<Vec<u8>>,
+    pub at: Instant,
+    pub eof: bool,
+    pub invalid: bool,
+}
+
+pub fn capture_eos_stdout<R: Read + Send + 'static>(
+    reader: R,
+    store: LogStore,
+    run_id: String,
+    pid: u32,
+) -> Receiver<EosStdout> {
+    let (sender, receiver) = mpsc::sync_channel(4);
+    std::thread::spawn(move || {
+        let raw_dir = store.root.join("owner/eos");
+        let raw_path = raw_dir.join("stdout.log");
+        let raw_enabled = private_dir(&store.root.join("owner"))
+            .and_then(|_| private_dir(&raw_dir))
+            .is_ok();
+        let mut reader = BufReader::new(reader);
+        let mut count = 0;
+        loop {
+            let mut line = Vec::new();
+            let result = Read::by_ref(&mut reader)
+                .take(4097)
+                .read_until(b'\n', &mut line);
+            match result {
+                Ok(0) => break,
+                Err(_) => {
+                    let _ = sender.try_send(EosStdout {
+                        frame: None,
+                        at: Instant::now(),
+                        eof: false,
+                        invalid: true,
+                    });
+                    return;
+                }
+                Ok(_) => {
+                    let mut candidate = line
+                        .windows(b"eos_terminal_stop".len())
+                        .any(|bytes| bytes == b"eos_terminal_stop");
+                    let mut invalid = line.len() > 4096 || line.last() != Some(&b'\n');
+                    if line.last() != Some(&b'\n') {
+                        loop {
+                            let mut rest = Vec::new();
+                            match Read::by_ref(&mut reader)
+                                .take(4097)
+                                .read_until(b'\n', &mut rest)
+                            {
+                                Ok(0) | Err(_) => {
+                                    invalid = true;
+                                    break;
+                                }
+                                Ok(_) => {
+                                    if raw_enabled {
+                                        store.append_raw(&raw_path, &rest);
+                                    }
+                                    candidate |= rest
+                                        .windows(b"eos_terminal_stop".len())
+                                        .any(|bytes| bytes == b"eos_terminal_stop");
+                                    if rest.last() == Some(&b'\n') {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if candidate {
+                        count += 1;
+                        let _ = sender.try_send(EosStdout {
+                            frame: if !invalid && count <= 2 {
+                                Some(line.clone())
+                            } else {
+                                None
+                            },
+                            at: Instant::now(),
+                            eof: false,
+                            invalid: invalid || count > 2,
+                        });
+                    }
+                    if raw_enabled {
+                        store.append_raw(&raw_path, &line);
+                    }
+                }
+            }
+        }
+        let _ = (run_id, pid); // Pipe ownership is bound by its creating spawn.
+        let _ = sender.try_send(EosStdout {
+            frame: None,
+            at: Instant::now(),
+            eof: true,
+            invalid: false,
+        });
+    });
+    receiver
+}
+
 fn capture_stream<R: std::io::Read>(
     reader: R,
     store: LogStore,
@@ -790,6 +899,24 @@ mod tests {
         os::unix::fs::PermissionsExt,
         process::{Command, Stdio},
     };
+
+    #[test]
+    fn selected_stdout_parser_reports_frame_then_eof_and_duplicate() {
+        let (_temp, store) = store();
+        let bytes = b"ordinary output\n{\"type\":\"eos_terminal_stop\"}\n{\"type\":\"eos_terminal_stop\"}\n";
+        let receiver = capture_eos_stdout(
+            std::io::Cursor::new(bytes.to_vec()),
+            store,
+            "r42".into(),
+            42,
+        );
+        let first = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(first.frame.is_some() && !first.eof && !first.invalid);
+        let second = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(second.frame.is_some());
+        let eof = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(eof.eof);
+    }
 
     fn store() -> (tempfile::TempDir, LogStore) {
         let temp = tempfile::tempdir().unwrap();

@@ -4,8 +4,10 @@
 //! IsOS process nodes and keeps direct child handles in the manager process.
 
 use crate::{
-    backend, config::Paths, control_grants, core_bins, edge_admission, graph_compat,
-    graph_migration, log_store, mujoco_catalog, packages,
+    backend,
+    config::{self, Paths},
+    control_grants, core_bins, dependent_stop, edge_admission, graph_compat, graph_migration,
+    log_store, mujoco_catalog, packages,
 };
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -17,8 +19,11 @@ use std::{
     net::{TcpStream, ToSocketAddrs},
     os::unix::{ffi::OsStrExt, fs::PermissionsExt, process::CommandExt},
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
-    sync::Arc,
+    process::{Child, Command, ExitStatus, Stdio},
+    sync::{
+        Arc, Mutex,
+        mpsc::{self, Receiver},
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -142,6 +147,8 @@ pub struct ProcessSettings {
     #[serde(default = "default_start_timeout_ms")]
     pub start_timeout_ms: u64,
     #[serde(default)]
+    #[allow(dead_code)]
+    // The graph field remains readable; R06 blocks automatic restart after uncertain exit.
     pub restart: Restart,
     #[serde(default)]
     pub max_restarts: u32,
@@ -1128,6 +1135,158 @@ struct Running {
     spec: ProcessSpec,
     child: Child,
     restarts: u32,
+    identity: Option<LeaderIdentity>,
+    eos_stdout: Option<Receiver<log_store::EosStdout>>,
+}
+
+#[derive(Default)]
+struct EosTranscript {
+    frames: Vec<Vec<u8>>,
+    invalid: bool,
+    first_at: Option<Instant>,
+    eof_at: Option<Instant>,
+}
+
+impl EosTranscript {
+    fn accept(&mut self, event: log_store::EosStdout) {
+        self.invalid |= event.invalid;
+        if let Some(frame) = event.frame {
+            if self.first_at.is_none() {
+                self.first_at = Some(event.at);
+            }
+            if self.frames.len() < 2 {
+                self.frames.push(frame);
+            } else {
+                self.invalid = true;
+            }
+        }
+        if event.eof {
+            self.eof_at = Some(event.at);
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct LeaderIdentity {
+    pid: i32,
+    pgid: i32,
+    session: i32,
+    start_ticks: u64,
+}
+
+fn leader_identity(pid: i32) -> Result<LeaderIdentity> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat"))?;
+    let fields: Vec<_> = stat
+        .rsplit_once(") ")
+        .context("invalid leader stat")?
+        .1
+        .split_whitespace()
+        .collect();
+    ensure!(fields.len() > 19, "incomplete leader stat");
+    Ok(LeaderIdentity {
+        pid,
+        pgid: fields[2].parse()?,
+        session: fields[3].parse()?,
+        start_ticks: fields[19].parse()?,
+    })
+}
+
+fn observe_exit(child: &Child) -> Result<bool> {
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let result = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            child.id(),
+            &mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    if result < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(unsafe { info.si_pid() } != 0)
+}
+
+fn identity_matches(original: LeaderIdentity) -> bool {
+    leader_identity(original.pid).is_ok_and(|current| {
+        current.pid == original.pid
+            && current.pgid == original.pgid
+            && current.session == original.session
+            && current.start_ticks == original.start_ticks
+    })
+}
+
+fn signal_group(original: LeaderIdentity, signal: i32) -> Result<()> {
+    ensure!(
+        original.pid > 0
+            && original.pgid == original.pid
+            && original.session == original.pid
+            && identity_matches(original),
+        "owned process-group identity is unavailable"
+    );
+    let result = unsafe { libc::kill(-original.pgid, signal) };
+    if result < 0 {
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::ESRCH) {
+            return Err(error.into());
+        }
+    }
+    Ok(())
+}
+
+fn group_live(original: LeaderIdentity) -> Result<bool> {
+    ensure!(
+        identity_matches(original),
+        "owned process-group identity is unavailable"
+    );
+    for entry in fs::read_dir("/proc")? {
+        let entry = entry?;
+        if let Ok(pid) = entry.file_name().to_string_lossy().parse::<i32>()
+            && let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat"))
+            && let Some((_, rest)) = stat.rsplit_once(") ")
+        {
+            let fields: Vec<_> = rest.split_whitespace().collect();
+            if fields.len() > 3
+                && fields[2].parse::<i32>().ok() == Some(original.pgid)
+                && fields[0] != "Z"
+                && fields[0] != "X"
+            {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn stop_order(specs: &[ProcessSpec], launch: &[String]) -> Vec<String> {
+    let mut remaining: BTreeSet<String> = specs.iter().map(|spec| spec.id.clone()).collect();
+    let mut result = Vec::with_capacity(remaining.len());
+    while !remaining.is_empty() {
+        let next = specs
+            .iter()
+            .filter(|spec| remaining.contains(&spec.id))
+            .filter(|spec| {
+                !specs.iter().any(|other| {
+                    remaining.contains(&other.id)
+                        && other.settings.depends_on.iter().any(|dependency| {
+                            dependency.rsplit('/').next() == Some(spec.id.as_str())
+                        })
+                })
+            })
+            .max_by_key(|spec| {
+                launch
+                    .iter()
+                    .position(|id| id == &spec.id)
+                    .or_else(|| specs.iter().position(|candidate| candidate.id == spec.id))
+                    .unwrap_or(0)
+            });
+        let id = next
+            .map(|spec| spec.id.clone())
+            .unwrap_or_else(|| remaining.iter().next_back().unwrap().clone());
+        remaining.remove(&id);
+        result.push(id);
+    }
+    result
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1151,6 +1310,16 @@ pub struct Supervisor {
     control_grants: Option<control_grants::Bundle>,
     candidate_skill_inputs: Option<crate::candidate_skill_preflight::Inputs>,
     admitted_nodes: Arc<BTreeSet<String>>,
+    stop_budget: config::StopBudget,
+    terminal: Arc<Mutex<Option<dependent_stop::Terminal>>>,
+    run_prepared: bool,
+    selected: Vec<String>,
+    active_revision: String,
+    eos_backend: String,
+    eos_parts: Vec<(String, String)>,
+    unexpected_exit: bool,
+    #[cfg(test)]
+    retirement_gate: Option<Arc<(std::sync::Barrier, std::sync::Barrier)>>,
 }
 
 impl Supervisor {
@@ -1219,6 +1388,16 @@ impl Supervisor {
             control_grants: None,
             candidate_skill_inputs: None,
             admitted_nodes: Arc::new(admitted_nodes),
+            stop_budget: config::stop_budget()?,
+            terminal: Arc::new(Mutex::new(None)),
+            run_prepared: false,
+            selected: Vec::new(),
+            active_revision: String::new(),
+            eos_backend: String::new(),
+            eos_parts: Vec::new(),
+            unexpected_exit: false,
+            #[cfg(test)]
+            retirement_gate: None,
         })
     }
 
@@ -1230,6 +1409,72 @@ impl Supervisor {
     }
     pub fn set_run_id(&mut self, run_id: String) {
         self.run_id = run_id;
+        self.terminal = Arc::new(Mutex::new(None));
+        self.run_prepared = false;
+        self.selected.clear();
+        self.unexpected_exit = false;
+    }
+
+    pub fn terminal(&self) -> Option<dependent_stop::Terminal> {
+        self.terminal.lock().unwrap().clone()
+    }
+
+    pub fn prepare_run(&mut self, specs: &[ProcessSpec], revision: &str) -> Result<()> {
+        ensure!(!self.run_prepared, "run is already prepared");
+        let ids = stop_order(specs, &[]);
+        dependent_stop::create_running(&self.paths, &self.deployment, &self.run_id, &ids)?;
+        self.selected = ids;
+        self.active_revision = revision.to_owned();
+        if let Ok(bytes) = fs::read(self.paths.node_graph_path(&self.deployment))
+            && let Ok(graph) = serde_json::from_slice::<Value>(&bytes)
+        {
+            self.eos_backend = graph
+                .pointer("/cores/eos/layers/process/groups/mujoco/nodes")
+                .and_then(Value::as_object)
+                .and_then(|nodes| nodes.keys().next())
+                .map(|id| format!("eos/process/mujoco/{id}"))
+                .unwrap_or_default();
+            self.eos_parts.clear();
+            if let Some(groups) = graph
+                .pointer("/cores/eos/layers/hardware/groups")
+                .and_then(Value::as_object)
+            {
+                for (group, value) in groups {
+                    if let Some(nodes) = value.get("nodes").and_then(Value::as_object) {
+                        for (id, node) in nodes {
+                            if node
+                                .get("adapter")
+                                .and_then(|a| a.get("type"))
+                                .and_then(Value::as_str)
+                                != Some("mujoco-v2")
+                            {
+                                continue;
+                            }
+                            let kind = if node["node_type"]
+                                .as_str()
+                                .is_some_and(|ty| ty.contains("base"))
+                            {
+                                Some("base")
+                            } else if node["node_type"]
+                                .as_str()
+                                .is_some_and(|ty| ty.contains("manipulator"))
+                            {
+                                Some("arm")
+                            } else {
+                                None
+                            };
+                            if let Some(kind) = kind {
+                                self.eos_parts
+                                    .push((format!("eos/hardware/{group}/{id}"), kind.into()));
+                            }
+                        }
+                    }
+                }
+            }
+            self.eos_parts.sort();
+        }
+        self.run_prepared = true;
+        Ok(())
     }
     pub fn prepare_control_grants(&mut self, revision: &str) -> Result<()> {
         ensure!(
@@ -1309,7 +1554,7 @@ impl Supervisor {
         spec: &ProcessSpec,
         secrets: &BTreeMap<String, std::ffi::OsString>,
         secret_sources: &BTreeSet<String>,
-    ) -> Result<Child> {
+    ) -> Result<(Child, Option<Receiver<log_store::EosStdout>>)> {
         if spec.id == "eos" && spec.settings.role.as_deref() == Some("eos") {
             if let Some(inputs) = &self.candidate_skill_inputs {
                 inputs.launch_recheck(&self.paths, &self.deployment)?;
@@ -1441,17 +1686,29 @@ impl Supervisor {
             nodes: Some(self.admitted_nodes.clone()),
             skill_pins,
         });
-        if let Some(stdout) = child.stdout.take() {
-            log_store::capture(
-                stdout,
-                self.logs.clone(),
-                source.clone(),
-                "stdout",
-                self.run_id.clone(),
-                pid,
-                Some(admission.clone()),
-            );
-        }
+        let eos_stdout = if let Some(stdout) = child.stdout.take() {
+            if spec.id == "eos" && spec.settings.role.as_deref() == Some("eos") {
+                Some(log_store::capture_eos_stdout(
+                    stdout,
+                    self.logs.clone(),
+                    self.run_id.clone(),
+                    pid,
+                ))
+            } else {
+                log_store::capture(
+                    stdout,
+                    self.logs.clone(),
+                    source.clone(),
+                    "stdout",
+                    self.run_id.clone(),
+                    pid,
+                    Some(admission.clone()),
+                );
+                None
+            }
+        } else {
+            None
+        };
         if let Some(stderr) = child.stderr.take() {
             log_store::capture(
                 stderr,
@@ -1463,7 +1720,7 @@ impl Supervisor {
                 Some(admission),
             );
         }
-        Ok(child)
+        Ok((child, eos_stdout))
     }
 
     fn unix_socket_ready(path: &Path) -> bool {
@@ -1499,8 +1756,8 @@ impl Supervisor {
         let deadline = Instant::now() + Duration::from_millis(spec.settings.start_timeout_ms);
         let no_probe_grace = Instant::now() + Duration::from_millis(50);
         loop {
-            if let Some(status) = child.try_wait()? {
-                bail!("{} exited before ready: {status}", spec.id);
+            if observe_exit(child)? {
+                bail!("{} exited before ready", spec.id);
             }
             let ready = if let Some(endpoint) = &spec.settings.ready_tcp {
                 endpoint.to_socket_addrs().ok().is_some_and(|addrs| {
@@ -1551,6 +1808,10 @@ impl Supervisor {
         specs: &[ProcessSpec],
         secrets: &crate::generated_v2::SecretPlan,
     ) -> Result<Vec<String>> {
+        ensure!(
+            self.terminal().is_none(),
+            "stopped run cannot launch children"
+        );
         if let Some(bundle) = &self.control_grants {
             bundle.verify()?;
         }
@@ -1584,20 +1845,24 @@ impl Supervisor {
                 );
             }
             let empty = BTreeMap::new();
-            let mut child = match self.spawn(
+            let (mut child, eos_stdout) = self.spawn(
                 spec,
                 secrets.get(&spec.id).unwrap_or(&empty),
                 &secret_sources,
-            ) {
-                Ok(child) => child,
-                Err(error) => {
-                    self.rollback(&added);
-                    return Err(error);
-                }
-            };
+            )?;
+            let identity = leader_identity(child.id() as i32).ok();
             if let Err(error) = self.wait_ready(spec, &mut child) {
-                terminate(&mut child);
-                self.rollback(&added);
+                self.running.insert(
+                    spec.id.clone(),
+                    Running {
+                        spec: spec.clone(),
+                        child,
+                        restarts: 0,
+                        identity,
+                        eos_stdout,
+                    },
+                );
+                self.order.push(spec.id.clone());
                 return Err(error);
             }
             self.running.insert(
@@ -1606,6 +1871,8 @@ impl Supervisor {
                     spec: spec.clone(),
                     child,
                     restarts: 0,
+                    identity,
+                    eos_stdout,
                 },
             );
             self.order.push(spec.id.clone());
@@ -1614,141 +1881,357 @@ impl Supervisor {
         Ok(added)
     }
 
-    fn rollback(&mut self, added: &[String]) {
-        for id in added.iter().rev() {
-            if let Some(mut process) = self.running.remove(id) {
-                terminate(&mut process.child);
-            }
-            self.order.retain(|candidate| candidate != id);
-        }
+    pub fn stop(&mut self) -> Vec<String> {
+        self.stop_with_terminal().0
     }
 
-    pub fn stop(&mut self) -> Vec<String> {
+    pub fn stop_with_terminal(&mut self) -> (Vec<String>, dependent_stop::Terminal) {
+        if let Some(terminal) = self.terminal() {
+            return (Vec::new(), terminal);
+        }
+        let start = Instant::now();
+        let deadline = start + Duration::from_millis(self.stop_budget.timeout_ms);
+        let cleanup_at = deadline - Duration::from_millis(2_000);
+        let dependent_grace = self.stop_budget.timeout_ms - self.stop_budget.eos_grace_ms - 2_000;
+        let dependent_until = start + Duration::from_millis(dependent_grace.min(8_000));
+        let specs: Vec<_> = self
+            .running
+            .values()
+            .map(|running| running.spec.clone())
+            .collect();
+        let ids = stop_order(&specs, &self.order);
+        let record_ids = if self.run_prepared {
+            self.selected.clone()
+        } else {
+            ids.clone()
+        };
+        let timer_fence = self.terminal.clone();
+        let timer_run = self.run_id.clone();
+        let timer_ids = record_ids.clone();
+        thread::spawn(move || {
+            thread::sleep(deadline.saturating_duration_since(Instant::now()));
+            let mut fence = timer_fence.lock().unwrap();
+            if fence.is_none() {
+                *fence = Some(dependent_stop::Terminal::unknown(
+                    timer_run,
+                    "stop_deadline_exceeded",
+                    &timer_ids,
+                ));
+            }
+        });
+        let mut intent_ok = false;
+        if self.run_prepared || !record_ids.is_empty() {
+            if !self.run_prepared {
+                let _ = dependent_stop::create_running(
+                    &self.paths,
+                    &self.deployment,
+                    &self.run_id,
+                    &record_ids,
+                );
+            }
+            let (sender, receiver) = mpsc::sync_channel(1);
+            let paths = self.paths.clone();
+            let deployment = self.deployment.clone();
+            let run_id = self.run_id.clone();
+            let record_ids_for_worker = record_ids.clone();
+            thread::spawn(move || {
+                let success = dependent_stop::publish_unknown(
+                    &paths,
+                    &deployment,
+                    &run_id,
+                    &record_ids_for_worker,
+                )
+                .is_ok();
+                let _ = sender.try_send(success);
+            });
+            intent_ok = receiver
+                .recv_timeout(Duration::from_millis(500))
+                .unwrap_or(false);
+        }
         let mut stopped = Vec::new();
-        for id in self.order.drain(..).rev() {
-            if let Some(mut process) = self.running.remove(&id) {
-                terminate(&mut process.child);
-                stopped.push(id);
+        let mut processes = Vec::new();
+        let mut first_reason = if !intent_ok {
+            Some("stop_result_persist_failed")
+        } else if self.unexpected_exit {
+            Some("child_exit_unexpected")
+        } else {
+            None
+        };
+        for id in &ids {
+            let Some(mut running) = self.running.remove(id) else {
+                continue;
+            };
+            let is_eos = id == "eos"
+                && running.spec.settings.role.as_deref() == Some("eos")
+                && !self.eos_backend.is_empty();
+            let observed_before = observe_exit(&running.child).unwrap_or(false);
+            let mut reason = if self.unexpected_exit || observed_before {
+                Some("child_exit_unexpected")
+            } else {
+                None
+            };
+            if !intent_ok {
+                reason.get_or_insert("stop_result_persist_failed");
+            }
+            let identity = running.identity;
+            if let Some(identity) = identity {
+                if signal_group(
+                    identity,
+                    if intent_ok {
+                        libc::SIGTERM
+                    } else {
+                        libc::SIGKILL
+                    },
+                )
+                .is_err()
+                {
+                    reason.get_or_insert("stop_group_unreaped");
+                }
+            } else {
+                reason.get_or_insert("stop_group_unreaped");
+            }
+            let eos_until = Instant::now() + Duration::from_millis(self.stop_budget.eos_grace_ms);
+            let graceful_until = if !intent_ok {
+                Instant::now()
+            } else if is_eos {
+                eos_until.min(cleanup_at)
+            } else {
+                dependent_until.min(cleanup_at)
+            };
+            let mut receipt = EosTranscript::default();
+            loop {
+                if is_eos && let Some(receiver) = &running.eos_stdout {
+                    while let Ok(event) = receiver.try_recv() {
+                        receipt.accept(event);
+                    }
+                }
+                let exited = observe_exit(&running.child).unwrap_or(false);
+                let drained = identity
+                    .and_then(|held| group_live(held).ok())
+                    .is_some_and(|live| !live);
+                if exited && drained && (!is_eos || receipt.eof_at.is_some() || receipt.invalid) {
+                    break;
+                }
+                if Instant::now() >= graceful_until {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            let mut drained = identity
+                .and_then(|held| group_live(held).ok())
+                .is_some_and(|live| !live);
+            if !drained {
+                if let Some(identity) = identity {
+                    if signal_group(identity, libc::SIGKILL).is_err() {
+                        reason.get_or_insert("stop_group_unreaped");
+                    } else {
+                        reason.get_or_insert("stop_forced_kill");
+                    }
+                } else {
+                    reason.get_or_insert("stop_group_unreaped");
+                }
+                let reap_until = if is_eos {
+                    (cleanup_at + Duration::from_millis(1_500)).min(deadline)
+                } else {
+                    (Instant::now() + Duration::from_millis(200)).min(cleanup_at)
+                };
+                while Instant::now() < reap_until {
+                    drained = identity
+                        .and_then(|held| group_live(held).ok())
+                        .is_some_and(|live| !live);
+                    if drained && observe_exit(&running.child).unwrap_or(false) {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                }
+            }
+            if !drained {
+                reason.get_or_insert("stop_group_unreaped");
+            }
+            let exit = if observe_exit(&running.child).unwrap_or(false) {
+                running.child.wait().ok()
+            } else {
+                None
+            };
+            if exit.is_some() {
+                stopped.push(id.clone());
+            } else {
+                reason.get_or_insert("stop_group_unreaped");
+            }
+            if is_eos {
+                let eos_reason =
+                    self.eos_receipt_reason(&running, &receipt, exit, eos_until, deadline);
+                if let Some(eos_reason) = eos_reason {
+                    reason.get_or_insert(eos_reason);
+                }
+            }
+            let outcome = if reason.is_some() {
+                "unknown"
+            } else {
+                "confirmed"
+            };
+            if first_reason.is_none() {
+                first_reason = reason;
+            }
+            processes.push(dependent_stop::ChildOutcome {
+                id: id.clone(),
+                outcome,
+                reason_code: reason,
+            });
+            if exit.is_none() {
+                self.running.insert(id.clone(), running);
             }
         }
-        if let Some(bundle) = self.control_grants.take()
-            && let Err(error) = bundle.retire()
-        {
-            eprintln!("isos: {error}");
+        // A failed startup may have admitted the full plan but spawned only a
+        // prefix.  The absent children have no process group to drain, yet the
+        // terminal result must still account for every selected process.
+        if self.run_prepared {
+            let mut observed: BTreeMap<_, _> = processes
+                .into_iter()
+                .map(|outcome| (outcome.id.clone(), outcome))
+                .collect();
+            processes = self
+                .selected
+                .iter()
+                .map(|id| {
+                    observed.remove(id).unwrap_or(dependent_stop::ChildOutcome {
+                        id: id.clone(),
+                        outcome: if intent_ok && !self.unexpected_exit {
+                            "confirmed"
+                        } else {
+                            "unknown"
+                        },
+                        reason_code: if !intent_ok {
+                            Some("stop_result_persist_failed")
+                        } else if self.unexpected_exit {
+                            Some("child_exit_unexpected")
+                        } else {
+                            None
+                        },
+                    })
+                })
+                .collect();
         }
-        stopped
+        if let Some(bundle) = self.control_grants.take() {
+            let (sender, receiver) = mpsc::sync_channel(1);
+            #[cfg(test)]
+            let retirement_gate = self.retirement_gate.clone();
+            let launched = thread::Builder::new()
+                .name("isos-grant-retire".into())
+                .spawn(move || {
+                    #[cfg(test)]
+                    if let Some(gate) = retirement_gate {
+                        gate.0.wait();
+                        gate.1.wait();
+                    }
+                    let _ = sender.try_send(bundle.retire().is_ok());
+                })
+                .is_ok();
+            let retirement_until = deadline - Duration::from_millis(500);
+            let allowance = retirement_until
+                .saturating_duration_since(Instant::now())
+                .min(Duration::from_millis(500));
+            if !launched || !receiver.recv_timeout(allowance).unwrap_or(false) {
+                first_reason.get_or_insert("control_grant_retire_failed");
+            }
+        }
+        if Instant::now() >= deadline {
+            first_reason = Some("stop_deadline_exceeded");
+        }
+        if let Some(reason) = first_reason
+            && processes.iter().all(|entry| entry.outcome == "confirmed")
+            && let Some(last) = processes.last_mut()
+        {
+            last.outcome = "unknown";
+            last.reason_code = Some(reason);
+        }
+        let terminal = dependent_stop::Terminal {
+            run_id: self.run_id.clone(),
+            outcome: if first_reason.is_some() {
+                "unknown"
+            } else {
+                "confirmed"
+            },
+            reason_code: first_reason,
+            processes,
+        };
+        let mut fence = self.terminal.lock().unwrap();
+        if fence.is_none() {
+            *fence = Some(if Instant::now() >= deadline {
+                dependent_stop::Terminal::unknown(
+                    self.run_id.clone(),
+                    "stop_deadline_exceeded",
+                    &record_ids,
+                )
+            } else {
+                terminal
+            });
+        }
+        let terminal = fence.clone().expect("stop fence selected terminal");
+        drop(fence);
+        self.order.clear();
+        (stopped, terminal)
+    }
+
+    fn eos_receipt_reason(
+        &self,
+        running: &Running,
+        receipt: &EosTranscript,
+        exit: Option<ExitStatus>,
+        eos_until: Instant,
+        deadline: Instant,
+    ) -> Option<&'static str> {
+        if Instant::now() >= deadline {
+            return Some("stop_deadline_exceeded");
+        }
+        if receipt.first_at.is_some_and(|at| at >= eos_until)
+            || receipt.eof_at.is_some_and(|at| at >= eos_until)
+        {
+            return Some("eos_receipt_late");
+        }
+        if receipt.invalid || (receipt.frames.len() == 1 && receipt.eof_at.is_none()) {
+            return Some("eos_receipt_invalid");
+        }
+        if receipt.frames.is_empty() {
+            return Some("eos_receipt_missing");
+        }
+        if receipt.frames.len() != 1 {
+            return Some("eos_receipt_invalid");
+        }
+        let expected = dependent_stop::ReceiptExpectation {
+            run_id: &self.run_id,
+            eos_pid: running.child.id(),
+            revision: &self.active_revision,
+            backend_node: &self.eos_backend,
+            parts: &self.eos_parts,
+        };
+        match dependent_stop::verify_receipt(&receipt.frames[0], &expected) {
+            Err(_) => Some("eos_receipt_invalid"),
+            Ok(false) => Some("eos_stop_unconfirmed"),
+            Ok(true) if !exit.is_some_and(|status| status.success()) => {
+                Some("eos_stop_unconfirmed")
+            }
+            Ok(true) => None,
+        }
     }
 
     pub fn poll(&mut self) -> Result<()> {
-        let ids: Vec<_> = self.running.keys().cloned().collect();
-        for id in ids {
-            let Some(current) = self.running.get_mut(&id) else {
-                continue;
-            };
-            let exited = current.child.try_wait()?;
-            let Some(status) = exited else { continue };
-            let mut process = self.running.remove(&id).unwrap();
-            // A provider's disappearance invalidates live dependents. Stop
-            // them before attempting recovery, then restore them in order.
-            let mut affected = BTreeSet::from([id.clone()]);
-            loop {
-                let previous = affected.len();
-                for (candidate, running) in &self.running {
-                    if running.spec.settings.depends_on.iter().any(|dependency| {
-                        affected.contains(dependency.rsplit('/').next().unwrap_or(dependency))
-                    }) {
-                        affected.insert(candidate.clone());
-                    }
-                }
-                if previous == affected.len() {
-                    break;
-                }
-            }
-            let dependent_specs: Vec<_> = self
-                .order
-                .iter()
-                .filter(|candidate| *candidate != &id && affected.contains(*candidate))
-                .filter_map(|candidate| {
-                    self.running
-                        .get(candidate)
-                        .map(|running| running.spec.clone())
-                })
-                .collect();
-            for spec in dependent_specs.iter().rev() {
-                if let Some(mut dependent) = self.running.remove(&spec.id) {
-                    terminate(&mut dependent.child);
-                }
-                self.order.retain(|candidate| candidate != &spec.id);
-            }
-            let restart = match process.spec.settings.restart {
-                Restart::Never => false,
-                Restart::OnFailure => !status.success(),
-                Restart::Always => true,
-            };
-            if restart && process.restarts < process.spec.settings.max_restarts {
-                let correlation = crate::manager::next_correlation_id();
-                let _ = self.logs.append_event_context(
-                    "isos",
-                    "warn",
-                    "child_restart_attempt",
-                    "Managed child restart requested",
-                    log_store::LogContext {
-                        run_id: Some(&self.run_id),
-                        correlation_id: Some(&correlation),
-                        node_path: None,
-                        fields: serde_json::json!({"process_id":id}),
-                    },
-                );
-                thread::sleep(Duration::from_millis(100 * (1 << process.restarts.min(5))));
-                let restart_specs: Vec<_> = std::iter::once(process.spec.clone())
-                    .chain(dependent_specs.iter().cloned())
-                    .collect();
-                let plan = crate::generated_v2::secret_plan(&restart_specs)?;
-                let secret_sources: BTreeSet<String> = self
-                    .running
-                    .values()
-                    .map(|running| &running.spec)
-                    .chain(restart_specs.iter())
-                    .flat_map(|spec| spec.settings.env_from.values().cloned())
-                    .collect();
-                let empty = BTreeMap::new();
-                let mut child = match self.spawn(
-                    &process.spec,
-                    plan.get(&process.spec.id).unwrap_or(&empty),
-                    &secret_sources,
-                ) {
-                    Ok(child) => child,
-                    Err(error) => {
-                        self.order.retain(|candidate| candidate != &id);
-                        return Err(error);
-                    }
-                };
-                if let Err(error) = self.wait_ready(&process.spec, &mut child) {
-                    terminate(&mut child);
-                    self.order.retain(|candidate| candidate != &id);
-                    return Err(error);
-                }
-                process.child = child;
-                process.restarts += 1;
-                self.running.insert(id.clone(), process);
-                self.start_with_secrets(&dependent_specs, &plan)?;
-                let _ = self.logs.append_event_context(
-                    "isos",
-                    "info",
-                    "child_restart_ready",
-                    "Managed child restart ready",
-                    log_store::LogContext {
-                        run_id: Some(&self.run_id),
-                        correlation_id: Some(&correlation),
-                        node_path: None,
-                        fields: serde_json::json!({"process_id":id}),
-                    },
-                );
-            } else {
-                self.order.retain(|candidate| candidate != &id);
-            }
+        if self.terminal().is_some() {
+            return Ok(());
+        }
+        let exited = self
+            .running
+            .values()
+            .any(|running| observe_exit(&running.child).unwrap_or(true));
+        if exited {
+            self.unexpected_exit = true;
+            bail!("managed child exited unexpectedly; dependent stop is unconfirmed");
         }
         Ok(())
+    }
+
+    pub fn mark_unexpected_exit(&mut self) {
+        self.unexpected_exit = true;
     }
 
     pub fn status(&mut self) -> Result<Vec<ProcessStatus>> {
@@ -1763,7 +2246,11 @@ impl Supervisor {
                 id: id.clone(),
                 pid: running.child.id(),
                 restarts: running.restarts,
-                state: "running",
+                state: if observe_exit(&running.child).unwrap_or(false) {
+                    "exited"
+                } else {
+                    "running"
+                },
                 package: running.spec.package.clone(),
                 fingerprint: running.spec.fingerprint.clone(),
             })
@@ -1777,28 +2264,141 @@ impl Drop for Supervisor {
     }
 }
 
-fn terminate(child: &mut Child) {
-    let pid = child.id() as i32;
-    if child.try_wait().ok().flatten().is_none() {
-        unsafe { libc::kill(-pid, libc::SIGTERM) };
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while Instant::now() < deadline {
-            if child.try_wait().ok().flatten().is_some() {
-                return;
-            }
-            thread::sleep(Duration::from_millis(20));
-        }
-        unsafe { libc::kill(-pid, libc::SIGKILL) };
-    }
-    let _ = child.wait();
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::os::unix::fs::MetadataExt;
     use std::os::unix::net::UnixListener;
     use std::sync::mpsc;
+
+    #[test]
+    fn unreaped_leader_pins_group_for_descendant_cleanup() {
+        let mut command = Command::new("/bin/sh");
+        command.arg("-c").arg("sleep 10 & exit 0");
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let mut child = command.spawn().unwrap();
+        let original = leader_identity(child.id() as i32).unwrap();
+        let until = Instant::now() + Duration::from_secs(1);
+        while !observe_exit(&child).unwrap() && Instant::now() < until {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(observe_exit(&child).unwrap());
+        let mut wrong = original;
+        wrong.start_ticks += 1;
+        assert!(signal_group(wrong, libc::SIGTERM).is_err());
+        assert!(signal_group(original, libc::SIGKILL).is_ok());
+        let until = Instant::now() + Duration::from_secs(1);
+        while group_live(original).unwrap() && Instant::now() < until {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!group_live(original).unwrap());
+        assert!(child.wait().unwrap().success());
+    }
+
+    #[test]
+    fn selected_eos_raw_stdout_receipt_confirms_only_the_current_run() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        paths.prepare().unwrap();
+        fs::create_dir_all(paths.config.join("deployments")).unwrap();
+        fs::write(
+            paths.node_graph_path("test"),
+            serde_json::json!({
+                "cores": {"eos": {"layers": {"process": {"groups": {"mujoco": {
+                    "nodes": {"sim": {"id": "sim"}}
+                }}}}}}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let revision = "a".repeat(64);
+        let script = temp.path().join("stub-eos.py");
+        let source = r#"#!/usr/bin/env python3
+import json,os,signal,subprocess,sys,time
+args=sys.argv[1:]
+run=args[args.index('--run-id')+1]
+print(json.dumps({'timestamp':'2026-11-01T10:00:01.000Z','level':'info','source':'eos','core':'eos','event_code':'eos_ready','run_id':run,'message':'EOS runtime ready','fields':{'state':'ready','node_count':1}}),file=sys.stderr,flush=True)
+def stop(sig,frame):
+    if os.getenv('R06_HOLD_EOF'):
+        subprocess.Popen(['/bin/sleep','2'],start_new_session=True,stdout=sys.stdout,stderr=subprocess.DEVNULL)
+    receipt={'schema_version':1,'type':'eos_terminal_stop','run_id':os.getenv('R06_RECEIPT_RUN',run),'eos_pid':os.getpid(),'active_revision':'__REV__','backend_node':'eos/process/mujoco/sim','backend_pid':1234,'backend_pgid':1234,'generation_id':'00112233445566778899aabbccddeeff','stop_epoch':'1','admission_closed':True,'parts':[],'backend_group_drained':True,'backend_reaped':True,'sockets_removed':True,'outcome':'confirmed','reason_code':None}
+    print(json.dumps(receipt,separators=(',',':')),flush=True)
+    sys.exit(0)
+signal.signal(signal.SIGTERM,stop)
+while True: time.sleep(.05)
+"#.replace("__REV__", &revision);
+        fs::write(&script, source).unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        let spec = ProcessSpec {
+            id: "eos".into(),
+            path: "isos/process/component/eos".into(),
+            settings: serde_json::from_value(serde_json::json!({"command":[script],"role":"eos",
+                "start_timeout_ms":1000}))
+            .unwrap(),
+            package: None,
+            fingerprint: None,
+        };
+        let mut supervisor = Supervisor::new(&paths, "test").unwrap();
+        supervisor.stop_budget = config::StopBudget {
+            timeout_ms: 5_000,
+            eos_grace_ms: 1_000,
+        };
+        supervisor.publish_run_scope().unwrap();
+        supervisor
+            .prepare_run(std::slice::from_ref(&spec), &revision)
+            .unwrap();
+        supervisor.start(std::slice::from_ref(&spec)).unwrap();
+        let (stopped, terminal) = supervisor.stop_with_terminal();
+        assert_eq!(stopped, ["eos"]);
+        assert_eq!(terminal.outcome, "confirmed");
+        assert_eq!(terminal.reason_code, None);
+        assert_eq!(supervisor.stop_with_terminal().0.len(), 0);
+        assert_eq!(
+            dependent_stop::recover(&paths, "test", supervisor.run_id()).outcome,
+            "unknown"
+        );
+        let mut wrong = spec.clone();
+        wrong
+            .settings
+            .env
+            .insert("R06_RECEIPT_RUN".into(), "r-stale".into());
+        let mut second = Supervisor::new(&paths, "test").unwrap();
+        second.stop_budget = config::StopBudget {
+            timeout_ms: 5_000,
+            eos_grace_ms: 1_000,
+        };
+        second.publish_run_scope().unwrap();
+        second.prepare_run(&[wrong.clone()], &revision).unwrap();
+        second.start(&[wrong]).unwrap();
+        let (_, terminal) = second.stop_with_terminal();
+        assert_eq!(terminal.outcome, "unknown");
+        assert_eq!(terminal.reason_code, Some("eos_receipt_invalid"));
+        let mut held = spec;
+        held.settings.env.insert("R06_HOLD_EOF".into(), "1".into());
+        let mut third = Supervisor::new(&paths, "test").unwrap();
+        third.stop_budget = config::StopBudget {
+            timeout_ms: 5_000,
+            eos_grace_ms: 1_000,
+        };
+        third.publish_run_scope().unwrap();
+        third.prepare_run(&[held.clone()], &revision).unwrap();
+        third.start(&[held]).unwrap();
+        let started = Instant::now();
+        let (_, terminal) = third.stop_with_terminal();
+        assert_eq!(terminal.reason_code, Some("eos_receipt_invalid"));
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
 
     #[test]
     fn unpublished_candidate_grants_have_checked_retirement() {
@@ -1930,14 +2530,15 @@ sleep 10
         };
         supervisor.start(&[spec]).unwrap();
         thread::sleep(Duration::from_millis(400));
-        supervisor.poll().unwrap();
+        assert!(supervisor.poll().is_err());
         assert_eq!(supervisor.run_id(), run_id);
-        assert_eq!(supervisor.status_snapshot()[0].restarts, 1);
+        assert_eq!(supervisor.status_snapshot()[0].restarts, 0);
         assert_eq!(
             fs::symlink_metadata(&verifier).unwrap().ino(),
             original_inode
         );
-        supervisor.stop();
+        let (_, terminal) = supervisor.stop_with_terminal();
+        assert_eq!(terminal.outcome, "unknown");
         assert!(!verifier.exists());
     }
 
@@ -2188,11 +2789,13 @@ sleep 2
             "ready_unix": socket,
             "start_timeout_ms": 120
         });
+        let mut supervisor = Supervisor::new(&paths, "test").unwrap();
         assert!(
             supervisor
                 .start(&project(&graph(&timeout.to_string())).unwrap())
                 .is_err()
         );
+        let _ = supervisor.stop();
         assert!(supervisor.status().unwrap().is_empty());
     }
 
@@ -2215,8 +2818,11 @@ sleep 2
             r#"{"command":["/bin/false"],"start_timeout_ms":20}"#,
         ))
         .unwrap();
-        assert!(supervisor.start(&bad).is_err());
-        assert!(supervisor.status().unwrap().is_empty());
+        let mut failed = Supervisor::new(&paths, "test").unwrap();
+        assert!(failed.start(&bad).is_err());
+        let (_, terminal) = failed.stop_with_terminal();
+        assert_eq!(terminal.outcome, "unknown");
+        assert!(failed.status().unwrap().is_empty());
     }
 
     #[test]
@@ -2263,16 +2869,9 @@ sleep 2
         .unwrap();
         supervisor.start(&specs).unwrap();
         thread::sleep(Duration::from_millis(140));
-        assert_eq!(supervisor.status().unwrap()[0].restarts, 1);
-        let events = log_store::LogStore::new(&paths, "test")
-            .unwrap()
-            .read("all", None, 10)
-            .unwrap();
-        let events = events["lines"].as_array().unwrap();
-        assert_eq!(events[0]["event_code"], "child_restart_attempt");
-        assert_eq!(events[1]["event_code"], "child_restart_ready");
-        assert_eq!(events[0]["correlation_id"], events[1]["correlation_id"]);
-        assert_eq!(events[0]["run_id"], supervisor.run_id());
+        assert!(supervisor.status().is_err());
+        let (_, terminal) = supervisor.stop_with_terminal();
+        assert_eq!(terminal.outcome, "unknown");
         thread::sleep(Duration::from_millis(140));
         assert!(supervisor.status().unwrap().is_empty());
     }
@@ -2306,7 +2905,76 @@ sleep 2
         let mut supervisor = Supervisor::new(&paths, "test").unwrap();
         supervisor.start(&specs).unwrap();
         thread::sleep(Duration::from_millis(140));
+        assert!(supervisor.status().is_err());
+        let (_, terminal) = supervisor.stop_with_terminal();
+        assert_eq!(terminal.outcome, "unknown");
         assert!(supervisor.status().unwrap().is_empty());
+    }
+
+    #[test]
+    fn failed_startup_terminal_accounts_for_unspawned_selected_child() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        paths.prepare().unwrap();
+        let make = |id: &str, depends_on: Vec<&str>| ProcessSpec {
+            id: id.into(),
+            path: format!("isos/process/component/{id}"),
+            settings: serde_json::from_value(serde_json::json!({
+                "command": ["/bin/sleep", "30"],
+                "depends_on": depends_on,
+            }))
+            .unwrap(),
+            package: None,
+            fingerprint: None,
+        };
+        let provider = make("provider", vec![]);
+        let dependent = make("dependent", vec!["provider"]);
+        let mut supervisor = Supervisor::new(&paths, "test").unwrap();
+        supervisor.publish_run_scope().unwrap();
+        supervisor
+            .prepare_run(&[provider.clone(), dependent], &"a".repeat(64))
+            .unwrap();
+        supervisor.start(&[provider]).unwrap();
+        let (stopped, terminal) = supervisor.stop_with_terminal();
+        assert_eq!(stopped, ["provider"]);
+        assert_eq!(terminal.outcome, "confirmed");
+        assert_eq!(terminal.processes.len(), 2);
+        assert_eq!(terminal.processes[0].id, "dependent");
+        assert_eq!(terminal.processes[0].outcome, "confirmed");
+        assert_eq!(terminal.processes[1].id, "provider");
+    }
+
+    #[test]
+    fn stalled_grant_retirement_is_bounded_and_stays_unknown() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            runtime: temp.path().join("run"),
+        };
+        paths.prepare().unwrap();
+        let mut supervisor = Supervisor::new(&paths, "retire-stall").unwrap();
+        supervisor.publish_run_scope().unwrap();
+        supervisor.prepare_control_grants(&"a".repeat(64)).unwrap();
+        supervisor.prepare_run(&[], &"a".repeat(64)).unwrap();
+        let gate = Arc::new((std::sync::Barrier::new(2), std::sync::Barrier::new(2)));
+        supervisor.retirement_gate = Some(gate.clone());
+        let started = Instant::now();
+        let releaser = thread::spawn(move || {
+            gate.0.wait();
+            thread::sleep(Duration::from_millis(800));
+            gate.1.wait();
+        });
+        let (_, terminal) = supervisor.stop_with_terminal();
+        assert!(started.elapsed() < Duration::from_millis(700));
+        assert_eq!(terminal.outcome, "unknown");
+        assert_eq!(terminal.reason_code, Some("control_grant_retire_failed"));
+        releaser.join().unwrap();
+        assert_eq!(supervisor.stop_with_terminal().1, terminal);
     }
 
     #[test]
@@ -2402,21 +3070,10 @@ sleep 2
         let mut supervisor = Supervisor::new(&paths, "test").unwrap();
         supervisor.start(&[provider, dependent]).unwrap();
         thread::sleep(Duration::from_millis(420));
-        let status = supervisor.status().unwrap();
-        assert_eq!(status.len(), 2);
-        assert_eq!(
-            status
-                .iter()
-                .find(|item| item.id == "eos")
-                .unwrap()
-                .restarts,
-            1
-        );
-        assert_eq!(
-            wait_for_file(&record, 2),
-            "unset|restart-value\nunset|restart-value\n"
-        );
-        supervisor.stop();
+        assert!(supervisor.status().is_err());
+        assert_eq!(wait_for_file(&record, 1), "unset|restart-value\n");
+        let (_, terminal) = supervisor.stop_with_terminal();
+        assert_eq!(terminal.outcome, "unknown");
         unsafe { std::env::remove_var(source) };
     }
 }

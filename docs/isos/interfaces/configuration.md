@@ -6,6 +6,8 @@
 
 ## Paths and precedence
 
+**R06 target configuration — not implemented:** `deployment.stop_timeout_ms` and `deployment.eos_stop_grace_ms` are proposed manager-owned stop budgets, described with types, units, defaults and cross-owner review dependency in the [dependent stop contract](dependent-stop.md#stop-deadline-and-eos-proof). They are not graph fields; do not add them to a live `config/isos.toml` until the R06 parser and validation land.
+
 `ISOS_HOME` must be absolute. When set, `<base>/config`, `<base>/data`, and `<base>/run` are the three roots. Otherwise IsOS uses `${XDG_CONFIG_HOME:-~/.config}/isos`, `${XDG_DATA_HOME:-~/.local/share}/isos`, and `${XDG_RUNTIME_DIR:-/run/user/<uid>}/isos`. IsOS owns these paths, uses owner-only directories (`0700`) and private files (`0600`), and never treats the command working directory as configuration.
 
 | Relative path and owner | Kind / purpose | Write and validation rule |

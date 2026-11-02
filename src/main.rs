@@ -14,6 +14,8 @@ mod control_grants;
 mod core_bins;
 #[path = "runtime/core_setup.rs"]
 mod core_setup;
+#[path = "runtime/dependent_stop.rs"]
+mod dependent_stop;
 #[path = "runtime/edge_admission.rs"]
 mod edge_admission;
 #[path = "app/entry.rs"]
